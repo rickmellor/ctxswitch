@@ -11,10 +11,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import socket
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
@@ -121,8 +123,17 @@ def cmd_tmux(a) -> int:
 
 def cmd_tmux_exit(a) -> int:
     from ctxswitch.client import tmux
-    tmux.on_agent_exit(a.rc, a.started)
-    return 0
+    try:
+        tmux.on_agent_exit(a.rc, a.started)
+        return 0
+    except Exception:                                   # noqa: BLE001 - the wrapper falls back to a shell; leave a trace
+        import traceback
+        log = Path.home() / ".local/state/ctxswitch/tmux-exit.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a") as f:
+            f.write(f"--- {datetime.now(timezone.utc).isoformat()} pane={os.environ.get('TMUX_PANE')}\n{traceback.format_exc()}")
+        print(f"ctx tmux-exit failed (see {log}); dropping to a shell")
+        return 1
 
 
 def cmd_tui(a) -> int:

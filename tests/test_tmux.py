@@ -165,3 +165,29 @@ def test_agent_exit_falls_back_to_a_shell_and_ignores_off_viewer_panes(server, m
     seen = []
     tmux.on_agent_exit(rc=1, pane_id=viewer.id, prompt=seen.append)
     assert seen and "rc=1" in seen[0]
+
+
+def test_reap_viewer_replaces_a_dead_agent_shell_but_not_a_plain_shell(server, monkeypatch, tmp_path):
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    tmux.set_role(tui.id, "tui")
+    tm("send-keys", "-t", viewer.id, "exec bash --norc", "Enter")              # the viewer is a bare bash
+    for _ in range(30):
+        if next(p for p in tmux.panes() if p.id == viewer.id).cmd == "bash": break
+        time.sleep(0.1)
+    assert next(p for p in tmux.panes() if p.id == viewer.id).cmd == "bash"
+    assert tmux.reap_viewer() is None, "an untagged shell (the bootstrap pane) must be left alone"
+    # a live agent in a background window, and the viewer tagged as a session whose agent has exited
+    (tmp_path / "pi").write_text("#!/bin/sh\nsleep 60\n"); (tmp_path / "pi").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    live = tmux._agent_window("ctx", str(tmp_path), "live", ["pi"])
+    for _ in range(30):
+        if next(p for p in tmux.panes() if p.id == live).cmd == "sleep": break
+        time.sleep(0.1)
+    tmux.tag(viewer.id, "laptop/claude/gone")
+    assert tmux.reap_viewer() == live
+    ps = tmux.panes()
+    assert tmux.viewer_pane(ps).id == live
+    assert viewer.id not in {p.id for p in ps}, "the dead agent's shell was not closed"
+    assert tmux.reap_viewer() is None, "a running agent in the viewer must be left alone"

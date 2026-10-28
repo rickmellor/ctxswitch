@@ -45,17 +45,18 @@ class Pane:
     session: str       # tmux session name
     role: str = ""     # @ctx_role: "tui" for the ctx TUI pane, "agent" for agent panes we started
     activity: int = 0  # window_activity (epoch seconds)
+    cmd: str = ""      # pane_current_command
 
 
 def panes() -> list[Pane]:
     out = _run("list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_index}\t#{pane_pid}\t#{@ctx_key}\t#{session_name}"
-               "\t#{@ctx_role}\t#{window_activity}", check=False)
+               "\t#{@ctx_role}\t#{window_activity}\t#{pane_current_command}", check=False)
     res = []
     for line in out.splitlines():
         f = line.split("\t")
-        if len(f) < 9:
+        if len(f) < 10:
             continue
-        res.append(Pane(f[0], f[1], f[2], int(f[3] or 0), int(f[4] or 0), f[5], f[6], f[7], int(f[8] or 0)))
+        res.append(Pane(f[0], f[1], f[2], int(f[3] or 0), int(f[4] or 0), f[5], f[6], f[7], int(f[8] or 0), f[9]))
     return res
 
 
@@ -153,7 +154,13 @@ def on_agent_exit(rc: int = 0, started: float | None = None, pane_id: str | None
         return "pane gone"
     if not any(p.window == mine.window and p.role == "tui" for p in ps):
         return "closed"                                     # not on show: just let the window close
-    others = [p for p in ps if p.session == mine.session and p.window != mine.window and (p.role == "agent" or p.key)]
+    return f"swapped {_hand_off(mine, ps)} into the viewer"
+
+
+def _hand_off(mine: Pane, ps: list[Pane]) -> str:
+    """Swap the most recently active other agent pane (or a fresh shell) into ``mine``'s place; returns its id."""
+    others = [p for p in ps if p.session == mine.session and p.window != mine.window and p.id != mine.id
+              and p.role != "tui" and (p.role == "agent" or p.key) and p.cmd not in SHELLS]
     others.sort(key=lambda p: p.activity, reverse=True)
     if others:
         repl = others[0].id
@@ -162,7 +169,27 @@ def on_agent_exit(rc: int = 0, started: float | None = None, pane_id: str | None
                     "-P", "-F", "#{pane_id}").strip()
     _run("swap-pane", "-s", repl, "-t", mine.id)
     _run("select-pane", "-t", repl, check=False)
-    return f"swapped {repl} into the viewer"
+    return repl
+
+
+# a pane whose foreground is one of these has no agent running. "sh" is left out on purpose: it is the agent
+# wrapper itself for the instant before the agent starts.
+SHELLS = {"bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}
+
+
+def reap_viewer(ps: list[Pane] | None = None) -> str | None:
+    """Safety net run by the TUI: if the viewer holds a pane that had an agent (tagged by ctx) but is now at a bare
+    shell — an agent started by hand in the viewer, or a window from before the exit wrapper — hand the viewer to
+    the next session and close that pane."""
+    if not in_tmux():
+        return None
+    ps = ps if ps is not None else panes()
+    v = viewer_pane(ps)
+    if v is None or not (v.key or v.role == "agent") or v.cmd not in SHELLS:
+        return None
+    repl = _hand_off(v, ps)
+    _run("kill-pane", "-t", v.id, check=False)
+    return repl
 
 
 def resume_argv(s: dict) -> list[str] | None:

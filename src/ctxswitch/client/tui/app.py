@@ -104,6 +104,7 @@ class CtxApp(App):
             self.call_from_thread(self.sub_title_set, f"hub unreachable: {e.__class__.__name__}")
             return
         try:
+            tmux.reap_viewer()                          # an agent exited to a bare shell in the viewer: move on
             self.visible_key = tmux.visible_key(sessions=data["sessions"])
         except Exception:                               # noqa: BLE001 - tmux is optional
             self.visible_key = None
