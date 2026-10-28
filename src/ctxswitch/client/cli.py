@@ -70,6 +70,8 @@ def cmd_show(a) -> int:
     print(f"  where : {s.get('cwd') or '-'}  ({fmt.repo_label(s)})   model: {s['meta'].get('model') or '-'}  perm: {s['meta'].get('permission_mode') or '-'}")
     print(f"  turns : {s.get('turn_count')}   started {fmt.age(s.get('started_at'), now)} ago, last activity {fmt.age(s.get('last_activity'), now)} ago"
           + (f", viewed {fmt.age(s.get('last_viewed_at'), now)} ago" if s.get('last_viewed_at') else ""))
+    if s.get("recap"):
+        print(f"  recap : {s['recap']}")
     opens = [x for x in s.get("asks", []) if not x["answered"]]
     if opens:
         print("  OPEN ASKS:")

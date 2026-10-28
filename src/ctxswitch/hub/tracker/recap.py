@@ -1,0 +1,160 @@
+"""Recap: one at-a-glance line per session — "what do I need to know about this session right now?".
+
+Runs in the hub. A session needs a recap when its newest turn (index + complete flag + open-ask count = the
+*anchor*) differs from the one its stored recap was made from. Anchors must hold still for ``debounce`` seconds
+before a call is made, so a busy session isn't recapped on every streamed line. Sessions are taken live-first,
+then most recent; only sessions live or active in the last ``days`` days are considered (no backfill over history).
+
+The recap is regenerated from source every time (goal prompt + recent exchanges + open asks), never by editing the
+previous recap, so a bad one does not compound. The seat is local only (SAINT text seat); a seat failure leaves the
+old recap in place and backs off.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
+
+import httpx
+
+from ctxswitch.common.config import SeatConfig
+from ctxswitch.hub.store import Store
+
+log = logging.getLogger("ctxswitch.recap")
+
+MAX_CHARS = 180
+SYSTEM = (
+    "You maintain an operator's short-term memory across many parallel coding-agent sessions. Given one session's "
+    "goal, recent exchanges between the operator (\"you\") and the agent, and anything the agent is waiting on, write "
+    "ONE short line (at most 120 characters) telling the operator what they need to know about this session right "
+    "now: where the work stands and what, if anything, it needs from them. If it is waiting on them, start with "
+    "that. Be concrete (name the feature, file, PR or decision). Do not repeat the session title or say whether it "
+    "is busy, idle or ended: the operator already sees those. Use only facts in the input; never invent results. "
+    "Address the operator as \"you\". No preamble, no quotes."
+)
+SCHEMA = {"type": "object", "properties": {"recap": {"type": "string"}}, "required": ["recap"], "additionalProperties": False}
+
+
+def anchor_of(s: dict[str, Any]) -> str:
+    t = s.get("last_turn") or {}
+    return f"{t.get('idx', -1)}:{int(bool(t.get('complete')))}:{len(s.get('open_asks') or [])}:{s.get('live_status')}"
+
+
+def _clip(text: str | None, n: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def build_prompt(s: dict[str, Any]) -> str:
+    turns = s.get("turns") or []
+    human = [t for t in turns if t.get("user_origin") == "human"]
+    lines = [f"Session: {s.get('title') or '-'} ({s.get('harness')} on {s.get('host_id')}, in {s.get('cwd') or '-'})",
+             f"State: {s.get('live_status')}"]
+    first = (s.get("meta") or {}).get("first_prompt")
+    if first:
+        lines.append(f"Original goal (first prompt): {_clip(first, 500)}")
+    lines.append("Recent exchanges, oldest first:")
+    for t in turns[-6:]:
+        who = {"human": "you", "peer": "peer session", "task": "task notification"}.get(t.get("user_origin"), t.get("user_origin") or "?")
+        lines.append(f"- #{t['idx']} {who}: {_clip(t.get('user_text'), 600)}")
+        if t.get("assistant_text"):
+            lines.append(f"  agent: {_clip(t.get('assistant_text'), 900)}")
+        for a in t.get("asks") or []:
+            lines.append(f"  agent asked [{a['kind']}]: {_clip(a['text'], 300)}" + (f" -> you answered: {_clip(a.get('answer'), 200)}" if a.get("answered") else ""))
+        if not t.get("complete"):
+            lines.append("  (agent still working on this)")
+    if human and human[-1] not in turns[-6:]:
+        lines.append(f"Your last prompt: {_clip(human[-1].get('user_text'), 600)}")
+    opens = s.get("open_asks") or []
+    if opens:
+        lines.append("WAITING ON YOU:")
+        lines += [f"- [{a['kind']}] {_clip(a['text'], 400)}" for a in opens]
+    return "\n".join(lines)
+
+
+class Recapper:
+    def __init__(self, store: Store, seat: SeatConfig, notify: Callable[[], None] = lambda: None, days: int = 7,
+                 debounce: float = 4.0, interval: float = 2.0, transport: httpx.AsyncBaseTransport | None = None):
+        self.store, self.seat, self.notify = store, seat, notify
+        self.days, self.debounce, self.interval = days, debounce, interval
+        self.transport = transport
+        self._pending: dict[str, tuple[str, float]] = {}       # key -> (anchor, first seen)
+        self._backoff_until = 0.0
+
+    def due(self, now: float | None = None) -> list[str]:
+        """Keys whose anchor moved and has held still for ``debounce`` seconds, in priority order."""
+        now = time.time() if now is None else now
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.days)).isoformat().replace("+00:00", "Z")
+        out = []
+        for s in self.store.sessions():
+            if not s.get("last_turn"):
+                continue
+            if s.get("live_status") not in ("busy", "idle", "shell") and (s.get("last_activity") or "") < cutoff:
+                continue
+            a = anchor_of(s)
+            if a == s.get("recap_anchor"):
+                self._pending.pop(s["key"], None)
+                continue
+            seen = self._pending.get(s["key"])
+            if seen is None or seen[0] != a:
+                self._pending[s["key"]] = (a, now)
+                if self.debounce > 0:
+                    continue
+                seen = (a, now)
+            if now - seen[1] >= self.debounce:
+                out.append(s["key"])
+        return out                                          # store.sessions() order: live first, then most recent
+
+    async def call_seat(self, prompt: str) -> str:
+        body: dict[str, Any] = {
+            "model": self.seat.model, "temperature": 0.2, "max_tokens": 120,
+            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "recap", "strict": True, "schema": SCHEMA}},
+        }
+        if self.seat.disable_thinking:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        async with httpx.AsyncClient(transport=self.transport, timeout=60) as c:
+            r = await c.post(self.seat.url.rstrip("/") + "/chat/completions", json=body,
+                             headers={"Authorization": f"Bearer {self.seat.api_key}"})
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"] or ""
+        text = json.loads(content)["recap"]
+        return _clip(text, MAX_CHARS)
+
+    async def recap_one(self, key: str) -> bool:
+        s = self.store.session(key, turns=8)
+        if s is None:
+            return False
+        a = anchor_of(s)
+        text = await self.call_seat(build_prompt(s))
+        if not text.strip():
+            return False
+        self.store.set_recap(key, text, a)
+        self._pending.pop(key, None)
+        self.notify()
+        return True
+
+    async def step(self) -> int:
+        if time.time() < self._backoff_until:
+            return 0
+        n = 0
+        for key in self.due():
+            try:
+                n += await self.recap_one(key)
+            except Exception as e:                          # noqa: BLE001 - seat down / bad output: keep old recap
+                log.warning("recap %s failed: %s", key, e)
+                self._backoff_until = time.time() + 30
+                break
+        return n
+
+    async def run(self) -> None:
+        log.info("recap tracker on %s (%s), last %d days", self.seat.url, self.seat.model, self.days)
+        while True:
+            try:
+                await self.step()
+            except Exception:                               # noqa: BLE001
+                log.exception("recap loop")
+            await asyncio.sleep(self.interval)

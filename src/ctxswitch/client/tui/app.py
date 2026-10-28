@@ -34,6 +34,7 @@ from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
+from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
 STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
 
@@ -265,6 +266,10 @@ class CtxApp(App):
                 t.append(x['text'] + "\n")
             t.append("\n")
         turns = s.get("turns", [])
+        if s.get("recap"):
+            stale = s.get("recap_anchor") != _anchor(s)
+            t.append("RECAP" + (" (updating…)" if stale else "") + "\n", style="bold")
+            t.append(s["recap"] + "\n\n", style="cyan")
         if turns:
             last = turns[-1]
             # "you" = the operator's last real prompt; "agent" = the newest agent text, even if a task notification

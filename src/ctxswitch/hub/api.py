@@ -13,6 +13,7 @@ Auth: ``Authorization: Bearer <token>`` when hub.token is set (collectors and cl
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import Any
@@ -32,6 +33,8 @@ class Hub:
     def __init__(self, store: Store, token: str = ""):
         self.store, self.token = store, token
         self.subscribers: set[asyncio.Queue] = set()
+        self.background: list = []                       # coroutine factories started with the app (e.g. the recap tracker)
+        self._tasks: list[asyncio.Task] = []
 
     # -- auth -----------------------------------------------------------------------------------------------------
     def _authorized(self, headers) -> bool:
@@ -123,8 +126,17 @@ class Hub:
         finally:
             self.subscribers.discard(q)
 
+    @contextlib.asynccontextmanager
+    async def _lifespan(self, app):
+        self._tasks = [asyncio.create_task(f()) for f in self.background]
+        try:
+            yield
+        finally:
+            for t in self._tasks:
+                t.cancel()
+
     def app(self) -> Starlette:
-        return Starlette(routes=[
+        return Starlette(lifespan=self._lifespan, routes=[
             Route("/v1/ingest", self.ingest, methods=["POST"]),
             Route("/v1/hosts", self.hosts),
             Route("/v1/sessions", self.sessions),

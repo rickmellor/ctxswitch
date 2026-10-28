@@ -31,6 +31,8 @@ class HubConfig:
     bind: str = "127.0.0.1"
     port: int = 7433
     db_path: str = ""                      # default: <data_dir>/hub.db
+    recap: bool = True                     # one-line LLM recap per session (local seat)
+    recap_days: int = 7                    # only sessions live or active this recently
 
 
 @dataclass

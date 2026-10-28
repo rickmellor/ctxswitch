@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     meta TEXT NOT NULL, title TEXT, cwd TEXT, repo_root TEXT, repo_remote TEXT, git_branch TEXT,
     started_at TEXT, last_activity TEXT, ended INTEGER NOT NULL DEFAULT 0,
     live_status TEXT NOT NULL DEFAULT 'unknown', status_since TEXT, pid INTEGER, socket TEXT,
-    last_viewed_at TEXT, updated REAL NOT NULL
+    last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL
 );
 CREATE INDEX IF NOT EXISTS sessions_host ON sessions(host_id);
 CREATE TABLE IF NOT EXISTS turns (
@@ -44,6 +44,10 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}
+        for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL")):   # pre-recap databases
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
         self._lock = threading.Lock()
         self.change = int(self._get("change", "0"))
 
@@ -129,6 +133,11 @@ class Store:
     def mark_viewed(self, key: str, when: str) -> None:
         with self._lock:
             self.db.execute("UPDATE sessions SET last_viewed_at=? WHERE key=?", (when, key)); self._bump()
+
+    def set_recap(self, key: str, text: str, anchor: str) -> None:
+        with self._lock:
+            self.db.execute("UPDATE sessions SET recap=?, recap_anchor=?, recap_at=? WHERE key=?", (text, anchor, time.time(), key))
+            self._bump()
 
     # -- queries --------------------------------------------------------------------------------------------------
     def hosts(self) -> list[dict[str, Any]]:
