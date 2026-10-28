@@ -86,7 +86,9 @@ class Store:
                 for a in t.get("asks", []):
                     self.db.execute(
                         "INSERT INTO asks(key,ref,kind,text,turn_idx,asked_at,answered,answer,answered_at) VALUES(?,?,?,?,?,?,?,?,?) "
-                        "ON CONFLICT(key,ref) DO UPDATE SET text=excluded.text, answered=excluded.answered, answer=excluded.answer, answered_at=excluded.answered_at",
+                        "ON CONFLICT(key,ref) DO UPDATE SET text=excluded.text, answered=MAX(asks.answered, excluded.answered), "
+                        "answer=CASE WHEN excluded.answered=1 THEN excluded.answer ELSE asks.answer END, "
+                        "answered_at=CASE WHEN excluded.answered=1 THEN excluded.answered_at ELSE asks.answered_at END",
                         (key, a["ref"], a["kind"], a["text"], t["idx"], t.get("ended_at") or t.get("started_at"), int(a["answered"]), a.get("answer"), a.get("answered_at")))
             if turns or open_turn:
                 last = (open_turn or turns[-1])
