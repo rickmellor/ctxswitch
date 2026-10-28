@@ -40,6 +40,7 @@ def test_indexer_incremental_partial_line_and_resume(tmp_path):
     assert kinds == ["session", "turns"]
     sess = events[0][1]
     assert sess["key"] == f"laptop/claude/{S}" and sess["title"] == "hello" and sess["git_branch"] == "feat/x" and not sess["ended"]
+    assert sess["reset"] is True                                 # first sight of the file
     assert events[1][1]["turns"] == [] and events[1][1]["open"]["assistant_text"] == "hi, what next?"
     rec = st.file(str(f))
     assert rec["offset"] == f.stat().st_size - len('{"type":"system","subtype":"turn_dur')
@@ -51,6 +52,7 @@ def test_indexer_incremental_partial_line_and_resume(tmp_path):
     ix2.live_keys = ix.live_keys
     assert ix2.process(f)
     turns_ev = [p for k, p in events2 if k == "turns"][0]
+    assert not any(p.get("reset") for k, p in events2 if k == "session")   # resumed from state: no reset
     assert len(turns_ev["turns"]) == 1
     t0 = turns_ev["turns"][0]
     assert t0["complete"] and t0["asks"][0]["kind"] == "plain" and t0["asks"][0]["answer"] == "do more"
@@ -120,6 +122,10 @@ def test_store_ingest_idempotent_and_attention(tmp_path):
     assert store.sessions()[0]["live_status"] == "shell"
     store.upsert_session(dict(meta, ended=True))
     assert store.session(key)["live_status"] == "ended"
+    # a fresh collector index resets derived rows so a parser upgrade cannot leave stale turns behind
+    assert store.session(key)["turn_count"] == 1
+    store.upsert_session(dict(meta, reset=True))
+    assert store.session(key)["turn_count"] == 0 and store.session(key)["asks"] == []
     store.mark_viewed(key, "2026-10-28T11:00:00Z")
     assert store.session(key)["last_viewed_at"] == "2026-10-28T11:00:00Z"
     assert store.change > 0

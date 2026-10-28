@@ -122,8 +122,10 @@ class Indexer:
             parser.finish()
         turns = parser.drain()
         meta = self._meta(parser.meta, key, path, harness, st)
-        if meta != self._meta_sent.get(key):
-            self.emit("session", {**meta, "ended": ended})
+        if meta != self._meta_sent.get(key) or rec is None:
+            # rec None = this collector state has never seen the file: a fresh index. Ask the hub to drop the turns it
+            # holds for the session so rows from an older parser version cannot linger.
+            self.emit("session", {**meta, "ended": ended, "reset": rec is None})
             self._meta_sent[key] = meta
             emitted = True
         if turns or (parser.current is not None and st.st_size != (rec["size"] if rec else -1)):

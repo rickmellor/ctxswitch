@@ -238,15 +238,23 @@ class CtxApp(App):
         turns = s.get("turns", [])
         if turns:
             last = turns[-1]
+            # "you" = the operator's last real prompt; "agent" = the newest agent text, even if a task notification
+            # or peer message started the turn that produced it
+            you = next((x for x in reversed(turns) if x.get("user_origin") in ("human", "peer")), None)
+            said = next((x for x in reversed(turns) if x.get("assistant_text")), None)
             t.append("LAST EXCHANGE\n", style="bold")
-            t.append("you: ", style="bold"); t.append(fmt.one_line(last.get('user_text'), 400) + "\n")
-            if last.get("assistant_text"):
-                t.append("agent: ", style="bold"); t.append(fmt.one_line(last.get('assistant_text'), 700) + "\n")
+            if you is not None:
+                who = "you" if you.get("user_origin") == "human" else "peer"
+                t.append(f"{who} ({fmt.age(you.get('started_at'), now)}): ", style="bold")
+                t.append(fmt.one_line(you.get("user_text"), 400) + "\n")
+            if said is not None:
+                t.append(f"agent ({fmt.age(said.get('ended_at') or said.get('started_at'), now)}): ", style="bold")
+                t.append(fmt.one_line(said.get("assistant_text"), 700) + "\n")
             tally = {k: v for k, v in (last.get("tally") or {}).items() if v}
             if tally or last.get("events"):
                 t.append("  " + ", ".join(f"{v} {k}" for k, v in tally.items()) + ("  " + " ".join(last.get("events", [])) if last.get("events") else "") + "\n", style="dim")
             if not last.get("complete"):
-                t.append("  (in progress)\n", style="green")
+                t.append(f"  working on a {last.get('user_origin')} turn…\n" if last.get("user_origin") != "human" else "  (in progress)\n", style="green")
             t.append("\n")
         answered = [x for x in s.get("asks", []) if x["answered"]]
         if answered:
@@ -259,6 +267,8 @@ class CtxApp(App):
             t.append("EARLIER\n", style="bold")
             for tr in turns[-7:-1][::-1]:
                 t.append(f"#{tr['idx']} {fmt.age(tr.get('started_at'), now)} ", style="dim")
+                if tr.get("user_origin") not in ("human", None):
+                    t.append(f"[{tr['user_origin']}] ", style="dim")
                 t.append(f"{fmt.one_line(tr.get('user_text'), 120)}\n")
                 if tr.get("assistant_text"):
                     t.append(f"  ↳ {fmt.one_line(tr.get('assistant_text'), 120)}\n", style="dim")

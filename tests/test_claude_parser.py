@@ -136,3 +136,10 @@ def test_exit_only_session_has_no_turns_and_bash_input_is_a_turn():
     t0 = p.drain()[0]
     assert t0.user_text.startswith("<bash-input>") and t0.assistant_text == "That's the Windows name."
     assert p.meta["first_prompt"] == "real first ask"
+
+
+def test_task_notification_prompt_is_task_origin():
+    rows = [user("<task-notification>agent finished</task-notification>", "2026-10-28T10:00:00Z"),
+            assistant([text("Continuing.")], "2026-10-28T10:00:01Z")]
+    p = feed_all(ClaudeParser(), rows)
+    assert p.current.user_origin == "task" and "first_prompt" not in p.meta

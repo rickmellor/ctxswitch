@@ -132,6 +132,8 @@ class ClaudeParser:
             self._event(f"slash_command:{m.group(1)}", offset_end, e.get("timestamp")); return
         if stripped.startswith(("<local-command-stdout>", "<local-command-caveat>")):
             return                                           # output of such a command; nothing to track
+        if stripped.startswith("<task-notification>") and origin == "human":
+            origin = "task"                                  # background work reporting in, not the operator
         if self._cur is not None:
             # a new prompt answers any plain question left open by the previous turn
             for a in self._cur.asks:

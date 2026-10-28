@@ -63,6 +63,9 @@ class Store:
 
     def upsert_session(self, m: dict[str, Any]) -> None:
         with self._lock:
+            if m.get("reset"):
+                self.db.execute("DELETE FROM turns WHERE key=?", (m["key"],))
+                self.db.execute("DELETE FROM asks WHERE key=?", (m["key"],))
             self.db.execute(
                 "INSERT INTO sessions(key,host_id,harness,session_id,meta,title,cwd,repo_root,repo_remote,git_branch,started_at,last_activity,ended,updated) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET meta=excluded.meta, title=excluded.title, cwd=excluded.cwd, "
