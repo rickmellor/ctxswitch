@@ -51,7 +51,7 @@ class CtxApp(App):
     """
     BINDINGS = [
         Binding("h", "cycle_host", "host"), Binding("e", "toggle_ended", "ended"), Binding("v", "mark_viewed", "viewed"),
-        Binding("enter", "resume", "resume", priority=True), Binding("r", "refresh", "refresh"),
+        Binding("enter", "resume", "resume", show=True), Binding("r", "refresh", "refresh"),
         Binding("c", "new_claude", "new claude"), Binding("p", "new_pi", "new pi"),
         Binding("slash", "filter", "/ filter"), Binding("escape", "clear_filter", show=False), Binding("q", "quit", "quit"),
     ]
@@ -207,6 +207,12 @@ class CtxApp(App):
 
     def on_resize(self) -> None:
         self.render_table()
+
+    def on_data_table_row_selected(self, ev: DataTable.RowSelected) -> None:
+        # the table consumes Enter itself; route it to the same action as the footer binding
+        if ev.row_key is not None:
+            self.selected = ev.row_key.value
+        self.action_resume()
 
     def on_data_table_row_highlighted(self, ev: DataTable.RowHighlighted) -> None:
         if ev.row_key is not None and ev.row_key.value != self.selected:
