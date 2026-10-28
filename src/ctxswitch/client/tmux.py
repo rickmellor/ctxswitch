@@ -212,17 +212,20 @@ def visible_key(ps: list[Pane] | None = None, sessions: list[dict] | None = None
     return None
 
 
-def bootstrap(width: int = 56) -> str:
-    """`ctx tmux`: create (or join) the manager layout — viewer left, TUI right — and attach."""
+def bootstrap(width: str = "25%") -> str:
+    """`ctx tmux`: create (or join) the manager layout — viewer left, TUI right — and attach.
+
+    ``width`` is a tmux size: a column count ("56") or a percentage ("25%").
+    """
     ctx_cmd = shlex.join([os.path.abspath(os.sys.argv[0]), "tui"]) if os.sys.argv else "ctx tui"
     if in_tmux():
-        _run("split-window", "-h", "-l", str(width), "-c", os.getcwd(), ctx_cmd)
+        _run("split-window", "-h", "-l", width, "-c", os.getcwd(), ctx_cmd)
         _run("select-pane", "-t", "{left}", check=False)
         return "split: TUI on the right"
     has = subprocess.run([TMUX, "has-session", "-t", SESSION], capture_output=True).returncode == 0
     if not has:
         _run("new-session", "-d", "-s", SESSION, "-n", VIEWER_WINDOW, "-c", os.path.expanduser("~"))
-        _run("split-window", "-h", "-l", str(width), "-t", f"{SESSION}:{VIEWER_WINDOW}", "-c", os.getcwd(), ctx_cmd)
+        _run("split-window", "-h", "-l", width, "-t", f"{SESSION}:{VIEWER_WINDOW}", "-c", os.getcwd(), ctx_cmd)
         _run("set-option", "-t", SESSION, "allow-rename", "off", check=False)
         _run("select-pane", "-t", f"{SESSION}:{VIEWER_WINDOW}.0", check=False)
     os.execvp(TMUX, [TMUX, "attach-session", "-t", SESSION])

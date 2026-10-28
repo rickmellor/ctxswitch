@@ -27,7 +27,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.widgets import DataTable, Footer, Input, Static
 
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
@@ -72,7 +72,6 @@ class CtxApp(App):
         self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:claude" | "new:pi"
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False, icon="")
         yield Static("", id="attention")
         with Vertical(id="body"):
             yield DataTable(id="table", cursor_type="row", zebra_stripes=True, show_header=False)
@@ -86,6 +85,7 @@ class CtxApp(App):
         t = self.query_one("#table", DataTable)
         t.add_columns(" ", "age", "session")
         self.title = "ctxswitch"
+        self.query_one("#attention", Static).border_title = "ctxswitch"
         t.focus()
         self.refresh_data()
         self.set_interval(10, self.refresh_data)
@@ -114,7 +114,9 @@ class CtxApp(App):
         self.change = change
         self.hosts = hosts
         self.sessions = sessions
-        self.sub_title = f"{self.host_filter or 'all'} · {sum(1 for x in sessions if fmt.session_state(x) != 'ended')} live"
+        live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
+        self.sub_title = f"{self.host_filter or 'all'} · {live} live"
+        self.query_one("#attention", Static).border_title = f"ctx · {self.host_filter or 'all'} · {live} live"
         self.render_attention(attention)
         self.render_table()
         self.render_detail()
@@ -190,7 +192,9 @@ class CtxApp(App):
             if s["key"] == self.visible_key:
                 label.append("▶ ", style="bold")
             label.append(f"{where} ", style="dim")
-            label.append(fmt.one_line(fmt.repo_label(s), 18) + " ", style="dim" if st in ("ended", "unknown") else "")
+            repo_w = 18 if width >= 40 else 10 if width >= 28 else 0
+            if repo_w:
+                label.append(fmt.one_line(fmt.repo_label(s), repo_w) + " ", style="dim" if st in ("ended", "unknown") else "")
             rest = width - len(label.plain)
             label.append(fmt.one_line(fmt.display_title(s) or "(no prompt yet)", max(8, rest)), style=style)
             if asks:

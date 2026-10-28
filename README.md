@@ -23,7 +23,8 @@ Run `ctx-collector` without `--once` to keep watching.
 
 ## tmux manager (recommended)
 ```sh
-ctx tmux            # tmux session "ctx": agent pane on the left, `ctx tui` (56 cols) on the right; attaches
+ctx tmux            # tmux session "ctx": agent pane on the left, `ctx tui` (25% width) on the right; attaches
+ctx tmux --width 40 # or a fixed column count
 ```
 Every agent session lives in its own tmux window, so it outlives your terminal client. In the TUI, **Enter** on a
 session swaps its pane into the left pane (`tmux swap-pane`) — the previous occupant moves back out to its own
