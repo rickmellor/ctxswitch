@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync --all-extras
-mkdir -p ~/.config/ctxswitch ~/.config/systemd/user
+mkdir -p ~/.config/ctxswitch ~/.config/systemd/user ~/.local/state/ctxswitch
 [ -f ~/.config/ctxswitch/config.toml ] || { sed "s/^host_id = .*/host_id = \"$(hostname)\"/" config.example.toml > ~/.config/ctxswitch/config.toml; echo "wrote ~/.config/ctxswitch/config.toml — set hub.url/token"; }
 cp deploy/ctx-collector.service ~/.config/systemd/user/
 systemctl --user daemon-reload

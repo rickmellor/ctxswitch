@@ -11,6 +11,8 @@ ExecStart=%h/repos/ctxswitch/.venv/bin/ctx-collector
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:%h/.local/state/ctxswitch/collector.log
+StandardError=append:%h/.local/state/ctxswitch/collector.log
 
 [Install]
 WantedBy=default.target
