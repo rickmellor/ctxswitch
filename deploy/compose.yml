@@ -1,0 +1,17 @@
+# gpu-host: docker compose -f deploy/compose.yml up -d --build   (run from the repo root)
+services:
+  ctxswitch-hub:
+    build:
+      context: ..
+      dockerfile: deploy/hub.Dockerfile
+    container_name: ctxswitch-hub
+    restart: unless-stopped
+    ports:
+      - "7433:7433"
+    volumes:
+      - ctxswitch-data:/data
+    environment:
+      - CTXSWITCH_HUB_TOKEN=${CTXSWITCH_HUB_TOKEN:-}
+    command: ["sh", "-c", "exec ctx-hub --bind 0.0.0.0 --port 7433 --db /data/hub.db --token \"$CTXSWITCH_HUB_TOKEN\""]
+volumes:
+  ctxswitch-data:

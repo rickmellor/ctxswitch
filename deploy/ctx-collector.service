@@ -1,0 +1,16 @@
+# ~/.config/systemd/user/ctx-collector.service
+#   systemctl --user daemon-reload && systemctl --user enable --now ctx-collector
+#   loginctl enable-linger $USER      # keep it running when no session is logged in
+[Unit]
+Description=ctxswitch collector (transcript watcher -> hub)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/repos/ctxswitch/.venv/bin/ctx-collector
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

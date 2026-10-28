@@ -1,0 +1,30 @@
+# ~/.config/ctxswitch/config.toml  (or $CTXSWITCH_CONFIG)
+
+[hub]
+url = "http://hub.local:7433"     # where collectors push and clients read
+token = "change-me"                   # shared bearer token; same value in the hub's config
+# hub-side only:
+bind = "0.0.0.0"
+port = 7433
+# db_path = "/data/hub.db"
+
+[collector]
+host_id = "laptop"                    # stable short name for this machine (default: hostname)
+claude_roots = ["~/.claude/projects"]
+claude_sessions_dir = "~/.claude/sessions"
+pi_roots = ["~/.pi/agent/sessions"]
+# claude_win_roots = ["/mnt/c/Users/<you>/.claude/projects"]   # laptop WSL: Windows-native Claude, read-only
+backfill_days = 30
+max_text_chars = 4000
+
+# Local LLM seats for the tracker (Phase 3). Thinking must be off on Qwen seats (see spikes/SPIKES.md).
+[[seats]]
+name = "text"
+url = "http://llm.local:4000/v1"
+api_key = "local"
+model = "saint-local-text"
+concurrency = 1
+priority = 10
+disable_thinking = true
+
+notify = true                         # desktop toasts on this machine (Phase 4)

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import socket
 import sys
 from datetime import datetime, timezone
@@ -118,6 +119,7 @@ def cmd_tui(a) -> int:
 
 
 def main(argv=None) -> None:
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)      # `ctx ls | head` must not traceback
     ap = argparse.ArgumentParser(prog="ctx", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, fn in (("ls", cmd_ls), ("attention", cmd_attention), ("tui", cmd_tui)):
