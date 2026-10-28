@@ -10,6 +10,7 @@ from ctxswitch.client import tmux
 
 pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
 SOCK = f"ctxtest{os.getpid()}"
+_n = 0
 
 
 def tm(*a, check=True):
@@ -21,6 +22,9 @@ def tm(*a, check=True):
 
 @pytest.fixture
 def server(monkeypatch):
+    global SOCK, _n
+    _n += 1
+    SOCK = f"ctxtest{os.getpid()}_{_n}"          # one private server per test: kill-server + new-session back to back races
     monkeypatch.setattr(tmux, "TMUX", "tmux")
     monkeypatch.setenv("TMUX", "fake")
     # route every tmux call through our private server
