@@ -4,7 +4,8 @@
   ctx show <key-or-prefix>               ledger view: meta, open asks, recent exchanges
   ctx attention [--all]                  what needs the operator, oldest wait first
   ctx hosts                              collectors seen by the hub
-  ctx tui                                full-screen board
+  ctx tui                                the board (narrow; built for a tmux side pane)
+  ctx tmux [--width N]                   create/attach the tmux manager: session left, ctx tui right
   ctx hub / ctx collector                run the services (same as ctx-hub / ctx-collector)
 """
 from __future__ import annotations
@@ -112,6 +113,12 @@ def cmd_hosts(a) -> int:
     return 0
 
 
+def cmd_tmux(a) -> int:
+    from ctxswitch.client import tmux
+    print(tmux.bootstrap(a.width))
+    return 0
+
+
 def cmd_tui(a) -> int:
     from ctxswitch.client.tui.app import run
     run(load(), host=_host_arg(a))
@@ -130,6 +137,7 @@ def main(argv=None) -> None:
     p.add_argument("key"); p.add_argument("--turns", type=int, default=6); p.add_argument("--decisions", type=int, default=8)
     p.add_argument("--no-mark", action="store_true", help="don't record this as a view")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)
+    p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", type=int, default=56)
     p = sub.add_parser("hub"); p.set_defaults(fn=lambda a: __import__("ctxswitch.hub.main", fromlist=["main"]).main())
     p = sub.add_parser("collector"); p.set_defaults(fn=lambda a: __import__("ctxswitch.collector.main", fromlist=["main"]).main())
     a, rest = ap.parse_known_args(argv)

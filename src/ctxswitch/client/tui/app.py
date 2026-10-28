@@ -8,7 +8,9 @@ Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent ses
   ├ ledger of the selected session ──────────────┤
   │ state / open asks / last exchange / decisions│
   └──────────────────────────────────────────────┘
-Keys: h host filter · e toggle ended · v mark viewed · enter resume · r refresh · / filter · q quit
+Keys: h host filter · e toggle ended · v mark viewed · enter show/resume · r refresh · / filter · q quit
+Inside tmux, enter swaps the session's pane into pane 0 of this window (see client/tmux.py); `ctx tmux` builds
+the layout. Outside tmux it opens a Windows Terminal tab.
 Live: WebSocket change notices from the hub; falls back to polling every 10 s.
 """
 from __future__ import annotations
@@ -27,6 +29,7 @@ from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
+from ctxswitch.client import tmux
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
 
@@ -38,7 +41,7 @@ class CtxApp(App):
     #attention { height: auto; max-height: 6; border: round $warning; padding: 0 1; }
     #attention.empty { border: round $surface; color: $text-muted; }
     #body { height: 1fr; }
-    #table { height: 45%; min-height: 6; }
+    #table { height: auto; max-height: 50%; }
     #detail { height: 1fr; border-top: solid $surface; padding: 0 1; }
     #filter { dock: bottom; display: none; }
     #filter.visible { display: block; }
@@ -62,6 +65,7 @@ class CtxApp(App):
         self.hosts: list[str] = []
         self.selected: str | None = None
         self.change = -1
+        self.visible_key: str | None = None          # session shown in the tmux viewer pane
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False, icon="")
@@ -93,6 +97,10 @@ class CtxApp(App):
         except Exception as e:                          # noqa: BLE001
             self.call_from_thread(self.sub_title_set, f"hub unreachable: {e.__class__.__name__}")
             return
+        try:
+            self.visible_key = tmux.visible_key(sessions=data["sessions"])
+        except Exception:                               # noqa: BLE001 - tmux is optional
+            self.visible_key = None
         self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"])
 
     def sub_title_set(self, s: str) -> None:
@@ -140,7 +148,8 @@ class CtxApp(App):
             t.append(fmt.one_line(label, width - len(head)) + "\n")
         if len(items) > 4:
             t.append(f"… {len(items) - 4} more", style="dim")
-        w.update(t.rstrip())
+        t.rstrip()
+        w.update(t)
 
     def _visible(self) -> list[dict]:
         out = []
@@ -174,6 +183,8 @@ class CtxApp(App):
             if self.host_filter:                       # host is implied by the filter
                 where = fmt.HARNESS.get(s.get("harness", ""), s.get("harness", ""))
             label = Text()
+            if s["key"] == self.visible_key:
+                label.append("▶ ", style="bold")
             label.append(f"{where} ", style="dim")
             label.append(fmt.one_line(fmt.repo_label(s), 18) + " ", style="dim" if st in ("ended", "unknown") else "")
             rest = width - len(label.plain)
@@ -181,6 +192,7 @@ class CtxApp(App):
             if asks:
                 label.append(f" ◐{fmt.age(asks[0].get('asked_at'), now)}", style="bold yellow")
             t.add_row(Text(fmt.state_glyph(s), style=style), Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"])
+        t.styles.height = max(1, len(visible))        # grow with the list, up to the max-height cap
         if prev and prev in [s["key"] for s in visible]:
             try:
                 t.move_cursor(row=t.get_row_index(prev))
@@ -297,8 +309,21 @@ class CtxApp(App):
 
     def action_resume(self) -> None:
         s = next((x for x in self.sessions if x["key"] == self.selected), None)
-        if s:
+        if not s:
+            return
+        if tmux.in_tmux():
+            self.show_in_tmux(s)
+        else:
             self.notify(open_tab(s, self.this_host), timeout=8)
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def show_in_tmux(self, s: dict) -> None:
+        try:
+            msg = tmux.show(s)
+        except Exception as e:                          # noqa: BLE001
+            msg = f"tmux: {e}"
+        self.call_from_thread(self.notify, msg, timeout=6)
+        self.refresh_data()
 
     def action_filter(self) -> None:
         f = self.query_one("#filter", Input); f.add_class("visible"); f.can_focus = True; f.focus()

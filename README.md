@@ -19,7 +19,17 @@ uv sync --extra test
 .venv/bin/ctx attention                   # what needs you
 .venv/bin/ctx tui                         # the board: h host filter · e ended · v viewed · enter resume · / filter
 ```
-Run `ctx-collector` without `--once` to keep watching. Copy `config.example.toml` to `~/.config/ctxswitch/config.toml`
+Run `ctx-collector` without `--once` to keep watching.
+
+## tmux manager (recommended)
+```sh
+ctx tmux            # tmux session "ctx": agent pane on the left, `ctx tui` (56 cols) on the right; attaches
+```
+Every agent session lives in its own tmux window, so it outlives your terminal client. In the TUI, **Enter** on a
+session swaps its pane into the left pane (`tmux swap-pane`) — the previous occupant moves back out to its own
+window, nothing is killed. Sessions you start by hand inside tmux are found automatically (agent pid → pane);
+ended sessions are resumed in a new window first. `▶` marks the session currently on the left. Prefix+arrow moves
+focus back to the TUI. Set `CTXSWITCH_TMUX_SESSION` to use another tmux session name. Copy `config.example.toml` to `~/.config/ctxswitch/config.toml`
 to point at a remote hub and name this host.
 
 ## Multi-machine
