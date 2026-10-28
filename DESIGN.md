@@ -18,6 +18,10 @@ filterable by this machine / a named machine / all. Memory lives on the hub, not
 
 Greenfield repo: `~/repos/ctxswitch`.
 
+## Decisions log
+- 2026-10-28: hub runs as a docker container on **gpu-host**; Phase 1 built interactively; NAS move is a Phase 7 runbook.
+- 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
+
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is
    extracted without a model and never overwritten by one. The LLM adds interpretation on top.
