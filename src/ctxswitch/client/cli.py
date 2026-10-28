@@ -119,6 +119,12 @@ def cmd_tmux(a) -> int:
     return 0
 
 
+def cmd_tmux_exit(a) -> int:
+    from ctxswitch.client import tmux
+    tmux.on_agent_exit(a.rc, a.started)
+    return 0
+
+
 def cmd_tui(a) -> int:
     from ctxswitch.client.tui.app import run
     run(load(), host=_host_arg(a))
@@ -138,6 +144,8 @@ def main(argv=None) -> None:
     p.add_argument("--no-mark", action="store_true", help="don't record this as a view")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)
     p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="25%", help="TUI pane width: columns or percent (default 25%%)")
+    p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)
+    p.add_argument("--rc", type=int, default=0); p.add_argument("--started", type=float)
     p = sub.add_parser("hub"); p.set_defaults(fn=lambda a: __import__("ctxswitch.hub.main", fromlist=["main"]).main())
     p = sub.add_parser("collector"); p.set_defaults(fn=lambda a: __import__("ctxswitch.collector.main", fromlist=["main"]).main())
     a, rest = ap.parse_known_args(argv)

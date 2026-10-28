@@ -86,6 +86,8 @@ class CtxApp(App):
         t.add_columns(" ", "age", "session")
         self.title = "ctxswitch"
         self.query_one("#attention", Static).border_title = "ctxswitch"
+        if tmux.in_tmux():
+            tmux.set_role(os.environ.get("TMUX_PANE"), "tui")   # lets an exiting agent recognise the viewer window
         t.focus()
         self.refresh_data()
         self.set_interval(10, self.refresh_data)

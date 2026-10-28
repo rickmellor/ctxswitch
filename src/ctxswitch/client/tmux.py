@@ -1,16 +1,21 @@
 """tmux integration: a manager window with the agent session in pane 0 and `ctx tui` in pane 1.
 
-Every agent session lives in its own tmux window (so it survives terminal clients and nothing is ever killed);
+Every agent session lives in its own tmux window (so it survives terminal clients);
 "show" swaps the chosen session's pane into the viewer pane with ``tmux swap-pane``, and whatever was in the viewer
 goes back out to that session's window. Sessions started by hand inside tmux are found by walking the agent's pid
 up the process tree to a pane's shell pid. Panes we touch are tagged with the pane option ``@ctx_key`` so the
-mapping survives pid changes.
+mapping survives pid changes. Agent windows we start run through a wrapper: when the agent exits, ``ctx tmux-exit``
+swaps the most recently active other agent into the viewer (or a fresh shell if there is none) and the dead
+session's window closes. The TUI pane carries ``@ctx_role=tui`` so the viewer window can be recognised.
 """
 from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 
 TMUX = os.environ.get("CTXSWITCH_TMUX", "tmux")
@@ -38,16 +43,19 @@ class Pane:
     pid: int           # the pane's shell pid
     key: str           # @ctx_key or ""
     session: str       # tmux session name
+    role: str = ""     # @ctx_role: "tui" for the ctx TUI pane, "agent" for agent panes we started
+    activity: int = 0  # window_activity (epoch seconds)
 
 
 def panes() -> list[Pane]:
-    out = _run("list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_index}\t#{pane_pid}\t#{@ctx_key}\t#{session_name}", check=False)
+    out = _run("list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_index}\t#{pane_pid}\t#{@ctx_key}\t#{session_name}"
+               "\t#{@ctx_role}\t#{window_activity}", check=False)
     res = []
     for line in out.splitlines():
         f = line.split("\t")
-        if len(f) < 7:
+        if len(f) < 9:
             continue
-        res.append(Pane(f[0], f[1], f[2], int(f[3] or 0), int(f[4] or 0), f[5], f[6]))
+        res.append(Pane(f[0], f[1], f[2], int(f[3] or 0), int(f[4] or 0), f[5], f[6], f[7], int(f[8] or 0)))
     return res
 
 
@@ -99,6 +107,64 @@ def tag(pane_id: str, key: str) -> None:
     _run("set-option", "-p", "-t", pane_id, "@ctx_key", key, check=False)
 
 
+def set_role(pane_id: str | None, role: str) -> None:
+    if pane_id:
+        _run("set-option", "-p", "-t", pane_id, "@ctx_role", role, check=False)
+
+
+def _ctx_bin() -> str:
+    me = sys.argv[0] if sys.argv else ""
+    if os.path.basename(me).startswith("ctx"):
+        return os.path.abspath(me)
+    return shutil.which("ctx") or "ctx"
+
+
+def agent_cmd(argv: list[str]) -> list[str]:
+    """Run ``argv``, then hand the pane to ``ctx tmux-exit``; a shell is the fallback if ctx itself fails."""
+    script = (f"start=$(date +%s); {shlex.join(argv)}; rc=$?; "
+              f"{shlex.quote(_ctx_bin())} tmux-exit --rc \"$rc\" --started \"$start\" || exec \"${{SHELL:-bash}}\"")
+    return ["sh", "-c", script]
+
+
+def _agent_window(target_session: str, cwd: str, name: str, argv: list[str]) -> str:
+    pane_id = _run("new-window", "-d", "-t", target_session + ":", "-c", cwd, "-n", name, "-P", "-F", "#{pane_id}",
+                   *agent_cmd(argv)).strip()
+    set_role(pane_id, "agent")
+    _run("set-option", "-w", "-t", pane_id, "allow-rename", "off", check=False)
+    return pane_id
+
+
+def on_agent_exit(rc: int = 0, started: float | None = None, pane_id: str | None = None, prompt=input) -> str:
+    """The agent in ``pane_id`` has exited. If its pane is in the viewer, swap the most recently active other agent
+    in (or a fresh shell); then return so the pane's process ends and its now-lone window closes.
+
+    A failed or very short run (rc != 0, or under 5 s — e.g. a bad --resume) waits for Enter first so the error
+    stays readable.
+    """
+    pane_id = pane_id or os.environ.get("TMUX_PANE")
+    if rc != 0 or (started is not None and time.time() - started < 5):
+        try:
+            prompt(f"[agent exited rc={rc}] press Enter to close ")
+        except EOFError:
+            pass
+    ps = panes()
+    mine = next((p for p in ps if p.id == pane_id), None)
+    if mine is None:
+        return "pane gone"
+    if not any(p.window == mine.window and p.role == "tui" for p in ps):
+        return "closed"                                     # not on show: just let the window close
+    others = [p for p in ps if p.session == mine.session and p.window != mine.window and (p.role == "agent" or p.key)]
+    others.sort(key=lambda p: p.activity, reverse=True)
+    if others:
+        repl = others[0].id
+    else:
+        repl = _run("new-window", "-d", "-t", mine.session + ":", "-c", os.path.expanduser("~"), "-n", "shell",
+                    "-P", "-F", "#{pane_id}").strip()
+    _run("swap-pane", "-s", repl, "-t", mine.id)
+    _run("select-pane", "-t", repl, check=False)
+    return f"swapped {repl} into the viewer"
+
+
 def resume_argv(s: dict) -> list[str] | None:
     harness, sid = s.get("harness"), s.get("session_id")
     if harness == "claude":
@@ -119,11 +185,8 @@ def new_session_window(s: dict) -> Pane:
         cwd = os.path.expanduser("~")
     name = (s.get("title") or s.get("session_id") or "ctx")[:24].replace(":", "-")
     target_session = next((p.session for p in panes() if p.id == os.environ.get("TMUX_PANE")), SESSION)
-    # keep the shell alive after the agent exits so the pane (and its scrollback) stays reachable
-    cmd = shlex.join(argv) + "; exec ${SHELL:-bash}"
-    pane_id = _run("new-window", "-d", "-t", target_session + ":", "-c", cwd, "-n", name, "-P", "-F", "#{pane_id}", cmd).strip()
+    pane_id = _agent_window(target_session, cwd, name, argv)
     tag(pane_id, s["key"])
-    _run("set-option", "-w", "-t", pane_id, "allow-rename", "off", check=False)
     ps = panes()
     return next(p for p in ps if p.id == pane_id)
 
@@ -145,10 +208,8 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
         return "no viewer pane: split the window so the TUI has a neighbour (ctx tmux)"
     target_session = next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), SESSION)
     name = f"{harness}:{os.path.basename(cwd.rstrip('/')) or cwd}"[:24]
-    cmd = shlex.join(argv) + "; exec ${SHELL:-bash}"
-    pane_id = _run("new-window", "-d", "-t", target_session + ":", "-c", cwd, "-n", name, "-P", "-F", "#{pane_id}", cmd).strip()
     # no session key yet: the collector will see the transcript shortly and the pid walk maps it to this pane
-    _run("set-option", "-w", "-t", pane_id, "allow-rename", "off", check=False)
+    pane_id = _agent_window(target_session, cwd, name, argv)
     _run("swap-pane", "-s", pane_id, "-t", viewer.id)
     if focus:
         _run("select-pane", "-t", pane_id, check=False)
