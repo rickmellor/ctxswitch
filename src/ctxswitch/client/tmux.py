@@ -128,6 +128,33 @@ def new_session_window(s: dict) -> Pane:
     return next(p for p in ps if p.id == pane_id)
 
 
+def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: bool = True) -> str:
+    """Start a fresh claude/pi session in a new window of this tmux session and bring it into the viewer pane."""
+    if not in_tmux():
+        return "not inside tmux"
+    argv = {"claude": ["claude"], "pi": ["pi"]}.get(harness)
+    if argv is None:
+        return f"unknown harness {harness}"
+    argv = [*argv, *(extra or [])]
+    cwd = os.path.expanduser(cwd.strip() or "~")
+    if not os.path.isdir(cwd):
+        return f"no such directory: {cwd}"
+    ps = panes()
+    viewer = viewer_pane(ps)
+    if viewer is None:
+        return "no viewer pane: split the window so the TUI has a neighbour (ctx tmux)"
+    target_session = next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), SESSION)
+    name = f"{harness}:{os.path.basename(cwd.rstrip('/')) or cwd}"[:24]
+    cmd = shlex.join(argv) + "; exec ${SHELL:-bash}"
+    pane_id = _run("new-window", "-d", "-t", target_session + ":", "-c", cwd, "-n", name, "-P", "-F", "#{pane_id}", cmd).strip()
+    # no session key yet: the collector will see the transcript shortly and the pid walk maps it to this pane
+    _run("set-option", "-w", "-t", pane_id, "allow-rename", "off", check=False)
+    _run("swap-pane", "-s", pane_id, "-t", viewer.id)
+    if focus:
+        _run("select-pane", "-t", pane_id, check=False)
+    return f"new {harness} in {cwd}"
+
+
 def show(s: dict, focus: bool = True) -> str:
     """Bring session ``s`` into the viewer pane. Returns a short status message for the TUI."""
     if not in_tmux():
@@ -174,9 +201,10 @@ def visible_key(ps: list[Pane] | None = None, sessions: list[dict] | None = None
     v = viewer_pane(ps)
     if v is None:
         return None
-    if v.key:
+    known = {s["key"] for s in sessions or []}
+    if v.key and (not known or v.key in known):
         return v.key
-    for s in sessions or []:
+    for s in sessions or []:                            # untagged (or stale tag): map by the agent's pid
         p = pane_for_pid(s.get("pid"), ps)
         if p and p.id == v.id:
             tag(v.id, s["key"])

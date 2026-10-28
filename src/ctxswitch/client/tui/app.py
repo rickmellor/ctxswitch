@@ -8,7 +8,8 @@ Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent ses
   ├ ledger of the selected session ──────────────┤
   │ state / open asks / last exchange / decisions│
   └──────────────────────────────────────────────┘
-Keys: h host filter · e toggle ended · v mark viewed · enter show/resume · r refresh · / filter · q quit
+Keys: h host filter · e toggle ended · v mark viewed · enter show/resume · c/p new claude/pi session (asks for a
+directory, default = selected session's) · r refresh · / filter · q quit
 Inside tmux, enter swaps the session's pane into pane 0 of this window (see client/tmux.py); `ctx tmux` builds
 the layout. Outside tmux it opens a Windows Terminal tab.
 Live: WebSocket change notices from the hub; falls back to polling every 10 s.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 from datetime import datetime, timezone
 
@@ -50,6 +52,7 @@ class CtxApp(App):
     BINDINGS = [
         Binding("h", "cycle_host", "host"), Binding("e", "toggle_ended", "ended"), Binding("v", "mark_viewed", "viewed"),
         Binding("enter", "resume", "resume", priority=True), Binding("r", "refresh", "refresh"),
+        Binding("c", "new_claude", "new claude"), Binding("p", "new_pi", "new pi"),
         Binding("slash", "filter", "/ filter"), Binding("escape", "clear_filter", show=False), Binding("q", "quit", "quit"),
     ]
 
@@ -66,6 +69,7 @@ class CtxApp(App):
         self.selected: str | None = None
         self.change = -1
         self.visible_key: str | None = None          # session shown in the tmux viewer pane
+        self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:claude" | "new:pi"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False, icon="")
@@ -325,19 +329,58 @@ class CtxApp(App):
         self.call_from_thread(self.notify, msg, timeout=6)
         self.refresh_data()
 
+    def _show_input(self, mode: str, placeholder: str, value: str = "") -> None:
+        self.input_mode = mode
+        f = self.query_one("#filter", Input)
+        f.placeholder = placeholder; f.value = value
+        f.add_class("visible"); f.can_focus = True; f.focus()
+        if value:
+            f.cursor_position = len(value)
+
+    def _selected_cwd(self) -> str:
+        s = next((x for x in self.sessions if x["key"] == self.selected), None)
+        return (s or {}).get("cwd") or os.path.expanduser("~")
+
+    def action_new_claude(self) -> None:
+        if not tmux.in_tmux():
+            self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
+        self._show_input("new:claude", "directory for the new claude session, enter to start", self._selected_cwd())
+
+    def action_new_pi(self) -> None:
+        if not tmux.in_tmux():
+            self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
+        self._show_input("new:pi", "directory for the new pi session, enter to start", self._selected_cwd())
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def start_agent(self, harness: str, cwd: str) -> None:
+        try:
+            msg = tmux.new_agent(harness, cwd)
+        except Exception as e:                          # noqa: BLE001
+            msg = f"tmux: {e}"
+        self.call_from_thread(self.notify, msg, timeout=6)
+
     def action_filter(self) -> None:
-        f = self.query_one("#filter", Input); f.add_class("visible"); f.can_focus = True; f.focus()
+        self._show_input("filter", "filter sessions (title, repo, key)…", self.text_filter)
 
-    def action_clear_filter(self) -> None:
-        f = self.query_one("#filter", Input); f.value = ""; f.remove_class("visible"); f.can_focus = False
-        self.text_filter = ""; self.render_table(); self.query_one("#table").focus()
-
-    def on_input_changed(self, ev: Input.Changed) -> None:
-        self.text_filter = ev.value; self.render_table()
-
-    def on_input_submitted(self, ev: Input.Submitted) -> None:
+    def _hide_input(self) -> None:
         f = self.query_one("#filter", Input); f.remove_class("visible"); f.can_focus = False
         self.query_one("#table").focus()
+
+    def action_clear_filter(self) -> None:
+        if self.input_mode == "filter":
+            self.text_filter = ""; self.query_one("#filter", Input).value = ""; self.render_table()
+        self._hide_input()
+
+    def on_input_changed(self, ev: Input.Changed) -> None:
+        if self.input_mode == "filter":
+            self.text_filter = ev.value; self.render_table()
+
+    def on_input_submitted(self, ev: Input.Submitted) -> None:
+        mode, value = self.input_mode, ev.value
+        self._hide_input()
+        if mode.startswith("new:"):
+            self.start_agent(mode.split(":", 1)[1], value)
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
 
 
 def run(cfg: Config, host: str | None = None) -> None:

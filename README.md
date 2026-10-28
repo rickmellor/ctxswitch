@@ -28,7 +28,8 @@ ctx tmux            # tmux session "ctx": agent pane on the left, `ctx tui` (56 
 Every agent session lives in its own tmux window, so it outlives your terminal client. In the TUI, **Enter** on a
 session swaps its pane into the left pane (`tmux swap-pane`) — the previous occupant moves back out to its own
 window, nothing is killed. Sessions you start by hand inside tmux are found automatically (agent pid → pane);
-ended sessions are resumed in a new window first. `▶` marks the session currently on the left. Prefix+arrow moves
+ended sessions are resumed in a new window first. **c** / **p** start a new Claude / pi session (asks for a
+directory, default = the selected session's) and bring it to the left. `▶` marks the session currently on the left. Prefix+arrow moves
 focus back to the TUI. Set `CTXSWITCH_TMUX_SESSION` to use another tmux session name. Copy `config.example.toml` to `~/.config/ctxswitch/config.toml`
 to point at a remote hub and name this host.
 

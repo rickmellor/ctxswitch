@@ -79,3 +79,31 @@ def test_pane_discovery_swap_and_resume(server, monkeypatch, tmp_path):
     assert any(p.key == "laptop/claude/abc" and p.window_name != "mgr" for p in ps)
     # live elsewhere (pid not in any pane) is reported, not resumed
     assert "not in a tmux pane" in tmux.show({**s, "pid": 999999, "key": "x/claude/zzz"}, focus=False)
+
+
+def test_new_agent_starts_in_viewer_and_is_found_by_pid(server, monkeypatch, tmp_path):
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    fake = tmp_path / "pi"; fake.write_text("#!/bin/sh\npwd > %s/cwd; sleep 30\n" % tmp_path); fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    assert tmux.new_agent("pi", "/nonexistent/dir", focus=False).startswith("no such directory")
+    msg = tmux.new_agent("pi", str(tmp_path), focus=False)
+    assert msg == f"new pi in {tmp_path}"
+    for _ in range(20):
+        if (tmp_path / "cwd").exists(): break
+        time.sleep(0.1)
+    assert (tmp_path / "cwd").read_text().strip() == str(tmp_path.resolve())
+    ps = tmux.panes()
+    v = tmux.viewer_pane(ps)
+    assert v.id != viewer.id and v.key == "" and v.window_name == "mgr"
+    # the collector later reports the agent's pid: the pid walk maps it to the viewer pane and tags it
+    out = subprocess.run(["pgrep", "-f", "sleep 30"], capture_output=True, text=True).stdout.split()
+    pids = [int(x) for x in out]
+    s = {"key": "laptop/pi/new1", "pid": None}
+    for pid in pids:
+        if tmux.pane_for_pid(pid, ps) and tmux.pane_for_pid(pid, ps).id == v.id:
+            s["pid"] = pid
+    assert s["pid"], "sleep child of the new pane not found"
+    assert tmux.visible_key(ps, [s]) == "laptop/pi/new1"
+    assert tmux.viewer_pane().key == "laptop/pi/new1"
