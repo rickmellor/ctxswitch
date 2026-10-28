@@ -117,3 +117,13 @@ def test_state_roundtrip_mid_turn():
     p2.feed(tool_result("q1", "A", "2026-10-28T10:00:02Z", tur={"answers": {"A or B?": "A"}}), 300)
     assert p2.current.asks[0].answered and p2.current.asks[0].answer == "A or B?: A"
     assert p2.current.offset_end == 300
+
+
+def test_first_prompt_skips_command_output_and_wrappers():
+    rows = [
+        user("<local-command-stdout>See ya!</local-command-stdout>", "2026-10-28T10:00:00Z"),
+        user("<bash-input>ls</bash-input>", "2026-10-28T10:00:01Z"),
+        user("real first ask\nsecond line", "2026-10-28T10:00:02Z"),
+    ]
+    p = feed_all(ClaudeParser(), rows)
+    assert p.meta["first_prompt"] == "real first ask"

@@ -1,9 +1,13 @@
 """ctx tui — the operator board.
 
-  ┌ attention: what needs you, oldest wait first ─────────────────────────────────┐
-  ├ sessions (host filter: this | all | <host>) ───────┬ ledger of the selected session ┤
-  │ ◐ laptop/cc/e7a45b61  3m  ctxswitch@main  title…  │ state / last exchange / open asks / decisions / exchanges │
-  └────────────────────────────────────────────────────┴───────────────────────────────┘
+Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent sessions), stacked vertically:
+
+  ┌ attention: what needs you, oldest wait first ┐
+  ├ sessions (host filter: this | all | <host>) ─┤
+  │ ◐  3m cc·laptop ctxswitch@main  title…       │
+  ├ ledger of the selected session ──────────────┤
+  │ state / open asks / last exchange / decisions│
+  └──────────────────────────────────────────────┘
 Keys: h host filter · e toggle ended · v mark viewed · enter resume · r refresh · / filter · q quit
 Live: WebSocket change notices from the hub; falls back to polling every 10 s.
 """
@@ -18,7 +22,7 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from ctxswitch.client import fmt
@@ -31,11 +35,11 @@ STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "
 
 class CtxApp(App):
     CSS = """
-    #attention { height: auto; max-height: 8; border: round $warning; padding: 0 1; }
+    #attention { height: auto; max-height: 6; border: round $warning; padding: 0 1; }
     #attention.empty { border: round $surface; color: $text-muted; }
     #body { height: 1fr; }
-    #sessions { width: 58%; }
-    #detail { width: 42%; border-left: solid $surface; padding: 0 1; }
+    #table { height: 45%; min-height: 6; }
+    #detail { height: 1fr; border-top: solid $surface; padding: 0 1; }
     #filter { dock: bottom; display: none; }
     #filter.visible { display: block; }
     .h { color: $text-muted; }
@@ -60,11 +64,10 @@ class CtxApp(App):
         self.change = -1
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header(show_clock=False, icon="")
         yield Static("", id="attention")
-        with Horizontal(id="body"):
-            with Vertical(id="sessions"):
-                yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
+        with Vertical(id="body"):
+            yield DataTable(id="table", cursor_type="row", zebra_stripes=True, show_header=False)
             yield VerticalScroll(Static("", id="detail_text"), id="detail")
         inp = Input(placeholder="filter sessions (title, repo, key)…", id="filter")
         inp.can_focus = False                     # only focusable while shown via "/"
@@ -73,7 +76,7 @@ class CtxApp(App):
 
     def on_mount(self) -> None:
         t = self.query_one("#table", DataTable)
-        t.add_columns(" ", "session", "age", "repo@branch", "title / last prompt", "waiting")
+        t.add_columns(" ", "age", "session")
         self.title = "ctxswitch"
         t.focus()
         self.refresh_data()
@@ -99,7 +102,7 @@ class CtxApp(App):
         self.change = change
         self.hosts = hosts
         self.sessions = sessions
-        self.sub_title = f"host: {self.host_filter or 'all'} · {len(sessions)} sessions · change {change}"
+        self.sub_title = f"{self.host_filter or 'all'} · {sum(1 for x in sessions if fmt.session_state(x) != 'ended')} live"
         self.render_attention(attention)
         self.render_table()
         self.render_detail()
@@ -128,16 +131,16 @@ class CtxApp(App):
         if not items:
             w.update(Text("nothing needs you", style="dim")); w.add_class("empty"); return
         w.remove_class("empty")
+        width = max(20, self.size.width - 4)
         t = Text()
-        for i in items[:6]:
-            label = f"[{i['kind']}] {fmt.one_line(i['text'], 70)}" if i["item"] == "ask" else "idle — finished its turn"
-            t.append(f"◐ {fmt.age(i.get('asked_at'), now):>5} ", style="bold yellow")
-            t.append(f"{i['host_id']}/{fmt.HARNESS.get(i['harness'], i['harness'])} ", style="dim")
-            t.append(f"{fmt.one_line(i.get('title'), 30):<30} ", style="bold")
-            t.append(label + "\n")
-        if len(items) > 6:
-            t.append(f"… {len(items) - 6} more", style="dim")
-        w.update(t)
+        for i in items[:4]:
+            head = f"◐{fmt.age(i.get('asked_at'), now):>5} "
+            t.append(head, style="bold yellow")
+            label = f"{fmt.one_line(i.get('title'), 18)}: " + (fmt.one_line(i['text'], 200) if i["item"] == "ask" else "idle")
+            t.append(fmt.one_line(label, width - len(head)) + "\n")
+        if len(items) > 4:
+            t.append(f"… {len(items) - 4} more", style="dim")
+        w.update(t.rstrip())
 
     def _visible(self) -> list[dict]:
         out = []
@@ -151,27 +154,43 @@ class CtxApp(App):
             out.append(s)
         return out
 
+    def _label_width(self) -> int:
+        return max(16, self.size.width - 14)          # glyph + age columns + paddings + scrollbar
+
     def render_table(self) -> None:
         t = self.query_one("#table", DataTable)
         now = datetime.now(timezone.utc)
         prev = self.selected
+        width = self._label_width()
         t.clear()
-        for s in self._visible():
+        visible = self._visible()
+        for s in visible:
             st = fmt.session_state(s)
             last = s.get("last_turn") or {}
             asks = s.get("open_asks") or []
             when = s.get("status_since") if s.get("live_status") in ("busy", "idle") else s.get("last_activity")
             style = STATE_STYLE.get(st, "")
-            t.add_row(Text(fmt.state_glyph(s), style=style), Text(fmt.short_key(s), style=style), fmt.age(when, now),
-                      fmt.one_line(fmt.repo_label(s), 22), fmt.one_line(s.get("title") or last.get("user_text"), 48),
-                      fmt.age(asks[0].get("asked_at"), now) if asks else "", key=s["key"])
-        if prev and prev in [s["key"] for s in self._visible()]:
+            where = f"{fmt.HARNESS.get(s.get('harness',''), s.get('harness',''))}·{s.get('host_id','?')}"
+            if self.host_filter:                       # host is implied by the filter
+                where = fmt.HARNESS.get(s.get("harness", ""), s.get("harness", ""))
+            label = Text()
+            label.append(f"{where} ", style="dim")
+            label.append(fmt.one_line(fmt.repo_label(s), 18) + " ", style="dim" if st in ("ended", "unknown") else "")
+            rest = width - len(label.plain)
+            label.append(fmt.one_line(s.get("title") or last.get("user_text"), max(8, rest)), style=style)
+            if asks:
+                label.append(f" ◐{fmt.age(asks[0].get('asked_at'), now)}", style="bold yellow")
+            t.add_row(Text(fmt.state_glyph(s), style=style), Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"])
+        if prev and prev in [s["key"] for s in visible]:
             try:
                 t.move_cursor(row=t.get_row_index(prev))
             except Exception:                           # noqa: BLE001
                 pass
-        elif t.row_count:
-            self.selected = str(t.get_row_at(0)[1]) and self._visible()[0]["key"]
+        elif visible:
+            self.selected = visible[0]["key"]
+
+    def on_resize(self) -> None:
+        self.render_table()
 
     def on_data_table_row_highlighted(self, ev: DataTable.RowHighlighted) -> None:
         if ev.row_key is not None and ev.row_key.value != self.selected:
@@ -199,28 +218,30 @@ class CtxApp(App):
         now = datetime.now(timezone.utc)
         st = fmt.session_state(s)
         t = Text()
-        t.append(f"{fmt.state_glyph(s)} {s['key']}\n", style="bold")
-        t.append(f"{st} since {fmt.age(s.get('status_since') or s.get('last_activity'), now)}", style=STATE_STYLE.get(st, ""))
-        t.append(f" · {s.get('turn_count')} exchanges · started {fmt.age(s.get('started_at'), now)} ago", style="dim")
+        t.append(f"{fmt.state_glyph(s)} {s.get('title') or '-'}\n", style="bold")
+        t.append(f"{st} {fmt.age(s.get('status_since') or s.get('last_activity'), now)}", style=STATE_STYLE.get(st, ""))
+        t.append(f" · {s.get('turn_count')} exch · {fmt.age(s.get('started_at'), now)} old", style="dim")
         if s.get("last_viewed_at"):
-            t.append(f" · viewed {fmt.age(s['last_viewed_at'], now)} ago", style="dim")
+            t.append(f" · seen {fmt.age(s['last_viewed_at'], now)}", style="dim")
         t.append("\n")
-        t.append(f"{s.get('title') or '-'}\n", style="bold")
-        t.append(f"{s.get('cwd') or '-'}  {fmt.repo_label(s)}  {s['meta'].get('model') or ''}  {s['meta'].get('permission_mode') or ''}\n\n", style="dim")
+        t.append(f"{fmt.short_key(s)} {fmt.repo_label(s)}\n", style="dim")
+        t.append(f"{s.get('cwd') or '-'}\n", style="dim")
+        model = (s['meta'].get('model') or '').rsplit('/', 1)[-1]
+        t.append(f"{model} {s['meta'].get('permission_mode') or ''}\n\n", style="dim")
         opens = [x for x in s.get("asks", []) if not x["answered"]]
         if opens:
             t.append("WAITING ON YOU\n", style="bold yellow")
             for x in opens:
-                t.append(f"  ◐ [{x['kind']}] {x['text']}\n", style="yellow")
-                t.append(f"     waiting {fmt.age(x.get('asked_at'), now)}\n", style="dim")
+                t.append(f"◐ {fmt.age(x.get('asked_at'), now)} [{x['kind']}] ", style="yellow")
+                t.append(x['text'] + "\n")
             t.append("\n")
         turns = s.get("turns", [])
         if turns:
             last = turns[-1]
             t.append("LAST EXCHANGE\n", style="bold")
-            t.append(f"  you  : {fmt.one_line(last.get('user_text'), 400)}\n")
+            t.append("you: ", style="bold"); t.append(fmt.one_line(last.get('user_text'), 400) + "\n")
             if last.get("assistant_text"):
-                t.append(f"  agent: {fmt.one_line(last.get('assistant_text'), 600)}\n")
+                t.append("agent: ", style="bold"); t.append(fmt.one_line(last.get('assistant_text'), 700) + "\n")
             tally = {k: v for k, v in (last.get("tally") or {}).items() if v}
             if tally or last.get("events"):
                 t.append("  " + ", ".join(f"{v} {k}" for k, v in tally.items()) + ("  " + " ".join(last.get("events", [])) if last.get("events") else "") + "\n", style="dim")
@@ -231,16 +252,16 @@ class CtxApp(App):
         if answered:
             t.append("DECISIONS\n", style="bold")
             for x in answered[-6:]:
-                t.append(f"  ✓ {fmt.one_line(x['text'], 60)}\n", style="dim")
-                t.append(f"    → {fmt.one_line(x.get('answer'), 90)}\n")
+                t.append(f"✓ {fmt.one_line(x['text'], 120)}\n", style="dim")
+                t.append(f"  → {fmt.one_line(x.get('answer'), 160)}\n")
             t.append("\n")
         if len(turns) > 1:
             t.append("EARLIER\n", style="bold")
             for tr in turns[-7:-1][::-1]:
-                t.append(f"  #{tr['idx']} {fmt.age(tr.get('started_at'), now):>5} ", style="dim")
-                t.append(f"{fmt.one_line(tr.get('user_text'), 90)}\n")
+                t.append(f"#{tr['idx']} {fmt.age(tr.get('started_at'), now)} ", style="dim")
+                t.append(f"{fmt.one_line(tr.get('user_text'), 120)}\n")
                 if tr.get("assistant_text"):
-                    t.append(f"        ↳ {fmt.one_line(tr.get('assistant_text'), 90)}\n", style="dim")
+                    t.append(f"  ↳ {fmt.one_line(tr.get('assistant_text'), 120)}\n", style="dim")
         w.update(t)
 
     # -- actions --------------------------------------------------------------------------------------------------

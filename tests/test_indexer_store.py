@@ -107,7 +107,7 @@ def test_store_ingest_idempotent_and_attention(tmp_path):
     assert store.attention() == []
     # liveness snapshot: a session missing from the snapshot becomes unknown; idle shows in attention
     store.set_liveness("laptop", [])
-    assert store.sessions()[0]["live_status"] == "unknown"
+    assert store.sessions()[0]["live_status"] == "ended"          # Claude: gone from the registry = exited
     store.set_liveness("laptop", [{"key": key, "status": "idle", "status_since": "2026-10-28T10:02:00Z", "pid": 5, "socket": "/s"}])
     assert store.attention()[0]["item"] == "idle"
     # placeholder for a live session whose transcript isn't indexed yet

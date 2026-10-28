@@ -47,6 +47,8 @@ class ClaudeParser:
     def from_state(cls, st: dict[str, Any], max_text: int = 4000) -> "ClaudeParser":
         p = cls(max_text)
         p.meta = st["meta"]; p._n = st["n"]; p._tools = st["tools"]; p._pending_events = st["pending"]
+        if str(p.meta.get("first_prompt", "")).startswith("<"):      # cached from before the wrapper filter
+            p.meta.pop("first_prompt")
         p.bad_lines = st["bad"]
         p._cur = Turn.from_dict(st["cur"]) if st["cur"] else None
         return p
@@ -143,8 +145,10 @@ class ClaudeParser:
                          user_text=trim(text, self.max_text), user_origin=origin, assistant_text="",
                          events=events, offset_end=offset_end)
         self._n += 1
-        if not self.meta.get("title") and origin == "human" and not m:
-            self.meta["first_prompt"] = trim(text.strip().splitlines()[0] if text.strip() else "", 120)
+        first = text.strip().splitlines()[0] if text.strip() else ""
+        if (not self.meta.get("first_prompt") and origin == "human" and not m and first
+                and not first.startswith(("<local-command", "<command-", "<bash-"))):
+            self.meta["first_prompt"] = trim(first, 120)
 
     def _user(self, e: dict[str, Any], offset_end: int) -> None:
         if e.get("isSidechain"):
