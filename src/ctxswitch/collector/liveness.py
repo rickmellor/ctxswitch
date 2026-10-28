@@ -50,7 +50,7 @@ def read_claude_registry(sessions_dir: Path, host_id: str, proc: str = "/proc") 
             continue
         if proc_start(pid, proc) != str(d.get("procStart")):
             continue
-        status = d.get("status") if d.get("status") in ("busy", "idle") else "unknown"
+        status = d.get("status") if d.get("status") in ("busy", "idle", "shell") else "unknown"
         out[session_key(host_id, "claude", sid)] = Liveness(
             key=session_key(host_id, "claude", sid), status=status,
             status_since=_iso_ms(d.get("statusUpdatedAt") or d.get("updatedAt")), pid=pid,

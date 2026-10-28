@@ -114,6 +114,10 @@ def test_store_ingest_idempotent_and_attention(tmp_path):
     store.set_liveness("laptop", [{"key": "laptop/claude/s2", "status": "busy", "status_since": None, "pid": 6, "socket": None}])
     keys = {x["key"] for x in store.sessions()}
     assert "laptop/claude/s2" in keys and store.sessions(host="laptop", include_ended=False)[0]["key"] == "laptop/claude/s2"
+    # once it is no longer live, a session with no exchanges disappears from listings
+    store.set_liveness("laptop", [{"key": key, "status": "shell", "status_since": None, "pid": 5, "socket": "/s"}])
+    assert "laptop/claude/s2" not in {x["key"] for x in store.sessions()}
+    assert store.sessions()[0]["live_status"] == "shell"
     store.upsert_session(dict(meta, ended=True))
     assert store.session(key)["live_status"] == "ended"
     store.mark_viewed(key, "2026-10-28T11:00:00Z")

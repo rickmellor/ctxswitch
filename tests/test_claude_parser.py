@@ -100,12 +100,12 @@ def test_skips_sidechain_meta_and_marks_peer_compaction_and_commands():
     p = feed_all(ClaudeParser(), rows)
     p.finish()
     turns = p.drain()
-    assert [t.user_origin for t in turns] == ["human", "peer"]
-    assert "slash_command:/compact" in turns[0].events and turns[0].events.count("compaction") == 2
-    assert "meta_input" in turns[0].events
-    assert turns[0].assistant_text == ""                        # sidechain reply did not leak in
-    assert turns[1].user_text == "ctxswitch spike ping" and turns[1].assistant_text == "ack"
-    assert "api_error" in turns[1].events
+    # the /compact wrapper is an operator action: it opens no turn, its events ride on the next prompt's turn
+    assert [t.user_origin for t in turns] == ["peer"]
+    ev = turns[0].events
+    assert "slash_command:/compact" in ev and ev.count("compaction") == 2 and "meta_input" in ev
+    assert turns[0].user_text == "ctxswitch spike ping" and turns[0].assistant_text == "ack"   # no sidechain leak
+    assert "api_error" in ev
 
 
 def test_state_roundtrip_mid_turn():
@@ -119,11 +119,20 @@ def test_state_roundtrip_mid_turn():
     assert p2.current.offset_end == 300
 
 
-def test_first_prompt_skips_command_output_and_wrappers():
+def test_exit_only_session_has_no_turns_and_bash_input_is_a_turn():
     rows = [
-        user("<local-command-stdout>See ya!</local-command-stdout>", "2026-10-28T10:00:00Z"),
-        user("<bash-input>ls</bash-input>", "2026-10-28T10:00:01Z"),
-        user("real first ask\nsecond line", "2026-10-28T10:00:02Z"),
+        user("<local-command-caveat>Caveat: generated</local-command-caveat>", "2026-10-28T10:00:00Z"),
+        user("<command-name>/exit</command-name><command-message>exit</command-message>", "2026-10-28T10:00:01Z"),
+        user("<local-command-stdout>See ya!</local-command-stdout>", "2026-10-28T10:00:02Z"),
+    ]
+    p = feed_all(ClaudeParser(), rows); p.finish()
+    assert p.drain() == [] and p.current is None and "first_prompt" not in p.meta
+    rows = [
+        user("<bash-input>hostname</bash-input>", "2026-10-28T10:00:03Z"),     # `!` shell input: the agent replies to it
+        assistant([text("That's the Windows name.")], "2026-10-28T10:00:04Z"),
+        user("real first ask\nsecond line", "2026-10-28T10:00:05Z"),
     ]
     p = feed_all(ClaudeParser(), rows)
+    t0 = p.drain()[0]
+    assert t0.user_text.startswith("<bash-input>") and t0.assistant_text == "That's the Windows name."
     assert p.meta["first_prompt"] == "real first ask"

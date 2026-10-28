@@ -126,6 +126,12 @@ class ClaudeParser:
         self._cur = None
 
     def _open(self, e: dict[str, Any], text: str, origin: str, offset_end: int) -> None:
+        stripped = text.lstrip()
+        m = _CMD.search(text)
+        if m:                                                # "/compact", "/model" …: an operator action, not a prompt
+            self._event(f"slash_command:{m.group(1)}", offset_end, e.get("timestamp")); return
+        if stripped.startswith(("<local-command-stdout>", "<local-command-caveat>")):
+            return                                           # output of such a command; nothing to track
         if self._cur is not None:
             # a new prompt answers any plain question left open by the previous turn
             for a in self._cur.asks:
@@ -138,16 +144,12 @@ class ClaudeParser:
                 if a.kind == "plain" and not a.answered:
                     a.answered, a.answer, a.answered_at = True, trim(text, 400), e.get("timestamp")
         events = self._pending_events; self._pending_events = []
-        m = _CMD.search(text)
-        if m:
-            events.append(f"slash_command:{m.group(1)}")
         self._cur = Turn(idx=self._n, started_at=e.get("timestamp") or "", ended_at=e.get("timestamp"),
                          user_text=trim(text, self.max_text), user_origin=origin, assistant_text="",
                          events=events, offset_end=offset_end)
         self._n += 1
         first = text.strip().splitlines()[0] if text.strip() else ""
-        if (not self.meta.get("first_prompt") and origin == "human" and not m and first
-                and not first.startswith(("<local-command", "<command-", "<bash-"))):
+        if not self.meta.get("first_prompt") and origin == "human" and first and not first.startswith("<"):
             self.meta["first_prompt"] = trim(first, 120)
 
     def _user(self, e: dict[str, Any], offset_end: int) -> None:

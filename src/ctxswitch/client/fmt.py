@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-GLYPH = {"busy": "●", "idle": "○", "unknown": "◌", "ended": "–"}
+GLYPH = {"busy": "●", "idle": "○", "shell": "$", "unknown": "◌", "ended": "–"}
 HARNESS = {"claude": "cc", "pi": "pi", "claude-win": "cw"}
 
 
@@ -33,8 +33,16 @@ def one_line(text: str | None, width: int) -> str:
     return t if len(t) <= width else t[: width - 1] + "…"
 
 
+def display_title(s: dict) -> str:
+    """Title, else the last real prompt; command wrappers never make a title."""
+    if s.get("title"):
+        return s["title"]
+    last = (s.get("last_turn") or {}).get("user_text") or ""
+    return "" if last.lstrip().startswith("<") else last
+
+
 def session_state(s: dict) -> str:
-    """busy / waiting(<ask kind>) / idle / unknown / ended."""
+    """busy / waiting / idle / shell / unknown / ended."""
     st = s.get("live_status", "unknown")
     if s.get("ended") and st not in ("busy", "idle"):
         return "ended"

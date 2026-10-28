@@ -41,9 +41,9 @@ def cmd_ls(a) -> int:
         last = s.get("last_turn") or {}
         asks = s.get("open_asks") or []
         wait = f" waiting {fmt.age(asks[0].get('asked_at'), now)}" if asks else ""
-        when = s.get("status_since") if s.get("live_status") in ("busy", "idle") else s.get("last_activity")
+        when = s.get("status_since") if s.get("live_status") in ("busy", "idle", "shell") else s.get("last_activity")
         print(f"{fmt.state_glyph(s)} {fmt.short_key(s):<28} {fmt.age(when, now):>6} {fmt.one_line(fmt.repo_label(s), 24):<24} "
-              f"{fmt.one_line(s.get('title') or last.get('user_text'), 50)}{wait}")
+              f"{fmt.one_line(fmt.display_title(s), 50)}{wait}")
     return 0
 
 

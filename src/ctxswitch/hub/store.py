@@ -119,7 +119,7 @@ class Store:
                     continue
                 if r["harness"] == "claude":
                     self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, updated=? WHERE key=?", (now, r["key"]))
-                elif r["live_status"] in ("busy", "idle"):
+                elif r["live_status"] in ("busy", "idle", "shell"):
                     self.db.execute("UPDATE sessions SET live_status='unknown', pid=NULL, socket=NULL, updated=? WHERE key=?", (now, r["key"]))
             self._bump()
 
@@ -137,10 +137,11 @@ class Store:
         if host:
             cond.append("host_id=?"); args.append(host)
         if not include_ended:
-            cond.append("live_status IN ('busy','idle')")
-        if cond:
-            q += " WHERE " + " AND ".join(cond)
-        q += " ORDER BY CASE live_status WHEN 'busy' THEN 0 WHEN 'idle' THEN 1 WHEN 'unknown' THEN 2 ELSE 3 END, last_activity DESC LIMIT ?"
+            cond.append("live_status IN ('busy','idle','shell')")
+        # sessions that never had an exchange (e.g. opened and /exit'd) are noise unless they are live right now
+        cond.append("(live_status IN ('busy','idle','shell') OR EXISTS (SELECT 1 FROM turns t WHERE t.key=sessions.key))")
+        q += " WHERE " + " AND ".join(cond)
+        q += " ORDER BY CASE live_status WHEN 'busy' THEN 0 WHEN 'shell' THEN 1 WHEN 'idle' THEN 1 WHEN 'unknown' THEN 2 ELSE 3 END, last_activity DESC LIMIT ?"
         args.append(limit)
         out = []
         for r in self.db.execute(q, args):

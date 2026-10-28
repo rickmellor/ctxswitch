@@ -30,7 +30,7 @@ from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
 
-STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "unknown": "dim", "ended": "dim"}
+STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
 
 
 class CtxApp(App):
@@ -168,7 +168,7 @@ class CtxApp(App):
             st = fmt.session_state(s)
             last = s.get("last_turn") or {}
             asks = s.get("open_asks") or []
-            when = s.get("status_since") if s.get("live_status") in ("busy", "idle") else s.get("last_activity")
+            when = s.get("status_since") if s.get("live_status") in ("busy", "idle", "shell") else s.get("last_activity")
             style = STATE_STYLE.get(st, "")
             where = f"{fmt.HARNESS.get(s.get('harness',''), s.get('harness',''))}·{s.get('host_id','?')}"
             if self.host_filter:                       # host is implied by the filter
@@ -177,7 +177,7 @@ class CtxApp(App):
             label.append(f"{where} ", style="dim")
             label.append(fmt.one_line(fmt.repo_label(s), 18) + " ", style="dim" if st in ("ended", "unknown") else "")
             rest = width - len(label.plain)
-            label.append(fmt.one_line(s.get("title") or last.get("user_text"), max(8, rest)), style=style)
+            label.append(fmt.one_line(fmt.display_title(s) or "(no prompt yet)", max(8, rest)), style=style)
             if asks:
                 label.append(f" ◐{fmt.age(asks[0].get('asked_at'), now)}", style="bold yellow")
             t.add_row(Text(fmt.state_glyph(s), style=style), Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"])
@@ -218,7 +218,7 @@ class CtxApp(App):
         now = datetime.now(timezone.utc)
         st = fmt.session_state(s)
         t = Text()
-        t.append(f"{fmt.state_glyph(s)} {s.get('title') or '-'}\n", style="bold")
+        t.append(f"{fmt.state_glyph(s)} {fmt.display_title(s) or '-'}\n", style="bold")
         t.append(f"{st} {fmt.age(s.get('status_since') or s.get('last_activity'), now)}", style=STATE_STYLE.get(st, ""))
         t.append(f" · {s.get('turn_count')} exch · {fmt.age(s.get('started_at'), now)} old", style="dim")
         if s.get("last_viewed_at"):

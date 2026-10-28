@@ -12,7 +12,7 @@ from typing import Any, Literal
 Harness = Literal["claude", "pi", "claude-win"]
 AskKind = Literal["question", "plan", "permission", "plain"]      # plain = final text ending in "?" (heuristic)
 UserOrigin = Literal["human", "peer", "task", "meta", "unknown"]
-LiveStatus = Literal["busy", "idle", "ended", "unknown"]
+LiveStatus = Literal["busy", "idle", "shell", "ended", "unknown"]
 
 
 def session_key(host_id: str, harness: str, session_id: str) -> str:
