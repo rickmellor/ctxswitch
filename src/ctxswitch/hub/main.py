@@ -19,6 +19,7 @@ def main() -> None:
     a = ap.parse_args()
     cfg = load()
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)       # one INFO line per seat call otherwise
     db = a.db or cfg.hub.db_path or str(data_dir() / "hub.db")
     hub = Hub(Store(db), a.token if a.token is not None else cfg.hub.token)
     if cfg.hub.recap and not a.no_recap and cfg.seats:
