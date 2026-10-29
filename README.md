@@ -292,8 +292,9 @@ queued or sent, the hub refuses the reply (409), so two machines can't both answ
 ### Pop-ups
 When something new needs you (a question, approval or dialog), the TUI shows one line in the tmux status line for
 8 s: `ctx · host · title: the question`. Only what's new since the TUI started pops up, and not for the session
-already on the left. Each TUI pops up on its own machine. Turn it off with `notify = false`. Set
-`notify_idle = true` for a pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its own toast.
+already on the left (that one pops up when you move off it with the question still open). Each TUI pops up on
+its own machine. Turn it off with `notify = false`. Set `notify_idle = true` for a pop-up when an agent finishes
+its turn as well. Outside tmux the TUI shows its own toast.
 
 ## 8. Command line
 | Command | Shows |

@@ -189,7 +189,11 @@ def test_notifier_pops_up_only_what_is_new():
     assert n.fresh([a, b, idle, wait]) == [b, wait]                  # an agent that only finished: not by default
     assert n.fresh([a, b, idle, wait]) == []
     assert n.fresh([a]) == [] and n.fresh([a, b]) == [b]             # it left, then asked again
-    assert n.fresh([a, b, _item("k5", "r5")], skip="k5") == []       # it's on screen
+    c = _item("k5", "r5")
+    assert n.fresh([a, b, c], skip="k5") == []                       # it's on screen
+    assert n.fresh([a, b, c], skip="k5") == []
+    assert n.fresh([a, b, c], skip="k1") == [c]                      # moved off it, still open: now it pops up
+    assert n.fresh([a, b, c], skip="k5") == [] and n.fresh([a, b, c]) == []     # once
     m = Notifier(idle=True); m.fresh([])
     assert m.fresh([idle]) == [idle]
     assert text([b, wait]) == "ctx · devbox · T: Q?  (+1 more)"

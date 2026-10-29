@@ -32,7 +32,9 @@ class Notifier:
             self.seen = set(ids); return []
         new = [i for k, i in ids.items() if k not in self.seen
                and (i.get("item") != "idle" or self.idle) and i.get("key") != skip]
-        self.seen = set(ids)                             # forget what left, so the same session can pop up again
+        # forget what left, so the same session can pop up again; what was skipped on screen stays unseen, so it
+        # pops up once you move off it with the question still open
+        self.seen = {k for k, i in ids.items() if k in self.seen or i.get("key") != skip}
         return new
 
 
