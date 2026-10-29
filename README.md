@@ -290,8 +290,8 @@ queued or sent, the hub refuses the reply (409), so two machines can't both answ
 (`ctx send --cancel <id>`) to answer differently.
 
 ### Pop-ups
-When something new needs you (a question, approval or dialog), the TUI shows one line in the tmux status line for
-8 s: `ctx · host · title: the question`. What's already waiting when the TUI starts pops up once, as one line
+When something new needs you (a question, approval or dialog), the TUI shows one line in place of the tmux status
+line for 8 s: `ctx · host · title: the question`. What's already waiting when the TUI starts pops up once, as one line
 (`+N more`). Nothing pops up for the session already on the left; that one pops up when you move off it with the
 question still open. Each TUI pops up on its own machine. Every attempt is logged to
 `~/.local/state/ctxswitch/popup.log`. Turn it off with `notify = false`. Set `notify_idle = true` for a pop-up
@@ -344,7 +344,7 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | a message stays `→` sent | Claude in plan or bypass mode holds it for approval in its terminal. pi: it's still busy with the run before |
 | a message to a live pi session stays `…` queued | that pi process predates the extension's message socket; restart it (`/exit`, then Enter) |
 | `a` says "answer it in the session" | it's a dialog (permission, plan, AskUserQuestion, pi prompt); Enter opens it |
-| no pop-ups | the TUI runs in tmux and `notify` is on; they're only for what's new since the TUI started. Check `tmux display-message hi` shows |
+| no pop-ups | the TUI runs in tmux and `notify` is on; `~/.local/state/ctxswitch/popup.log` lists each one sent. Check `tmux display-message -N -d 5000 hi` replaces the status line for 5 s |
 | two sessions on one repo aren't grouped | different branches, or no remote (a remote-less checkout only matches itself). pi: the branch is read from the checkout's HEAD |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |

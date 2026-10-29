@@ -82,8 +82,8 @@ Greenfield repo: `~/repos/ctxswitch`.
   `via=ctx` the plain asks it answered (same `answered_at`) get your body instead, and a replayed batch keeps it
   (the upsert keeps the hub's answer for the same answering event). The message row keeps `ask_ref`, so the
   thread shows `re "<question>"`.
-- 2026-10-29 (Phase 4): pop-ups are client-side and tmux-only for now (`tmux display-message -d 8000`, `#`
-  doubled): each TUI diffs the hub's attention list against what it has seen, pops up what's already waiting once at
+- 2026-10-29 (Phase 4): pop-ups are client-side and tmux-only for now (`tmux display-message -N -d 8000`: `-N`
+  because mouse motion counts as a key and clears it; `#` doubled): each TUI diffs the hub's attention list against what it has seen, pops up what's already waiting once at
   start, skips the session on the left (leaving it unseen, so it pops up when you move off it), and forgets items that leave so a session can pop
   up again. Asks and dialogs by default; an agent that only finished its turn with `notify_idle`. No desktop
   toasts (Windows) and no hub `attention.new` event: the client diff is enough while the TUI is open. "Since you

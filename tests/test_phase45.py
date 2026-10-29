@@ -207,6 +207,6 @@ def test_tmux_popup_escapes_formats():
     class R:
         returncode = 0
     assert tmux_popup("use #{pane_id} and #[fg=red]", run=lambda argv, **kw: calls.append(argv) or R())
-    assert calls == [["tmux", "display-message", "-d", "8000", "use ##{pane_id} and ##[fg=red]"]]
+    assert calls == [["tmux", "display-message", "-N", "-d", "8000", "use ##{pane_id} and ##[fg=red]"]]
     R.returncode = 1
     assert not tmux_popup("x", run=lambda argv, **kw: R())

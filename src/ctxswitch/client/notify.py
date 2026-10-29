@@ -49,9 +49,11 @@ def text(new: list[dict]) -> str:
 
 
 def tmux_popup(msg: str, run=subprocess.run) -> bool:
-    """display-message expands #{…} and #[…], so every # is doubled; argv, no shell. rc 0 even with no client attached
+    """display-message expands #{…} and #[…], so every # is doubled; argv, no shell. -N: any key event clears a
+    message, and with the mouse on, motion over a mouse-tracking pane (the Textual board) is one, so without it the
+    pop-up flashes and is gone. rc 0 even with no client attached
     (the message goes nowhere), so this only catches a missing or refusing tmux."""
-    r = run(["tmux", "display-message", "-d", str(SHOW_MS), msg.replace("#", "##")], capture_output=True, text=True)
+    r = run(["tmux", "display-message", "-N", "-d", str(SHOW_MS), msg.replace("#", "##")], capture_output=True, text=True)
     return r.returncode == 0
 
 
