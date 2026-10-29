@@ -40,7 +40,7 @@ in one narrow side panel next to whatever you are doing.
 ## How it works
 ```
  each machine                         hub (one, e.g. a docker host)          any machine
- ctx-collector ── HTTPS POST ──────►  ctx-hub: SQLite + REST API   ◄──────  ctx tui / ctx ls / ctx show
+ ctx-collector ── HTTP POST ───────►  ctx-hub: SQLite + REST API   ◄──────  ctx tui / ctx ls / ctx show
    watches ~/.claude/projects          recap tracker ──► local LLM seat
    and ~/.pi/agent/sessions            (OpenAI-compatible endpoint)
    + live-session registries
