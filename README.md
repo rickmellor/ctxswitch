@@ -291,13 +291,15 @@ queued or sent, the hub refuses the reply (409), so two machines can't both answ
 (`ctx send --cancel <id>`) to answer differently.
 
 ### Pop-ups
-When something new needs you (a question, approval or dialog), the TUI opens a box in the middle of the screen,
-over every pane, listing what's waiting (`host · title: the question`). Enter opens the session it names, as Enter
+When something new needs you (a question, approval or dialog), the TUI opens a yellow box in the middle of the
+screen, over every pane, listing what's waiting (`host · title: the question`). Enter opens the session it names, as Enter
 on its row does (the first one if it lists several; `1`-`6` pick one). Any other key closes it, and that key goes to
 the box, not to the pane underneath. While the box is open, anything newer shows in place of the tmux status line for
 8 s instead (tmux shows one box at a time). With `notify_style = "status"` every pop-up is that status line.
 
-What's already waiting when the TUI starts pops up once. Nothing pops up for the session already on the left; that
+It waits 2 s after a change first, so the box shows the question rather than "waiting on a dialog" (Claude reports
+the dialog a moment before its text). Each session pops up once while it waits: the permission notice that follows a
+question doesn't pop up again. What's already waiting when the TUI starts pops up once. Nothing pops up for the session already on the left; that
 one pops up when you move off it with the question still open. Each TUI pops up on its own machine. Every attempt is
 logged to `~/.local/state/ctxswitch/popup.log`. `n` on the board turns pop-ups off (and on again) for that run;
 what turns up while they're off stays on the board and doesn't pop up later. `notify = false` starts with them off. Set `notify_idle = true` for a

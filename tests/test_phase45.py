@@ -205,6 +205,30 @@ def test_notifier_pops_up_only_what_is_new():
     assert text([wait]).endswith("T: waiting on a dialog") and text([idle]).endswith("finished, your turn")
 
 
+def test_notifier_pops_up_a_session_once_with_what_says_most():
+    n = Notifier()
+    wait, ask = _item("k1", item="waiting", at="t1"), _item("k1", "llm:3:0", txt="Which one?")
+    perm = _item("k1", "hook:notif:9", txt="Claude needs your permission")
+    assert n.fresh([wait, perm, ask]) == [ask]                       # its question, not "waiting on a dialog"
+    assert n.fresh([wait, perm]) == [] and n.fresh([perm, ask, wait]) == []
+    m = Notifier()
+    assert m.fresh([wait, perm]) == [perm] and m.fresh([wait]) == []
+    assert m.fresh([wait, perm, ask]) == []                          # popped already, still waiting: same thing
+    assert m.fresh([]) == [] and m.fresh([ask]) == [ask]             # left (answered), asked again
+    o = Notifier()
+    assert o.fresh([wait, _item("k2", "r2")]) == [wait, _item("k2", "r2")]
+
+
+def test_popup_waits_for_the_question_to_settle(monkeypatch):
+    b, seen = _board()
+    timers = []
+    b.set_timer = lambda t, f: timers.append(t)
+    b.popup_now = None
+    tui.CtxApp.popup(b, [_item("k1", item="waiting")])
+    tui.CtxApp.popup(b, [_item("k1", item="waiting"), _item("k1", "r1")])
+    assert timers == [2.0] and b.attention[-1]["ref"] == "r1"         # one timer; it sees the latest list
+
+
 def test_tmux_popup_escapes_formats():
     calls = []
 
@@ -228,6 +252,7 @@ def test_tmux_box_shows_the_items_until_a_key():
     ((argv, kw),) = calls
     assert argv[:3] == ["tmux", "display-popup", "-E"] and argv[-1] == BOX_CMD     # started, not waited on
     assert argv[argv.index("-T") + 1] == " ctx: waiting on you "
+    assert argv[argv.index("-s") + 1] == argv[argv.index("-S") + 1] == "fg=yellow"   # text and border
     assert argv[argv.index("-e") + 1] == "CTX_POPUP=devbox · T: Q0?\n\nEnter opens it · any other key closes"
     assert int(argv[argv.index("-h") + 1]) == 3 + 2                   # 3 lines + the border
     assert int(argv[argv.index("-w") + 1]) == len("Enter opens it · any other key closes") + 4
@@ -240,12 +265,12 @@ def test_box_command_prints_exactly_the_text_and_says_which_key():
                            env=os.environ | {"CTX_POPUP": "a $HOME `x`\nb"})
         return r.returncode, r.stdout
     assert press("\n") == (OPEN_RC, "a $HOME `x`\nb")                # no trailing newline, nothing expanded
-    assert [press(k)[0] for k in ("2", "6", " ", "x", "7", "")] == [OPEN_RC + 1, OPEN_RC + 5, 0, 0, 0, 0]
+    assert [press(k)[0] for k in ("\r", "2", "6", " ", "x", "7", "")] == [OPEN_RC, OPEN_RC + 1, OPEN_RC + 5, 3, 3, 3, 0]
 
 
 def _board(popups=True):
     seen = []
-    b = SimpleNamespace(notifier=Notifier(), visible_key=None, popups=popups, box=None,
+    b = SimpleNamespace(notifier=Notifier(), visible_key=None, popups=popups, box=None, settling=False,
                         cfg=SimpleNamespace(notify_style="popup"), opened=seen, statused=seen,
                         open_key=lambda k: seen.append(("open", k)), status_popup=lambda m, ids: seen.append(("status", m)),
                         wait_box=lambda box, keys, msg: seen.append(("wait", keys)))
@@ -255,7 +280,7 @@ def _board(popups=True):
 def test_box_enter_opens_the_session_it_named(monkeypatch):
     b, seen = _board()
     monkeypatch.setattr(tui, "popup_log", lambda line: None)
-    for rc in (OPEN_RC, OPEN_RC + 1, OPEN_RC + 2, 0, 1):
+    for rc in (OPEN_RC, OPEN_RC + 1, OPEN_RC + 2, 0, 3, 1):
         tui.CtxApp.box_closed(b, rc, ["k1", "k2"], "m")
     assert seen == [("open", "k1"), ("open", "k2"), ("status", "m")]  # out of range or closed: nothing; no client: status
 
@@ -267,8 +292,10 @@ def test_popups_toggle_off_keeps_track_of_what_was_seen(monkeypatch):
     monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
     monkeypatch.setattr(tui, "tmux_box", lambda new: boxes.append(new) or SimpleNamespace(poll=lambda: None))
     a, c = _item("k1", "r1"), _item("k2", "r2")
-    tui.CtxApp.popup(b, [a])
+    b.attention = [a]
+    tui.CtxApp.popup_now(b)
     assert boxes == [] and seen == []                                 # off: nothing
     b.popups = True
-    tui.CtxApp.popup(b, [a, c])
+    b.attention = [a, c]
+    tui.CtxApp.popup_now(b)
     assert boxes == [[c]] and seen == [("wait", ["k2"])]              # on again: only what's new since

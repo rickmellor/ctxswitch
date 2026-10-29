@@ -15,14 +15,17 @@ from pathlib import Path
 from ctxswitch.client import fmt
 
 SHOW_MS = 8000
+SETTLE_S = 2.0                                           # wait this long after a change before popping up
 BOX_ITEMS = 6                                            # lines in a box before "+N more"
 OPEN_RC = 10                                             # box exit code for "open item 0"; 1 is tmux's "no client"
 BOX_W = 120
 # the box shows $CTX_POPUP (-e passes it through literally: no format or shell expansion) and closes on a key. No
 # trailing newline: the box has exactly one row per line, so one more scrolls the first line off. IFS= so a space is a
-# space, not an empty read that looks like Enter; EOF closes.
+# space, not an empty read that looks like Enter; Enter may arrive as CR (no icrnl) as well as LF. Another key exits
+# 3, so 0 means it closed without a key it read (EOF).
+BOX_STYLE = "fg=yellow"                                  # text and border: white on the default background is easy to miss
 BOX_CMD = ("""exec bash -c 'printf "%s" "$CTX_POPUP"; IFS= read -rsn1 k || exit 0; """
-           """case "$k" in "") exit 10;; [1-6]) exit $((9 + k));; esac; exit 0'""")
+           """case "$k" in ""|$'"'"'\\r'"'"') exit 10;; [1-6]) exit $((9 + k));; esac; exit 3'""")
 LOG = Path.home() / ".local/state/ctxswitch/popup.log"
 
 
@@ -33,20 +36,33 @@ def item_id(i: dict) -> str:
     return f"{i['key']}|{i.get('item')}|{i.get('asked_at')}"
 
 
+def _rank(i: dict) -> int:
+    """Which of a session's items says the most: its question, then a dialog's notification, then bare state."""
+    if i.get("item") == "ask":
+        return 1 if str(i.get("ref", "")).startswith("hook:") else 0
+    return 2 if i.get("item") == "waiting" else 3
+
+
 class Notifier:
     def __init__(self, idle: bool = False):
         self.idle = idle
         self.seen: set[str] = set()
 
     def fresh(self, items: list[dict], skip: str | None = None) -> list[dict]:
-        """Items not seen before; ``skip`` = the session on screen right now."""
+        """One item per session that has something not seen before (the one that says most); ``skip`` = the session
+        on screen right now. A session that already popped up and is still waiting doesn't pop up again for another
+        item about the same thing (the permission notification that follows a question)."""
         ids = {item_id(i): i for i in items}
-        new = [i for k, i in ids.items() if k not in self.seen
-               and (i.get("item") != "idle" or self.idle) and i.get("key") != skip]
+        popped = {i["key"] for k, i in ids.items() if k in self.seen}
+        best: dict[str, dict] = {}
+        for k, i in ids.items():
+            if (k not in self.seen and (i.get("item") != "idle" or self.idle) and i.get("key") != skip
+                    and i["key"] not in popped and (i["key"] not in best or _rank(i) < _rank(best[i["key"]]))):
+                best[i["key"]] = i
         # forget what left, so the same session can pop up again; what was skipped on screen stays unseen, so it
         # pops up once you move off it with the question still open
         self.seen = {k for k, i in ids.items() if k in self.seen or i.get("key") != skip}
-        return new
+        return list(best.values())
 
 
 def _line(i: dict, width: int = 120) -> str:
@@ -79,7 +95,7 @@ def tmux_box(new: list[dict], popen=subprocess.Popen):
     lines = box_lines(new)
     w, h = max(map(len, lines)) + 4, len(lines) + 2
     title = f" ctx: {len(new)} waiting on you " if len(new) > 1 else " ctx: waiting on you "
-    return popen(["tmux", "display-popup", "-E", "-w", str(w), "-h", str(h), "-T", title,
+    return popen(["tmux", "display-popup", "-E", "-w", str(w), "-h", str(h), "-T", title, "-s", BOX_STYLE, "-S", BOX_STYLE,
                   "-e", "CTX_POPUP=" + "\n".join(lines), BOX_CMD],
                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 

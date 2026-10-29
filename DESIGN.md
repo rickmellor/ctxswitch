@@ -87,7 +87,8 @@ Greenfield repo: `~/repos/ctxswitch`.
   box closes; a thread waits on it, and its exit code (10 + n, from Enter or a digit) says which session to open —
   tmux passes the popup command's status back to the client that ran it; no trailing newline, since the box has one
   row per line and one more scrolls the first away; tmux silently drops a second box while one is open, so the TUI
-  doesn't start one over its own; `n` turns pop-ups off for the run, still tracking what's seen), else
+  doesn't start one over its own; `n` turns pop-ups off for the run, still tracking what's seen; yellow via `-s`/`-S`;
+  2 s settle and one item per session, best first: question > hook notice > bare "waiting"), else
   `display-message -N -d 8000` (`-N` because mouse motion counts as a key and clears it; `#` doubled): each TUI diffs the hub's attention list against what it has seen, pops up what's already waiting once at
   start, skips the session on the left (leaving it unseen, so it pops up when you move off it), and forgets items that leave so a session can pop
   up again. Asks and dialogs by default; an agent that only finished its turn with `notify_idle`. No desktop

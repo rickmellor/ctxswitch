@@ -36,7 +36,7 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
-from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
+from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
@@ -90,6 +90,8 @@ class CtxApp(App):
         self.notifier = Notifier(cfg.notify_idle)
         self.popups = cfg.notify                     # n toggles it for this run; off still tracks what's been seen
         self.box = None                              # our open tmux popup box (a display-popup process), if any
+        self.attention: list[dict] = []              # the latest attention list, for the pop-up settle timer
+        self.settling = False
 
     def compose(self) -> ComposeResult:
         yield Static("", id="attention")
@@ -184,7 +186,16 @@ class CtxApp(App):
         w.update(t)
 
     def popup(self, attention: list[dict]) -> None:
-        new = self.notifier.fresh(attention, skip=self.visible_key)
+        """Pops up SETTLE_S after a change, from the attention list as it is then: a session reports "waiting" a moment
+        before its question's text arrives, and the box should show the question."""
+        self.attention = attention
+        if not self.settling:
+            self.settling = True
+            self.set_timer(SETTLE_S, self.popup_now)
+
+    def popup_now(self) -> None:
+        self.settling = False
+        new = self.notifier.fresh(self.attention, skip=self.visible_key)
         if not new or not self.popups:                  # off: what turns up meanwhile is on the board, not popped later
             return
         msg, ids = popup_text(new), [item_id(i) for i in new]
@@ -205,11 +216,11 @@ class CtxApp(App):
         self.call_from_thread(self.box_closed, rc, keys, msg, err)
 
     def box_closed(self, rc: int, keys: list[str], msg: str, err: str = "") -> None:
+        popup_log(f"box closed rc={rc} {keys} {err}".rstrip())      # 10+n Enter/digit, 3 another key, 0 EOF, 1 no client
         if 0 <= rc - OPEN_RC < len(keys):               # Enter (or 1-6): open what it named
             popup_log(f"box open {keys[rc - OPEN_RC]}")
             self.open_key(keys[rc - OPEN_RC])
-        elif not (rc == 0 or OPEN_RC <= rc < OPEN_RC + BOX_ITEMS):    # a key closed it; rc 1: no client to show it on
-            popup_log(f"box rc={rc} {err}")
+        elif rc not in (0, 3) and not OPEN_RC <= rc < OPEN_RC + BOX_ITEMS:   # rc 1: no client to show it on
             self.status_popup(msg, [])
 
     def open_key(self, key: str) -> None:
