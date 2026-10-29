@@ -84,7 +84,10 @@ Greenfield repo: `~/repos/ctxswitch`.
   thread shows `re "<question>"`.
 - 2026-10-29 (Phase 4): pop-ups are client-side and tmux-only for now: a `display-popup` box until a key (default;
   the text goes in via `-e`, which tmux passes literally; started, not waited on, since the command blocks until the
-  box closes; tmux silently drops a second box while one is open, so the TUI doesn't start one over its own), else
+  box closes; a thread waits on it, and its exit code (10 + n, from Enter or a digit) says which session to open —
+  tmux passes the popup command's status back to the client that ran it; no trailing newline, since the box has one
+  row per line and one more scrolls the first away; tmux silently drops a second box while one is open, so the TUI
+  doesn't start one over its own; `n` turns pop-ups off for the run, still tracking what's seen), else
   `display-message -N -d 8000` (`-N` because mouse motion counts as a key and clears it; `#` doubled): each TUI diffs the hub's attention list against what it has seen, pops up what's already waiting once at
   start, skips the session on the left (leaving it unseen, so it pops up when you move off it), and forgets items that leave so a session can pop
   up again. Asks and dialogs by default; an agent that only finished its turn with `notify_idle`. No desktop

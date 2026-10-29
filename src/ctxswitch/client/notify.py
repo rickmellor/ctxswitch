@@ -3,7 +3,8 @@
 The hub's attention list is the source; each TUI diffs it against what it has already seen, so a pop-up is per
 machine (config ``notify``). What's waiting when the TUI starts pops up once (one line, "+N more"). Questions and
 dialogs always pop up; an agent that merely finished its turn ("idle") only with ``notify_idle``. Each attempt is
-logged to ~/.local/state/ctxswitch/popup.log. ``notify_style``: "popup" (default) or "status".
+logged to ~/.local/state/ctxswitch/popup.log. ``notify_style``: "popup" (default) or "status". In the box, Enter opens
+the (first) session it names and 1-6 pick one; the box's exit code says which (OPEN_RC + index).
 """
 from __future__ import annotations
 
@@ -15,8 +16,13 @@ from ctxswitch.client import fmt
 
 SHOW_MS = 8000
 BOX_ITEMS = 6                                            # lines in a box before "+N more"
-# the box shows $CTX_POPUP (-e passes it through literally: no format or shell expansion) and closes on any key
-BOX_CMD = """exec bash -c 'printf "%s\\n" "$CTX_POPUP"; read -rsn1 _'"""
+OPEN_RC = 10                                             # box exit code for "open item 0"; 1 is tmux's "no client"
+BOX_W = 120
+# the box shows $CTX_POPUP (-e passes it through literally: no format or shell expansion) and closes on a key. No
+# trailing newline: the box has exactly one row per line, so one more scrolls the first line off. IFS= so a space is a
+# space, not an empty read that looks like Enter; EOF closes.
+BOX_CMD = ("""exec bash -c 'printf "%s" "$CTX_POPUP"; IFS= read -rsn1 k || exit 0; """
+           """case "$k" in "") exit 10;; [1-6]) exit $((9 + k));; esac; exit 0'""")
 LOG = Path.home() / ".local/state/ctxswitch/popup.log"
 
 
@@ -55,18 +61,23 @@ def text(new: list[dict]) -> str:
 
 
 def box_lines(new: list[dict]) -> list[str]:
-    out = [_line(i, 90) for i in new[:BOX_ITEMS]]
+    """Each line fits the box (a wrapped line scrolls the top one away)."""
+    if len(new) == 1:
+        out, keys = [_line(new[0], 90)], "Enter opens it · any other key closes"
+    else:
+        out = [f"{n} {_line(i, 90)}" for n, i in enumerate(new[:BOX_ITEMS], 1)]
+        keys = f"Enter opens 1 · 1-{min(len(new), BOX_ITEMS)} open that one · any other key closes"
     if len(new) > BOX_ITEMS:
         out.append(f"+{len(new) - BOX_ITEMS} more on the board")
-    return out + ["", "any key closes · Enter on the board opens it"]
+    return [fmt.one_line(x, BOX_W - 4) for x in out + ["", keys]]
 
 
 def tmux_box(new: list[dict], popen=subprocess.Popen):
     """A centred box over every pane until a key is pressed. display-popup blocks until it closes, so it's started,
-    not waited on; the caller polls it (rc 1 = no client to show it on). tmux drops a popup silently (rc 0) while
-    another is open, so don't start one while ours is."""
+    not waited on; the caller waits on it in a thread: rc OPEN_RC+n = open new[n], 1 = no client to show it on, 0 =
+    closed. tmux drops a popup silently (rc 0) while another is open, so don't start one while ours is."""
     lines = box_lines(new)
-    w, h = min(max(map(len, lines)) + 4, 120), len(lines) + 2
+    w, h = max(map(len, lines)) + 4, len(lines) + 2
     title = f" ctx: {len(new)} waiting on you " if len(new) > 1 else " ctx: waiting on you "
     return popen(["tmux", "display-popup", "-E", "-w", str(w), "-h", str(h), "-T", title,
                   "-e", "CTX_POPUP=" + "\n".join(lines), BOX_CMD],

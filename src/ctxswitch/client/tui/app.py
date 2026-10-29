@@ -36,7 +36,7 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
-from ctxswitch.client.notify import Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
+from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
@@ -65,6 +65,7 @@ class CtxApp(App):
         Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
+        Binding("n", "toggle_popups", "pop-ups"),
         Binding("escape", "clear_filter", show=False),
     ]
 
@@ -86,7 +87,8 @@ class CtxApp(App):
         self.pending_body = ""                       # the tmux buffer waiting on a y/n
         self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
         self.group_ws = False                        # w: rows grouped under workstream headers
-        self.notifier = Notifier(cfg.notify_idle) if cfg.notify else None
+        self.notifier = Notifier(cfg.notify_idle)
+        self.popups = cfg.notify                     # n toggles it for this run; off still tracks what's been seen
         self.box = None                              # our open tmux popup box (a display-popup process), if any
 
     def compose(self) -> ComposeResult:
@@ -182,28 +184,50 @@ class CtxApp(App):
         w.update(t)
 
     def popup(self, attention: list[dict]) -> None:
-        if self.notifier is None:
-            return
         new = self.notifier.fresh(attention, skip=self.visible_key)
-        if not new:
+        if not new or not self.popups:                  # off: what turns up meanwhile is on the board, not popped later
             return
         msg, ids = popup_text(new), [item_id(i) for i in new]
         if tmux.in_tmux() and self.cfg.notify_style == "popup" and (self.box is None or self.box.poll() is not None):
             try:
                 self.box = tmux_box(new)
                 popup_log(f"box skip={self.visible_key} {ids} {msg}")
-                self.set_timer(0.5, lambda: self.box_failed(msg))
+                self.wait_box(self.box, [i["key"] for i in new], msg)
                 return
             except OSError as e:
                 popup_log(f"box failed: {e}")
         self.status_popup(msg, ids)                     # status style, or a box of ours is still open
 
-    def box_failed(self, msg: str) -> None:
-        b = self.box
-        if b is not None and b.poll() not in (None, 0):  # rc 1: no client to show it on
-            popup_log(f"box rc={b.returncode} {(b.stderr.read() if b.stderr else '').strip()}")
-            self.box = None
+    @work(group="box", thread=True)
+    def wait_box(self, box, keys: list[str], msg: str) -> None:
+        rc = box.wait()
+        err = (box.stderr.read() if box.stderr else "").strip()
+        self.call_from_thread(self.box_closed, rc, keys, msg, err)
+
+    def box_closed(self, rc: int, keys: list[str], msg: str, err: str = "") -> None:
+        if 0 <= rc - OPEN_RC < len(keys):               # Enter (or 1-6): open what it named
+            popup_log(f"box open {keys[rc - OPEN_RC]}")
+            self.open_key(keys[rc - OPEN_RC])
+        elif not (rc == 0 or OPEN_RC <= rc < OPEN_RC + BOX_ITEMS):    # a key closed it; rc 1: no client to show it on
+            popup_log(f"box rc={rc} {err}")
             self.status_popup(msg, [])
+
+    def open_key(self, key: str) -> None:
+        """Select a session on the board and open it, as Enter on its row does."""
+        if not any(x["key"] == key for x in self.sessions):
+            self.notify(f"{key} isn't on the board any more", timeout=6)
+            return
+        self.selected = key
+        t = self.query_one("#table", DataTable)
+        try:
+            t.move_cursor(row=t.get_row_index(key))
+        except Exception:                               # noqa: BLE001 - filtered out of the table: open it anyway
+            pass
+        self.action_resume()
+
+    def action_toggle_popups(self) -> None:
+        self.popups = not self.popups
+        self.notify(f"pop-ups {'on' if self.popups else 'off'}", timeout=3)
 
     def status_popup(self, msg: str, ids: list[str]) -> None:
         shown = tmux.in_tmux() and tmux_popup(msg)

@@ -222,6 +222,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `e` | show or hide ended sessions |
 | `v` | mark the selected session viewed (it's also marked whenever you open it, on any machine) |
 | `r` | refresh now (the board also updates live over a WebSocket) |
+| `n` | pop-ups off / on for this run (`notify` sets how it starts) |
 | `q` | detach: close your terminal, keep everything running |
 | `Q` | quit all: end the tmux session and every agent in it, after a y/n |
 
@@ -291,13 +292,15 @@ queued or sent, the hub refuses the reply (409), so two machines can't both answ
 
 ### Pop-ups
 When something new needs you (a question, approval or dialog), the TUI opens a box in the middle of the screen,
-over every pane, listing what's waiting (`host · title: the question`). Any key closes it, and that key goes to the
-box, not to the pane underneath. While the box is open, anything newer shows in place of the tmux status line for
+over every pane, listing what's waiting (`host · title: the question`). Enter opens the session it names, as Enter
+on its row does (the first one if it lists several; `1`-`6` pick one). Any other key closes it, and that key goes to
+the box, not to the pane underneath. While the box is open, anything newer shows in place of the tmux status line for
 8 s instead (tmux shows one box at a time). With `notify_style = "status"` every pop-up is that status line.
 
 What's already waiting when the TUI starts pops up once. Nothing pops up for the session already on the left; that
 one pops up when you move off it with the question still open. Each TUI pops up on its own machine. Every attempt is
-logged to `~/.local/state/ctxswitch/popup.log`. Turn it off with `notify = false`. Set `notify_idle = true` for a
+logged to `~/.local/state/ctxswitch/popup.log`. `n` on the board turns pop-ups off (and on again) for that run;
+what turns up while they're off stays on the board and doesn't pop up later. `notify = false` starts with them off. Set `notify_idle = true` for a
 pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its own toast.
 
 ## 8. Command line
@@ -328,7 +331,7 @@ option. The ones you'll touch:
 | `[collector] accept_messages` | deliver messages into this host's sessions (default true) |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
 | `[ssh]` | client only: `<host_id> = "<ssh destination>"` for resuming another host's sessions. Unlisted hosts use the host id itself (an `~/.ssh/config` alias); `""` = not reachable from here (e.g. a laptop that blocks inbound) |
-| `notify`, `notify_idle` | client: tmux pop-ups for new questions and dialogs (default on), and for an agent finishing its turn (default off) |
+| `notify`, `notify_idle` | client: tmux pop-ups for new questions and dialogs (default on; `n` toggles it), and for an agent finishing its turn (default off) |
 | `notify_style` | client: `"popup"` (default), a box over the panes until you press a key; `"status"`, one line in the status bar for 8 s |
 | `[hub] ledger` | hub only: keep the ledger (instructions, decisions, claims) as well as recaps (default true) |
 | `[[seats]]` | hub only: the LLM endpoint for recaps and the ledger |
