@@ -96,3 +96,38 @@ def decisions(s: dict, n: int = 6) -> list[tuple[int, str, str]]:
         out.append((r["turn_idx"], q, r["text"]))
     out += [(a.get("turn_idx") or 0, a["text"], a.get("answer") or "") for ref, a in asks.items() if ref not in merged]
     return sorted(out, key=lambda d: d[0])[-n:]
+
+
+MSG_GLYPH = {"queued": "…", "sent": "→", "delivered": "✓", "replied": "↩", "failed": "✗", "cancelled": "–"}
+HELD_MODES = ("plan", "bypassPermissions")          # Claude holds an unenveloped peer message for approval in these
+
+
+def can_message(s: dict) -> str | None:
+    """None if a message can be queued for this session, else why not."""
+    if s.get("harness") == "claude-win":
+        return "Windows-native Claude sessions can't take messages"
+    return None
+
+
+def messages(s: dict, n: int = 4) -> list[dict]:
+    """Your newest messages to this session (cancelled ones left out), oldest first."""
+    return [m for m in s.get("messages") or [] if m["status"] != "cancelled"][-n:]
+
+
+def message_note(s: dict, m: dict) -> str:
+    """What's happening to a message, in words."""
+    st = m["status"]
+    if st == "queued":
+        return "delivering…" if s.get("live_status") in ("busy", "waiting", "idle", "shell") else "queued: delivered when it next runs"
+    if st == "sent":
+        mode = (s.get("meta") or {}).get("permission_mode")
+        if s.get("harness") == "claude" and mode in HELD_MODES:
+            return f"sent; Claude holds it for your approval in {mode} mode"
+        return "sent; not in the transcript yet"
+    if st == "delivered":
+        return f"delivered as #{m.get('turn_idx')}, working on it"
+    if st == "replied":
+        return f"#{m.get('turn_idx')}: " + (m.get("reply") or "(no text reply)")
+    if st == "failed":
+        return f"failed: {m.get('error') or '?'}"
+    return st

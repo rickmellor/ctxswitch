@@ -32,7 +32,8 @@ src/ctxswitch/
   common/config.py        Config dataclasses + TOML load (~/.config/ctxswitch/config.toml or $CTXSWITCH_CONFIG)
   common/schema.py        shared record shapes
   collector/
-    main.py               loop: initial scan → watchfiles + 5 s liveness poll + 10 min sweep → outbox → push
+    main.py               loop: initial scan → watchfiles + 5 s liveness poll + 10 min sweep → outbox → push; inbox long-poll
+    deliver.py            write a message line into a Claude inbox / pi extension socket
     indexer.py            per-transcript incremental parse (byte offsets), emits turn/session events
     adapters/claude.py    Claude Code transcript → turns, asks (AskUserQuestion, ExitPlanMode, plain "?")
     adapters/pi.py        pi v3 session tree → turns
@@ -42,21 +43,21 @@ src/ctxswitch/
     spool.py              drains the hook spool into the outbox as "hook" events
   hub/
     main.py               ctx-hub entry; wires the Recapper into the Starlette lifespan
-    api.py                REST /v1/{ingest,sessions,sessions/<key>[/viewed],attention,hosts,health} + /v1/ws live updates
+    api.py                REST /v1/{ingest,sessions,sessions/<key>[/viewed|/messages],messages/<id>/{status,cancel},outbox,attention,hosts,health} + /v1/ws
     store.py              SQLite (WAL); schema migrations are ALTER TABLE in place
     hooks.py              hook events → permission / elicitation / prompt asks and their resolution
     tracker/recap.py      one-line recap + re-entry card per session; anchor = last turn idx:complete:open_asks:live_status
     tracker/extract.py    ledger: one seat call per exchange you typed → instructions, decisions, claims, asks, purpose
     tracker/scheduler.py  the one loop that runs both (recap first)
   client/
-    cli.py                `ctx` subcommands (ls, show, attention, hosts, tui, tmux, internal tmux-exit)
+    cli.py                `ctx` subcommands (ls, show, send, attention, hosts, tui, tmux, internal tmux-exit)
     hubclient.py          HubClient(cfg): constructed from the Config, not a URL
     tmux.py               pane discovery/tagging, swap-in, resume, agent-exit hand-off, reach classification
     tui/app.py            Textual app (the board)
     fmt.py                shared text formatting (glyphs, ages, titles)
     install.py            `ctx install` / `uninstall` / `doctor`
   hook.py                 ctx-hook: Claude hook → spool file (stdlib only, runs on every hooked event)
-  pi_ext/ctxswitch.ts     pi extension: live registry + UI-prompt events (symlinked into ~/.pi/agent/extensions)
+  pi_ext/ctxswitch.ts     pi extension: live registry + UI-prompt events + message socket (symlinked into ~/.pi/agent/extensions)
 deploy/                   hub Dockerfile + compose, install-collector.sh (uv bootstrap, then `ctx install`)
 spikes/                   Phase 0 findings (Claude inbox socket, pi injection, seat behaviour)
 tests/                    pytest; transcript fixtures are synthetic (tests/claude_rows.py), never real content
@@ -98,6 +99,12 @@ tests/                    pytest; transcript fixtures are synthetic (tests/claud
   only defence against invented rows, so don't loosen it without re-running a calibration. LLM asks have ref
   `llm:<idx>:<n>` and are closed by `store.typed()` prompts (not task/peer turns or `<bash-input>` wrappers).
 
+- **Messages:** `store.messages` rows; the hub only lists what's queued for a host's live sessions
+  (`store.outbox`), and the collector delivers only to sockets in its own registry (`Collector.deliver_one`,
+  `msg:<id>` in its state = at most once). `store._match_message` runs first in `upsert_turns`: a `sent` message
+  whose normalised body (first 200 chars) is in a turn's prompt marks it delivered and rewrites the turn as yours;
+  the turn completing marks it replied. Only `sent` messages match, so the same text typed by hand isn't claimed.
+
 ## Working on it
 ```sh
 uv sync --extra test
@@ -125,5 +132,5 @@ uv sync --extra test
 
 ## What's next
 Phases 2 and 3 are done. Unverified: hook/extension payloads on harness versions newer than `VALIDATED`, and the Windows
-session registry with a live Windows session. Cross-host resume over ssh is done (`[ssh]` client config; `tmux.ssh_argv`). Next: messaging (inject into live sessions; idea: send a tmux copy-mode selection
-from one pane to another session), then MCP. Validated harness versions are in `client/install.py` `VALIDATED`; `ctx doctor` warns on others.
+session registry with a live Windows session. Cross-host resume over ssh is done (`[ssh]` client config; `tmux.ssh_argv`). Messaging is done (`m`, `M` = the tmux paste buffer, `ctx send`), verified end to end on Claude 2.1.280 and
+pi 1.2.0. Next: MCP (Phase 6); quick-reply to an ask is still open from Phase 5. Validated harness versions are in `client/install.py` `VALIDATED`; `ctx doctor` warns on others.

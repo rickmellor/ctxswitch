@@ -9,7 +9,8 @@ Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent ses
   │ state / open asks / last exchange / decisions│
   └──────────────────────────────────────────────┘
 Keys: h host filter · e toggle ended · v mark viewed · enter show/resume · c/p new claude/pi session (asks for a
-directory, default = selected session's) · r refresh · / filter · q quit
+directory, default = selected session's) · m message the selected session · M send it the tmux paste buffer (after
+a y/n) · r refresh · / filter · q quit
 Inside tmux, enter swaps the session's pane into pane 0 of this window (see client/tmux.py); `ctx tmux` builds
 the layout. Outside tmux it opens a Windows Terminal tab.
 Live: WebSocket change notices from the hub; falls back to polling every 10 s.
@@ -39,6 +40,7 @@ from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
 STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
 CLAIM_STYLE = {"done": "green", "tests_pass": "green", "tests_fail": "red", "blocked": "yellow"}
+MSG_STYLE = {"queued": "yellow", "sent": "yellow", "delivered": "green", "replied": "green", "failed": "red"}
 REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "foreign": "red", "remote": "blue", "none": "dim"}
 
 
@@ -56,6 +58,7 @@ class CtxApp(App):
     # one footer line in a ~40-column side pane: most-used first, short labels; the rest fall off the right edge
     BINDINGS = [
         Binding("enter", "resume", "open", show=True), Binding("c", "new_claude", "claude"), Binding("p", "new_pi", "pi"),
+        Binding("m", "message", "msg"), Binding("M", "message_buffer", show=False),
         Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("r", "refresh", "refresh"),
@@ -76,7 +79,8 @@ class CtxApp(App):
         self.change = -1
         self.visible_key: str | None = None          # session shown in the tmux viewer pane
         self.reach: dict[str, str] = {}             # key -> tmux.REACH_GLYPH key (how Enter can open it)
-        self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:claude" | "new:pi"
+        self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:<harness>" | "msg:<key>" | "confirm:…"
+        self.pending_body = ""                       # the tmux buffer waiting on a y/n
 
     def compose(self) -> ComposeResult:
         yield Static("", id="attention")
@@ -288,6 +292,14 @@ class CtxApp(App):
                 t.append(f"◐ {fmt.age(x.get('asked_at'), now)} [{x['kind']}] ", style="yellow")
                 t.append(x['text'] + "\n")
             t.append("\n")
+        msgs = fmt.messages(s)
+        if msgs:
+            t.append("YOUR MESSAGES\n", style="bold")
+            for m in msgs:
+                t.append(f"{fmt.MSG_GLYPH.get(m['status'], '?')} ", style=MSG_STYLE.get(m["status"], "dim"))
+                t.append(fmt.one_line(m["body"], 160) + "\n")
+                t.append(f"  {fmt.one_line(fmt.message_note(s, m), 300)}\n", style="dim" if m["status"] != "failed" else "red")
+            t.append("\n")
         turns = s.get("turns", [])
         if s.get("recap"):
             stale = s.get("recap_anchor") != _anchor(s)
@@ -419,6 +431,44 @@ class CtxApp(App):
             msg = f"tmux: {e}"
         self.call_from_thread(self.notify, msg, timeout=6)
 
+    def _selected_session(self) -> dict | None:
+        return next((x for x in self.sessions if x["key"] == self.selected), None)
+
+    def action_message(self) -> None:
+        s = self._selected_session()
+        if not s:
+            return
+        why = fmt.can_message(s)
+        if why:
+            self.notify(why, severity="warning"); return
+        when = "now" if s.get("live_status") in LIVE else "when it next runs"
+        self._show_input(f"msg:{s['key']}", f"message to {fmt.one_line(fmt.display_title(s), 30)} ({when}), enter to send")
+
+    def action_message_buffer(self) -> None:
+        s = self._selected_session()
+        if not s:
+            return
+        why = fmt.can_message(s)
+        if why:
+            self.notify(why, severity="warning"); return
+        import subprocess
+        r = subprocess.run(["tmux", "show-buffer"], capture_output=True, text=True)
+        if r.returncode != 0 or not r.stdout.strip():
+            self.notify("no tmux paste buffer (select text in copy mode first)", severity="warning"); return
+        self.pending_body = r.stdout
+        lines = r.stdout.count("\n") + 1
+        self._show_input(f"confirm:buffer:{s['key']}", f"send {lines} line(s) \"{fmt.one_line(r.stdout, 30)}\" to it? y/n")
+
+    @work(group="send", thread=True)
+    def send_message(self, key: str, body: str) -> None:
+        try:
+            mid = self.client.send(key, body, self.this_host)
+            msg, sev = f"message {mid} queued", "information"
+        except Exception as e:                          # noqa: BLE001
+            msg, sev = f"not sent: {e}", "error"
+        self.call_from_thread(self.notify, msg, severity=sev, timeout=6)
+        self.call_from_thread(self.load_detail)
+
     def action_filter(self) -> None:
         self._show_input("filter", "filter sessions (title, repo, key)…", self.text_filter)
 
@@ -461,6 +511,17 @@ class CtxApp(App):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             if value.strip().lower() in ("y", "yes"):
                 tmux.kill_all()
+            return
+        if mode.startswith("confirm:buffer:"):
+            body, self.pending_body = self.pending_body, ""
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            if value.strip().lower() in ("y", "yes"):
+                self.send_message(mode.split(":", 2)[2], body)
+            return
+        if mode.startswith("msg:"):
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            if value.strip():
+                self.send_message(mode.split(":", 1)[1], value)
             return
         if mode.startswith("new:"):
             self.start_agent(mode.split(":", 1)[1], value)

@@ -3,6 +3,10 @@
 Ingest is idempotent: sessions upsert by key, turns upsert by (key, idx) keeping the version with the larger
 offset_end, asks upsert by (key, ref). A monotonically increasing ``change`` counter lets clients poll or be
 notified cheaply.
+
+Messages (operator -> session) go queued -> sent (the collector wrote it to the session's socket) -> delivered (a
+turn whose prompt contains the body arrived) -> replied (that turn completed), or failed / cancelled. A delivered
+message's turn is recorded as yours (origin human, prompt = what you wrote), whatever the harness wrapped it in.
 """
 from __future__ import annotations
 
@@ -43,6 +47,11 @@ CREATE TABLE IF NOT EXISTS ledger (
     created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ledger_key ON ledger(key, kind, active);
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL,
+    from_host TEXT, created REAL NOT NULL, sent_at REAL, delivered_at REAL, turn_idx INTEGER, reply TEXT, error TEXT
+);
+CREATE INDEX IF NOT EXISTS messages_key ON messages(key, status);
 CREATE TABLE IF NOT EXISTS tracker (
     key TEXT PRIMARY KEY, through_idx INTEGER NOT NULL DEFAULT -1, purpose TEXT, purpose_turn INTEGER,
     purpose_history TEXT NOT NULL DEFAULT '[]', updated REAL
@@ -51,6 +60,10 @@ CREATE TABLE IF NOT EXISTS tracker (
 
 LLM_ASK = "llm:"                                    # asks.ref prefix for plain-text asks the tracker found
 ANSWER_CHARS = 300
+REPLY_CHARS = 2000
+MATCH_CHARS = 200                                   # a turn is the message's when its prompt contains this much of the body
+MSG_OPEN = ("queued", "sent")
+NOT_DELIVERABLE = ("claude-win",)                   # Windows-native Claude: no socket reachable from WSL
 
 
 class Store:
@@ -104,6 +117,7 @@ class Store:
     def upsert_turns(self, key: str, turns: list[dict[str, Any]], open_turn: dict[str, Any] | None, ended: bool = False) -> None:
         with self._lock:
             for t in [*turns, *([open_turn] if open_turn else [])]:
+                self._match_message(key, t)
                 self.db.execute(
                     "INSERT INTO turns(key,idx,data,complete,offset_end,started_at,ended_at) VALUES(?,?,?,?,?,?,?) "
                     "ON CONFLICT(key,idx) DO UPDATE SET data=excluded.data, complete=excluded.complete, offset_end=excluded.offset_end, "
@@ -156,6 +170,60 @@ class Store:
                 if r["harness"] == "claude" or r["live_status"] in LIVE:
                     self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, live_name=NULL, updated=? WHERE key=?", (now, r["key"]))
             self._bump()
+
+    # -- messages ---------------------------------------------------------------------------------------------------
+    def add_message(self, key: str, body: str, from_host: str | None = None) -> int:
+        with self._lock:
+            cur = self.db.execute("INSERT INTO messages(key,body,status,from_host,created) VALUES(?,?,?,?,?)",
+                                  (key, body, "queued", from_host, time.time()))
+            self._bump()
+            return int(cur.lastrowid)
+
+    def messages(self, key: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.db.execute("SELECT * FROM messages WHERE key=? ORDER BY id DESC LIMIT ?", (key, limit)).fetchall()
+        return [dict(r) for r in rows][::-1]
+
+    def outbox(self, host_id: str) -> list[dict[str, Any]]:
+        """Queued messages for sessions live on ``host_id`` right now, oldest first. The collector checks each
+        against its own registry before writing anything: the hub only says what is waiting."""
+        q = (f"SELECT m.id, m.key, m.body, s.harness FROM messages m JOIN sessions s ON s.key=m.key WHERE m.status='queued' "
+             f"AND s.host_id=? AND s.live_status IN ({_LIVE_SQL}) ORDER BY m.id")
+        return [dict(r) for r in self.db.execute(q, (host_id,))]
+
+    def set_message_status(self, msg_id: int, host_id: str, status: str, error: str | None = None) -> bool:
+        """Collector report: ``sent`` or ``failed``, only for a queued message to a session on that host."""
+        if status not in ("sent", "failed"):
+            return False
+        with self._lock:
+            self.db.execute("UPDATE messages SET status=?, sent_at=?, error=? WHERE id=? AND status='queued' "
+                            "AND key IN (SELECT key FROM sessions WHERE host_id=?)", (status, time.time(), error, msg_id, host_id))
+            ok = self.db.execute("SELECT changes()").fetchone()[0] > 0
+            if ok:
+                self._bump()
+            return ok
+
+    def cancel_message(self, msg_id: int) -> bool:
+        with self._lock:
+            self.db.execute("UPDATE messages SET status='cancelled' WHERE id=? AND status='queued'", (msg_id,))
+            ok = self.db.execute("SELECT changes()").fetchone()[0] > 0
+            if ok:
+                self._bump()
+            return ok
+
+    def _match_message(self, key: str, t: dict[str, Any]) -> None:
+        """Mark the message this turn delivers (and its reply, once complete); the turn becomes your prompt."""
+        m = self.db.execute("SELECT id, body, status FROM messages WHERE key=? AND turn_idx=?", (key, t["idx"])).fetchone()
+        if m is None:
+            text = _norm(t.get("user_text"))
+            for r in self.db.execute("SELECT id, body, status FROM messages WHERE key=? AND status='sent' ORDER BY id", (key,)):
+                if _norm(r["body"])[:MATCH_CHARS] in text:
+                    m = r; break
+            if m is None:
+                return
+            self.db.execute("UPDATE messages SET status='delivered', delivered_at=?, turn_idx=? WHERE id=?", (time.time(), t["idx"], m["id"]))
+        t.update(user_text=m["body"], user_origin="human", via="ctx", message_id=m["id"])
+        if t.get("complete") and m["status"] != "replied":
+            self.db.execute("UPDATE messages SET status='replied', reply=? WHERE id=?", (_clip(t.get("assistant_text"), REPLY_CHARS), m["id"]))
 
     def _close_llm_asks(self, key: str, t: dict[str, Any]) -> None:
         self.db.execute(f"UPDATE asks SET answered=1, answer=?, answered_at=? WHERE key=? AND answered=0 AND ref LIKE '{LLM_ASK}%' AND turn_idx<?",
@@ -304,6 +372,7 @@ class Store:
         d["turns"] = [json.loads(t[0]) for t in self.db.execute("SELECT data FROM turns WHERE key=? ORDER BY idx DESC LIMIT ?", (key, turns))][::-1]
         d["asks"] = [dict(a) for a in self.db.execute("SELECT * FROM asks WHERE key=? ORDER BY asked_at", (key,))]
         d["ledger"] = self.ledger(key)
+        d["messages"] = self.messages(key)
         st = self.tracker_state(key)
         d["purpose"], d["purpose_history"], d["tracked_through"] = st["purpose"], st["purpose_history"], st["through_idx"]
         return d
@@ -335,6 +404,10 @@ def typed(turn: dict[str, Any]) -> bool:
     """A prompt you typed: not a task notification or peer message, and not a command wrapper (<bash-input> etc)."""
     text = (turn.get("user_text") or "").strip()
     return turn.get("user_origin") == "human" and bool(text) and not text.startswith("<")
+
+
+def _norm(text: str | None) -> str:
+    return " ".join((text or "").split())
 
 
 def _clip(text: str | None, n: int) -> str:

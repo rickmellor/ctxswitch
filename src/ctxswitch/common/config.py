@@ -47,6 +47,7 @@ class CollectorConfig:
     spool_dir: str = ""                    # hook/pi-extension events; default $CTXSWITCH_SPOOL or ~/.local/state/ctxswitch/spool
     backfill_days: int = 30                # how far back to index on first run (hard signals only)
     max_text_chars: int = 4000             # trim for user/assistant text shipped to the hub
+    accept_messages: bool = True           # deliver operator messages from the hub into live sessions here
 
 
 @dataclass

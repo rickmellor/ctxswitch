@@ -3,6 +3,9 @@
 Loop: initial scan -> watch transcript roots (watchfiles) + liveness poll every 5 s -> every event lands in the
 local outbox -> a pusher drains the outbox to POST /v1/ingest with retry/backoff. The hub being down just grows
 the outbox.
+Messages: an inbox loop long-polls the hub for messages queued to this host's live sessions and writes each to the
+session's own socket (collector/deliver.py), but only a session this collector's registry read says is live: the
+hub names what is waiting, never where to write. Off with ``[collector] accept_messages = false``.
 Windows-native Claude roots (read from WSL under /mnt/c) are polled every WIN_POLL_S instead: inotify does not fire
 for writes made by Windows processes, and tasklist.exe (their liveness) costs ~1.5 s a call.
 """
@@ -21,6 +24,7 @@ from typing import Any
 import httpx
 from watchfiles import Change, awatch
 
+from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
 from ctxswitch.collector.liveness import read_claude_registry, read_claude_win_registry, read_pi_registry, runtime_dir
@@ -42,6 +46,10 @@ class Collector:
         self._last_liveness: str | None = None
         self.spool = spool.spool_dir(cfg.collector.spool_dir)
         self.win_live: dict = {}                       # last Windows registry read (refreshed every WIN_POLL_S)
+        self.live: dict = {}                           # key -> Liveness from the last registry read
+        base = cfg.hub.url.rstrip("/")
+        self.headers = {"Authorization": f"Bearer {cfg.hub.token}"} if cfg.hub.token else {}
+        self.urls = {"ingest": base + "/v1/ingest", "outbox": base + "/v1/outbox", "messages": base + "/v1/messages"}
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         self.state.enqueue(kind, payload)
@@ -52,6 +60,7 @@ class Collector:
         live = read_claude_registry(Path(os.path.expanduser(self.cfg.collector.claude_sessions_dir)), self.host_id)
         live |= read_pi_registry(runtime_dir(), self.host_id)
         live |= self.win_live
+        self.live = live
         self.ix.live_keys = set(live)
         snap = {"host_id": self.host_id, "sessions": [l.to_dict() for l in live.values()]}
         fp = json.dumps(snap, sort_keys=True)
@@ -87,8 +96,7 @@ class Collector:
 
     # -- pusher ---------------------------------------------------------------------------------------------------
     async def push_loop(self) -> None:
-        url = self.cfg.hub.url.rstrip("/") + "/v1/ingest"
-        headers = {"Authorization": f"Bearer {self.cfg.hub.token}"} if self.cfg.hub.token else {}
+        url, headers = self.urls["ingest"], self.headers
         info = {"collector": "0.0.1", "platform": platform.platform(), "python": platform.python_version()}
         backoff = 1.0
         async with httpx.AsyncClient(timeout=20) as client:
@@ -119,6 +127,47 @@ class Collector:
                         return
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 60)
+
+    # -- messages -------------------------------------------------------------------------------------------------
+    async def deliver_one(self, client: httpx.AsyncClient, m: dict[str, Any]) -> bool:
+        """Deliver one queued message (at most once) and report it. False = not live here yet, or the report failed."""
+        mid, key = int(m["id"]), m["key"]
+        live = self.live.get(key)
+        harness = key.split("/", 2)[1]
+        if live is None or not live.socket or harness not in ("claude", "pi"):
+            return False
+        done = self.state.get(f"msg:{mid}")
+        if done is None:                               # never write the same message twice, even if the report is lost
+            err = await deliver(live.socket, harness, key.split("/", 2)[2], m["body"], mid)
+            done = err or ""
+            self.state.set(f"msg:{mid}", done)
+            log.info("message %d -> %s: %s", mid, key, done or "sent")
+        try:
+            r = await client.post(f"{self.urls['messages']}/{mid}/status", headers=self.headers,
+                                  json={"host_id": self.host_id, "status": "failed" if done else "sent", "error": done or None})
+            return r.status_code in (200, 409)         # 409: already reported
+        except httpx.HTTPError:
+            return False
+
+    async def inbox_loop(self) -> None:
+        if not self.cfg.collector.accept_messages:
+            return
+        async with httpx.AsyncClient(timeout=40) as client:
+            while True:
+                try:
+                    r = await client.get(self.urls["outbox"], params={"host": self.host_id, "wait": 25}, headers=self.headers)
+                    r.raise_for_status()
+                    msgs = r.json().get("messages") or []
+                except (httpx.HTTPError, ValueError):
+                    await asyncio.sleep(10); continue
+                done = 0
+                for m in msgs:
+                    try:
+                        done += await self.deliver_one(client, m)
+                    except Exception:                  # noqa: BLE001
+                        log.exception("message %s", m.get("id"))
+                if msgs and not done:                  # the hub thinks it's live; our registry doesn't (yet)
+                    await asyncio.sleep(5)
 
     # -- watchers -------------------------------------------------------------------------------------------------
     async def watch_loop(self) -> None:
@@ -184,7 +233,7 @@ class Collector:
         if self.once:
             await self.push_loop(); return
         await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop(),
-                             self.spool_loop(), self.windows_loop())
+                             self.spool_loop(), self.windows_loop(), self.inbox_loop())
 
 
 def main() -> None:

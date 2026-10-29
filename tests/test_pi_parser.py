@@ -56,3 +56,14 @@ def test_pi_state_roundtrip():
     p2.finish()
     t = p2.drain()[0]
     assert t.user_text == "q" and t.assistant_text == "a" and t.offset_end == 300 and "branch" not in t.events
+
+
+def test_pi_last_turn_completes_when_the_run_stops_not_on_a_tool_pause():
+    p = feed_all(PiParser(), [session(), msg("user", [{"type": "text", "text": "go"}], "u1", None, 1),
+                              msg("assistant", [{"type": "toolCall", "id": "c1", "name": "read", "arguments": {}}], "a1", "u1", 2, stopReason="toolUse")])
+    assert not p.current.complete                                   # waiting on a tool result: still working
+    p.feed(msg("toolResult", [{"type": "text", "text": "x"}], "r1", "a1", 3, toolName="read", toolCallId="c1", isError=False), 400)
+    p.feed(msg("assistant", [{"type": "text", "text": "Done."}], "a2", "r1", 4, stopReason="stop"), 500)
+    assert p.current.complete and p.drain() == []                   # no next prompt needed; the turn stays open
+    p.feed(msg("assistant", [{"type": "toolCall", "id": "c2", "name": "bash", "arguments": {}}], "a3", "a2", 5, stopReason="toolUse"), 600)
+    assert not p.current.complete                                   # a follow-up run reopens it

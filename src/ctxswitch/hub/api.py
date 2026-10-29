@@ -7,6 +7,10 @@
   POST /v1/sessions/{key}/viewed   {at}
   GET  /v1/sessions/{key}/brief    {text: resume briefing or null}  (hub/brief.py)
   POST /v1/sessions/{key}/ledger/{id}/retire   operator retires a ledger row (e.g. an instruction that no longer holds)
+  POST /v1/sessions/{key}/messages   {body, from_host} -> {id}   queue a message for a session (live or not)
+  POST /v1/messages/{id}/cancel      a queued message only
+  GET  /v1/outbox?host=&wait=25      collector long-poll: queued messages for that host's live sessions
+  POST /v1/messages/{id}/status      collector report {host_id, status: sent|failed, error}
   GET  /v1/attention?host=
   GET  /v1/health
   WS   /v1/ws                      server pushes {"change": N} whenever the store changes
@@ -28,9 +32,11 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
-from ctxswitch.hub.store import Store
+from ctxswitch.hub.store import NOT_DELIVERABLE, Store
 
 log = logging.getLogger("ctxswitch.hub")
+MAX_BODY = 20000                                     # characters in one message
+OUTBOX_WAIT = 25.0                                   # seconds a collector's long-poll may hang
 
 
 class Hub:
@@ -120,6 +126,61 @@ class Hub:
             self._notify()
         return JSONResponse({"ok": ok}, 200 if ok else 404)
 
+    async def send(self, req: Request) -> Response:
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        key = req.path_params["key"]
+        body = await req.json()
+        text = body.get("body")
+        if not isinstance(text, str) or not text.strip():
+            return JSONResponse({"error": "body required"}, 400)
+        if len(text) > MAX_BODY:
+            return JSONResponse({"error": f"message longer than {MAX_BODY} characters"}, 400)
+        s = self.store.session(key, turns=0)
+        if s is None:
+            return JSONResponse({"error": "not found"}, 404)
+        if s["harness"] in NOT_DELIVERABLE:
+            return JSONResponse({"error": f"can't deliver to {s['harness']} sessions"}, 400)
+        mid = self.store.add_message(key, text, body.get("from_host"))
+        self._notify()
+        return JSONResponse({"id": mid})
+
+    async def cancel(self, req: Request) -> Response:
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        ok = self.store.cancel_message(int(req.path_params["id"]))
+        if ok:
+            self._notify()
+        return JSONResponse({"ok": ok}, 200 if ok else 409)
+
+    async def outbox(self, req: Request) -> Response:
+        """Returns as soon as something is waiting for this host, or after ``wait`` seconds with nothing."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        host = req.query_params.get("host")
+        if not host:
+            return JSONResponse({"error": "host required"}, 400)
+        wait = min(float(req.query_params.get("wait", "0") or 0), OUTBOX_WAIT)
+        q: asyncio.Queue = asyncio.Queue()
+        self.subscribers.add(q)
+        try:
+            deadline = asyncio.get_running_loop().time() + wait
+            while True:
+                items = self.store.outbox(host)
+                left = deadline - asyncio.get_running_loop().time()
+                if items or left <= 0:
+                    return JSONResponse({"messages": items})
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(q.get(), timeout=left)
+        finally:
+            self.subscribers.discard(q)
+
+    async def message_status(self, req: Request) -> Response:
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        body = await req.json()
+        ok = self.store.set_message_status(int(req.path_params["id"]), str(body.get("host_id") or ""),
+                                           str(body.get("status") or ""), body.get("error"))
+        if ok:
+            self._notify()
+        return JSONResponse({"ok": ok}, 200 if ok else 409)
+
     async def attention(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         return JSONResponse({"change": self.store.change, "items": self.store.attention(req.query_params.get("host") or None)})
@@ -166,7 +227,11 @@ class Hub:
             Route("/v1/sessions/{key:path}/viewed", self.viewed, methods=["POST"]),
             Route("/v1/sessions/{key:path}/brief", self.brief),
             Route("/v1/sessions/{key:path}/ledger/{row:int}/retire", self.retire, methods=["POST"]),
+            Route("/v1/sessions/{key:path}/messages", self.send, methods=["POST"]),
             Route("/v1/sessions/{key:path}", self.session),
+            Route("/v1/messages/{id:int}/cancel", self.cancel, methods=["POST"]),
+            Route("/v1/messages/{id:int}/status", self.message_status, methods=["POST"]),
+            Route("/v1/outbox", self.outbox),
             Route("/v1/attention", self.attention),
             Route("/v1/health", self.health),
             WebSocketRoute("/v1/ws", self.ws),

@@ -15,6 +15,7 @@ claude_sessions_dir = "~/.claude/sessions"
 pi_roots = ["~/.pi/agent/sessions"]
 # claude_win_roots = ["/mnt/c/Users/<you>/.claude/projects"]   # laptop WSL: Windows-native Claude, read-only
 backfill_days = 30
+accept_messages = true                # deliver `m` / `ctx send` messages into this host's live sessions
 max_text_chars = 4000
 
 # Local LLM seats for the tracker (Phase 3). Thinking must be off on Qwen seats (see spikes/SPIKES.md).

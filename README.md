@@ -37,6 +37,9 @@ in one narrow side panel next to whatever you are doing.
 - **Switches sessions for you.** Inside tmux, Enter swaps a session into the main pane, resumes an ended one, or
   says why it can't (running in another terminal, or on another host). `c` / `p` start a new Claude / pi session.
   When an agent exits, the next one takes its place.
+- **Messages a session from anywhere.** `m` (or `ctx send`) types a message into a live Claude or pi session on
+  any machine, or queues it for an ended one until it next runs. The board follows it from queued to delivered
+  to the agent's reply.
 - **Briefs you when you come back.** Resume a session you left more than 15 minutes ago (`claude --resume`,
   `pi --session`) and it prints a short card first: how long you were away, what it's for, the recap, your
   standing instructions, your last prompt, the agent's last reply and any questions still open. It's shown to you, not sent to the model.
@@ -66,7 +69,8 @@ in one narrow side panel next to whatever you are doing.
 Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is done, plus the tmux manager and
 LLM recaps. Phase 3 (the ledger tracker) is done. Phase 2 is done: Claude hooks and a pi extension report permission prompts and dialogs, resuming a
 session prints a briefing, Windows-native Claude sessions show up (read-only) on a WSL host, and `ctx install` /
-`ctx doctor` wire up and check a host. Cross-host resume works: Enter on another host's ended session resumes it there over ssh. Still to come: messaging live sessions and MCP. See the
+`ctx doctor` wire up and check a host. Cross-host resume works: Enter on another host's ended session resumes it there over ssh. Messaging works:
+send to a live session on any host, or queue for an ended one. Still to come: MCP. See the
 phases in [DESIGN.md](DESIGN.md).
 
 # User guide
@@ -178,6 +182,7 @@ filter and how many sessions are live.
   Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
   input), `prompt` (a pi dialog), `plain` (its reply ended in a question);
 - **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
+- **YOUR MESSAGES**: what you sent it with `m` or `ctx send` and where each one is (see Messages);
 - **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, with the exchange (`#12`) they came from;
 - **AGENT SAYS**: its latest claims: `✓` done / tests pass, `✗` tests fail, `!` blocked;
 - **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
@@ -191,6 +196,8 @@ filter and how many sessions are live.
 | `↑` `↓` | select a session (the detail pane follows) |
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
 | `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's) |
+| `m` | message the selected session: type it, Enter sends (Esc cancels) |
+| `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y/n |
 | `h` | host filter: this host → all → each other host |
 | `/` | filter by text (title, repo, key, last prompt). `Esc` clears |
 | `e` | show or hide ended sessions |
@@ -231,11 +238,35 @@ you cancel them in a prompt, or retire one by hand with
 `curl -X POST -H "Authorization: Bearer $TOKEN" <hub>/v1/sessions/<key>/ledger/<id>/retire` (`ctx show` prints
 the ids). Set `[hub] ledger = false` to keep recaps without the ledger.
 
-## 7. Command line
+## 7. Messages
+`m` on the board, or `ctx send <session> "text"`, sends a message to a session on any host. It's typed into the
+session as a new prompt, so the agent works on it like anything you type there:
+
+| | |
+|---|---|
+| `…` queued | waiting for the session's host to pick it up: at once if it's live, else when it next runs (resume it with Enter) |
+| `→` sent | written into the session; not in its transcript yet |
+| `✓` delivered | the agent is working on it (`#12` is the exchange) |
+| `↩` replied | the exchange finished; the first lines of the reply are shown |
+| `✗` failed | the session's socket refused it or was gone; the reason is shown. Send it again |
+
+- **pi** takes it as a follow-up: if it's busy, the message waits for the current run to finish.
+- **Claude Code** gets it as a message from another session (its inbox socket), prefixed "Message from the
+  operator (sent with ctxswitch)". Claude treats that as a teammate's request, within its own permission
+  settings: a message can't approve a pending permission prompt or plan for you. In **plan** or **bypass
+  permissions** mode Claude holds it for your approval in that terminal; the board says so.
+- In the board and the ledger the exchange counts as yours (`you`), with the wrapper removed.
+- Delivery is at most once: the collector on the session's host remembers what it wrote, so a lost report never
+  sends it twice. A queued message can be cancelled with `ctx send --cancel <id>`.
+- Windows-native Claude (`cw`) sessions can't take messages. Set `[collector] accept_messages = false` on a host
+  to refuse all of them there.
+
+## 8. Command line
 | Command | Shows |
 |---|---|
 | `ctx ls [--host H \| --all] [--live]` | one line per session (default: this host) |
 | `ctx show <key-or-title-fragment>` | one session in full: purpose, recap, your instructions, the agent's claims, open asks, decisions, recent exchanges (marks it viewed; `--no-mark` to not) |
+| `ctx send <session> [text \| -] [--buffer] [--cancel ID]` | message a session (text, stdin with `-` or no text, or the tmux paste buffer); `--cancel` withdraws a queued one |
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
@@ -244,7 +275,7 @@ the ids). Set `[hub] ledger = false` to keep recaps without the ledger.
 | `ctx uninstall [--claude --pi --collector]` | undo it (the collector only when named) |
 | `ctx doctor` | check this machine: config, hub and token, collector, hooks, extension, spool, recaps. Exit 1 if broken |
 
-## 8. Configuration
+## 9. Configuration
 `~/.config/ctxswitch/config.toml` (or `$CTXSWITCH_CONFIG`). [config.example.toml](config.example.toml) has every
 option. The ones you'll touch:
 
@@ -254,13 +285,14 @@ option. The ones you'll touch:
 | `[collector] host_id` | short stable name for this machine (default: hostname) |
 | `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
 | `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
+| `[collector] accept_messages` | deliver messages into this host's sessions (default true) |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
 | `[ssh]` | client only: `<host_id> = "<ssh destination>"` for resuming another host's sessions. Unlisted hosts use the host id itself (an `~/.ssh/config` alias); `""` = not reachable from here (e.g. a laptop that blocks inbound) |
 | `[hub] ledger` | hub only: keep the ledger (instructions, decisions, claims) as well as recaps (default true) |
 | `[[seats]]` | hub only: the LLM endpoint for recaps and the ledger |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broken), with the fix underneath.
 
 | Symptom | Check |
@@ -270,6 +302,9 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | `hub unreachable` | `[hub] url` in your config, and that the hub is up (`curl <url>/v1/health`) |
 | a host is missing | `ctx hosts`; on that host, `systemctl --user status ctx-collector` and `~/.local/state/ctxswitch/collector.log` |
 | `↗` resume fails or hangs | Enter runs `ssh -t <target> bash -lc 'claude --resume …'`; try `ssh <target> true` by hand. ssh needs key auth (BatchMode isn't forced, so a password prompt shows in the window). The agent must be on the remote login PATH |
+| a message stays `…` queued | the session isn't live on its host, or that host's collector is down (`ctx hosts`). It goes when the session next runs |
+| a message stays `→` sent | Claude in plan or bypass mode holds it for approval in its terminal. pi: it's still busy with the run before |
+| a message to a live pi session stays `…` queued | that pi process predates the extension's message socket; restart it (`/exit`, then Enter) |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
 | no briefing on resume | it only shows after 15 min away. `ctx doctor` (claude hooks line should not say "SessionStart (briefing)" missing); pi needs a new pi process after `ctx install --pi` |

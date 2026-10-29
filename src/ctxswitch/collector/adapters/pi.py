@@ -156,6 +156,8 @@ class PiParser:
                     else: cur.tally.other += 1
             if m.get("stopReason") in ("aborted", "error"):
                 cur.events.append(f"stop:{m.get('stopReason')}")
+            # the run ended (not a pause for tool results): complete, but open for a steer that continues it
+            cur.complete = m.get("stopReason") in ("stop", "length", "aborted", "error")
         elif role == "toolResult":
             if m.get("isError"):
                 cur.tally.errors += 1

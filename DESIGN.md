@@ -58,6 +58,21 @@ Greenfield repo: `~/repos/ctxswitch`.
   collector changes: the remote collector sees the resumed session as it would a local one.
   A decision row records the plain-text asks your prompt answered (`extra.answers`: asks raised since your previous
   typed prompt), so the board shows an answered question once: the ask verbatim, then your choice.
+- 2026-10-29 (Phase 5, messaging): a message is a hub row `queued → sent → delivered → replied` (or `failed`,
+  `cancelled`). Collectors long-poll `GET /v1/outbox?host=` (25 s, woken by any change, including a liveness
+  report, so a message for an ended session goes when it next runs) and write only to a socket in their **own**
+  live registry: the hub never names a path. Claude: the inbox socket (`messagingSocketPath`) with the target
+  `session_id`, which the receiver checks; it arrives wrapped as a peer message ("Another Claude session sent a
+  message: …") and Claude treats it as a teammate's request within its own permissions (it won't take it as
+  approval for a pending prompt; verified on 2.1.280). pi: a unix socket the extension opens
+  (`pi-<pid>.sock`, 0600, listed in the registry) → `sendUserMessage(…, {deliverAs: "followUp"})`, which runs at
+  once when idle and queues behind a busy run. The collector records `msg:<id>` before reporting, so a lost
+  report never writes twice (at most once). `sent` → `delivered` when an ingested turn's prompt contains the first
+  200 normalised characters of the body; the hub then rewrites that turn as yours (`user_origin=human`,
+  `via=ctx`, the body without the wrapper), so the tracker reads it and the board shows `you`. `replied` when
+  that turn completes. pi turns now complete on `stopReason: stop` (they used to wait for the next prompt, so
+  the latest pi exchange never completed). Not done: quick-reply to an ask, workstream messages, delivery via
+  SessionStart `additionalContext`, Windows-native Claude.
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles
@@ -198,7 +213,8 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    Not done: a TUI key to retire a row (`e` is taken by "show ended"); confidence scores.
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
 5. Messaging: pi inject + reply; Claude inject (per spike); queued delivery; quick-reply; cross-host resume.
-   Cross-host resume **done** (2026-10-29, ssh from the client, `[ssh]` config). Messaging still to do.
+   Cross-host resume **done** (2026-10-29, ssh from the client, `[ssh]` config). Messaging **done** (2026-10-29):
+   pi + Claude inject, queued delivery for ended sessions, `m`/`M` keys, `ctx send`. Not done: quick-reply.
 6. MCP + skill.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.

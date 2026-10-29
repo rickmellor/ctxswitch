@@ -2,6 +2,8 @@
 
   ctx ls [--host H | --all] [--live]     one line per session (default: this host)
   ctx show <key-or-prefix>               ledger view: meta, open asks, recent exchanges
+  ctx send <key-or-prefix> [text | -] [--buffer]   message a session (queued until it runs); --buffer = tmux paste buffer
+  ctx send --cancel <id>                 cancel a message that is still queued
   ctx attention [--all]                  what needs the operator, oldest wait first
   ctx hosts                              collectors seen by the hub
   ctx tui                                the board (narrow; built for a tmux side pane)
@@ -53,17 +55,24 @@ def cmd_ls(a) -> int:
     return 0
 
 
+def _resolve(c: HubClient, key: str) -> str | None:
+    """A full key, or the one session whose key or title contains ``key``; prints the candidates otherwise."""
+    if key.count("/") >= 2:
+        return key
+    matches = [s for s in c.sessions(None)["sessions"] if key in s["key"] or key in (s.get("title") or "")]
+    if len(matches) != 1:
+        print(f"{len(matches)} sessions match {key!r}:" if matches else f"no session matches {key!r}")
+        for s in matches[:20]:
+            print("  ", s["key"], "-", fmt.one_line(s.get("title"), 60))
+        return None
+    return matches[0]["key"]
+
+
 def cmd_show(a) -> int:
     c = _client()
-    key = a.key
-    if key.count("/") < 2:
-        matches = [s for s in c.sessions(None)["sessions"] if key in s["key"] or key in (s.get("title") or "")]
-        if len(matches) != 1:
-            print(f"{len(matches)} sessions match {key!r}:" if matches else f"no session matches {key!r}")
-            for s in matches[:20]:
-                print("  ", s["key"], "-", fmt.one_line(s.get("title"), 60))
-            return 1
-        key = matches[0]["key"]
+    key = _resolve(c, a.key)
+    if key is None:
+        return 1
     s = c.session(key, turns=a.turns)
     if not s:
         print("not found"); return 1
@@ -99,6 +108,12 @@ def cmd_show(a) -> int:
         print("  decisions:")
         for _, q, ans in decided:
             print(f"    ✓ {fmt.one_line(q, 70) + '  →  ' if q else ''}{fmt.one_line(ans, 60)}")
+    msgs = fmt.messages(s, 6)
+    if msgs:
+        print("  your messages:")
+        for m in msgs:
+            print(f"    {fmt.MSG_GLYPH.get(m['status'], '?')} [{m['id']}] {fmt.one_line(m['body'], 70)}")
+            print(f"        {fmt.one_line(fmt.message_note(s, m), 100)}")
     print("  exchanges:")
     for t in s.get("turns", [])[-a.turns:]:
         flag = "" if t.get("complete") else " (in progress)"
@@ -113,6 +128,44 @@ def cmd_show(a) -> int:
             print(f"       tools: {extras}")
     if not a.no_mark:
         c.viewed(key, now.isoformat().replace("+00:00", "Z"))
+    return 0
+
+
+def cmd_send(a) -> int:
+    c = _client()
+    if a.cancel is not None:
+        ok = c.cancel(a.cancel)
+        print(f"cancelled message {a.cancel}" if ok else f"message {a.cancel} is not queued (already sent, or no such id)")
+        return 0 if ok else 1
+    if not a.key:
+        print("usage: ctx send <session> [text | -] [--buffer]"); return 2
+    if a.buffer:
+        import subprocess
+        r = subprocess.run(["tmux", "show-buffer"], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"no tmux buffer: {r.stderr.strip() or 'tmux show-buffer failed'}"); return 1
+        body = r.stdout
+    elif a.text in ([], ["-"]):
+        if sys.stdin.isatty() and not a.text:
+            print("type the message, then Ctrl-D:", file=sys.stderr)
+        body = sys.stdin.read()
+    else:
+        body = " ".join(a.text)
+    if not body.strip():
+        print("empty message, nothing sent"); return 1
+    key = _resolve(c, a.key)
+    if key is None:
+        return 1
+    s = c.session(key, turns=0)
+    why = fmt.can_message(s or {})
+    if s is None or why:
+        print(why or "not found"); return 1
+    try:
+        mid = c.send(key, body, load().host_id)
+    except ValueError as e:
+        print(f"not sent: {e}"); return 1
+    live = s.get("live_status") in LIVE
+    print(f"message {mid} queued for {fmt.short_key(s)}: " + ("delivering now" if live else "delivered when it next runs"))
     return 0
 
 
@@ -172,6 +225,10 @@ def main(argv=None) -> None:
     p = sub.add_parser("show"); p.set_defaults(fn=cmd_show)
     p.add_argument("key"); p.add_argument("--turns", type=int, default=6); p.add_argument("--decisions", type=int, default=8)
     p.add_argument("--no-mark", action="store_true", help="don't record this as a view")
+    p = sub.add_parser("send"); p.set_defaults(fn=cmd_send)
+    p.add_argument("key", nargs="?"); p.add_argument("text", nargs="*")
+    p.add_argument("--buffer", action="store_true", help="send the tmux paste buffer (e.g. a copy-mode selection)")
+    p.add_argument("--cancel", type=int, metavar="ID", help="cancel a queued message")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)
     p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="18%", help="TUI pane width: columns or percent (default 18%%)")
     p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)
