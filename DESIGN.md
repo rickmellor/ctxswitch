@@ -35,6 +35,19 @@ Greenfield repo: `~/repos/ctxswitch`.
   files exist; no start-time check, so a reused pid reads live until the next poll). The registry format is
   assumed to match Linux; it was **not** seen with a live Windows session. Windows cwds are mapped to WSL paths for
   repo grouping; resume is a hint only (no injection in v1).
+- 2026-10-29 (Phase 3): the ledger tracker (`hub/tracker/extract.py`) reads each completed exchange once, oldest
+  first, live sessions first, one seat call per exchange you typed (task notifications, peer messages and
+  `<bash-input>`-style wrappers are read past without a call). The prompt carries your active instructions with ids
+  so the model can skip repeats and retire what you cancel. Every row needs a verbatim quote from its own side of
+  the exchange (instructions/decisions from your prompt, claims/asks from the reply; never from the previous reply)
+  or it is dropped; quotes are compared after lowercasing and stripping markdown marks (`` ` ``, `*`), which the
+  model drops when copying. Per-exchange caps (3 instructions, 3 decisions, 2 claims, 3 asks) because calibration
+  on real sessions showed over-extraction, not under. A plain-text ask is kept only when the collector recorded no
+  hard ask for that reply (its "ends with ?" rule already covers most), and is answered by your next typed prompt.
+  The purpose line is replaced only when the model flags a goal change; the old one goes to `purpose_history`.
+  The recap and the extractor share one scheduler loop (recap first: it is what the board shows), and the recap
+  call now also writes the ≤4-line re-entry card and sees your standing instructions. Three unparseable replies
+  for one exchange skip it; an HTTP error backs off 30 s without moving past it.
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles
@@ -170,6 +183,9 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    **Done** (2026-10-29): hooks, pi extension, spool, permission/elicitation/prompt asks, `install`/`uninstall`/
    `doctor`, resume briefing, Windows-native read-only adapter.
 3. Tracker: extraction rows (instructions, decisions, claims, plain-text asks), reentry/purpose; scheduler.
+   **Done** (2026-10-29): ledger rows with verbatim quotes, purpose + history, re-entry card, operator retire
+   (`POST /v1/sessions/<key>/ledger/<id>/retire`), shown in the TUI, `ctx show` and the resume briefing.
+   Not done: a TUI key to retire a row (`e` is taken by "show ended"); confidence scores.
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
 5. Messaging: pi inject + reply; Claude inject (per spike); queued delivery; quick-reply; cross-host resume.
 6. MCP + skill.

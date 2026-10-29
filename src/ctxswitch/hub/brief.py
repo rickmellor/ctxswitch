@@ -1,10 +1,13 @@
-"""Resume briefing: what you need back in your head when you resume a session, from hard signals only.
+"""Resume briefing: what you need back in your head when you resume a session, from hard signals plus the tracker's
+purpose and your standing instructions when it has them.
 
 Shown to the operator (not the model) when a session is resumed: Claude via the SessionStart hook's
 systemMessage, pi via ui.notify. Nothing when the session was busy moments ago (BRIEF_AFTER_S): you remember.
 
   ctx · <title> · away 3h12
+  for    : <what the session is for, when the tracker knows>
   recap  : <one-line recap, when the hub has one>
+  said   : <a standing instruction you gave it>  (up to MAX_RULES, newest)
   you    : <your last prompt>
   agent  : <its last reply>
   open   : [plan] <open ask> (2h ago)          (up to MAX_ASKS, oldest first)
@@ -16,6 +19,7 @@ from typing import Any
 
 BRIEF_AFTER_S = 15 * 60
 MAX_ASKS = 3
+MAX_RULES = 3
 WIDTH = 160
 
 
@@ -57,8 +61,12 @@ def brief(s: dict[str, Any] | None, now: datetime | None = None, after_s: float 
     if away is not None:
         head += f" · away {_age(away)}"
     out = [head]
+    if s.get("purpose"):
+        out.append(f"for    : {_line(s['purpose'])}")
     if s.get("recap"):
         out.append(f"recap  : {_line(s['recap'])}")
+    rules = [r for r in s.get("ledger") or [] if r.get("kind") == "instruction" and r.get("active")]
+    out += [f"said   : {_line(r['text'])}" for r in rules[-MAX_RULES:]]
     if you:
         out.append(f"you    : {_line(you)}")
     if agent:

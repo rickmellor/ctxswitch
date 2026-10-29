@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     meta TEXT NOT NULL, title TEXT, cwd TEXT, repo_root TEXT, repo_remote TEXT, git_branch TEXT,
     started_at TEXT, last_activity TEXT, ended INTEGER NOT NULL DEFAULT 0,
     live_status TEXT NOT NULL DEFAULT 'unknown', status_since TEXT, pid INTEGER, socket TEXT,
-    last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL, live_name TEXT
+    last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL, live_name TEXT, reentry TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_host ON sessions(host_id);
 CREATE TABLE IF NOT EXISTS turns (
@@ -37,7 +37,20 @@ CREATE TABLE IF NOT EXISTS asks (
 );
 CREATE INDEX IF NOT EXISTS asks_open ON asks(answered, key);
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, quote TEXT NOT NULL,
+    turn_idx INTEGER NOT NULL, extra TEXT, active INTEGER NOT NULL DEFAULT 1, retired_turn INTEGER, retired_by TEXT,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ledger_key ON ledger(key, kind, active);
+CREATE TABLE IF NOT EXISTS tracker (
+    key TEXT PRIMARY KEY, through_idx INTEGER NOT NULL DEFAULT -1, purpose TEXT, purpose_turn INTEGER,
+    purpose_history TEXT NOT NULL DEFAULT '[]', updated REAL
+);
 """
+
+LLM_ASK = "llm:"                                    # asks.ref prefix for plain-text asks the tracker found
+ANSWER_CHARS = 300
 
 
 class Store:
@@ -49,7 +62,7 @@ class Store:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}
-        for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL"), ("live_name", "TEXT")):   # older databases
+        for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL"), ("live_name", "TEXT"), ("reentry", "TEXT")):   # older databases
             if col not in cols:
                 self.db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
         self._lock = threading.Lock()
@@ -74,6 +87,8 @@ class Store:
             if m.get("reset"):
                 self.db.execute("DELETE FROM turns WHERE key=?", (m["key"],))
                 self.db.execute("DELETE FROM asks WHERE key=?", (m["key"],))
+                self.db.execute("DELETE FROM ledger WHERE key=?", (m["key"],))
+                self.db.execute("DELETE FROM tracker WHERE key=?", (m["key"],))
             self.db.execute(
                 "INSERT INTO sessions(key,host_id,harness,session_id,meta,title,cwd,repo_root,repo_remote,git_branch,started_at,last_activity,ended,updated) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET meta=excluded.meta, title=excluded.title, cwd=excluded.cwd, "
@@ -101,6 +116,9 @@ class Store:
                         "answer=CASE WHEN excluded.answered=1 THEN excluded.answer ELSE asks.answer END, "
                         "answered_at=CASE WHEN excluded.answered=1 THEN excluded.answered_at ELSE asks.answered_at END",
                         (key, a["ref"], a["kind"], a["text"], t["idx"], t.get("ended_at") or t.get("started_at"), int(a["answered"]), a.get("answer"), a.get("answered_at")))
+            for t in [*turns, *([open_turn] if open_turn else [])]:
+                if typed(t):                            # your next prompt answers a plain-text ask
+                    self._close_llm_asks(key, t)
             if turns or open_turn:
                 last = (open_turn or turns[-1])
                 self.db.execute("UPDATE sessions SET last_activity=MAX(COALESCE(last_activity,''), ?), updated=? WHERE key=?",
@@ -139,13 +157,97 @@ class Store:
                     self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, live_name=NULL, updated=? WHERE key=?", (now, r["key"]))
             self._bump()
 
+    def _close_llm_asks(self, key: str, t: dict[str, Any]) -> None:
+        self.db.execute(f"UPDATE asks SET answered=1, answer=?, answered_at=? WHERE key=? AND answered=0 AND ref LIKE '{LLM_ASK}%' AND turn_idx<?",
+                        (_clip(t.get("user_text"), ANSWER_CHARS), t.get("started_at"), key, t["idx"]))
+
+    # -- tracker (hub/tracker/extract.py) ---------------------------------------------------------------------------
+    def tracker_due(self, cutoff: str) -> list[str]:
+        """Sessions with a completed exchange the tracker hasn't read yet, live first then most recent. Sessions
+        neither live nor active since ``cutoff`` are left alone (no LLM over history)."""
+        q = (f"SELECT s.key FROM sessions s LEFT JOIN tracker k ON k.key=s.key WHERE "
+             f"(s.live_status IN ({_LIVE_SQL}) OR s.last_activity>=?) AND EXISTS (SELECT 1 FROM turns t WHERE t.key=s.key "
+             f"AND t.complete=1 AND t.idx>COALESCE(k.through_idx,-1)) "
+             f"ORDER BY CASE WHEN s.live_status IN ({_LIVE_SQL}) THEN 0 ELSE 1 END, s.last_activity DESC")
+        return [r[0] for r in self.db.execute(q, (cutoff,))]
+
+    def tracker_state(self, key: str) -> dict[str, Any]:
+        r = self.db.execute("SELECT * FROM tracker WHERE key=?", (key,)).fetchone()
+        if r is None:
+            return {"key": key, "through_idx": -1, "purpose": None, "purpose_turn": None, "purpose_history": []}
+        d = dict(r); d["purpose_history"] = json.loads(d["purpose_history"] or "[]")
+        return d
+
+    def next_untracked(self, key: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """(the oldest completed turn the tracker hasn't read, the turn before it) for one session."""
+        through = self.tracker_state(key)["through_idx"]
+        r = self.db.execute("SELECT data FROM turns WHERE key=? AND complete=1 AND idx>? ORDER BY idx LIMIT 1", (key, through)).fetchone()
+        if r is None:
+            return None, None
+        t = json.loads(r[0])
+        p = self.db.execute("SELECT data FROM turns WHERE key=? AND idx<? ORDER BY idx DESC LIMIT 1", (key, t["idx"])).fetchone()
+        return t, (json.loads(p[0]) if p else None)
+
+    def ledger(self, key: str, active_only: bool = False) -> list[dict[str, Any]]:
+        q = "SELECT * FROM ledger WHERE key=?" + (" AND active=1" if active_only else "") + " ORDER BY turn_idx, id"
+        out = []
+        for r in self.db.execute(q, (key,)):
+            d = dict(r); d["extra"] = json.loads(d["extra"] or "{}"); d["active"] = bool(d["active"])
+            out.append(d)
+        return out
+
+    def apply_extraction(self, key: str, turn: dict[str, Any], rows: list[dict[str, Any]], retire: list[int],
+                         asks: list[dict[str, Any]], purpose: str | None) -> bool:
+        """Record what the tracker read from one exchange and move past it. Idempotent: a turn already read is a no-op."""
+        idx = turn["idx"]
+        with self._lock:
+            st = self.tracker_state(key)
+            if idx <= st["through_idx"]:
+                return False
+            now = time.time()
+            for r in rows:
+                self.db.execute("INSERT INTO ledger(key,kind,text,quote,turn_idx,extra,created) VALUES(?,?,?,?,?,?,?)",
+                                (key, r["kind"], r["text"], r["quote"], idx, json.dumps(r.get("extra") or {}), now))
+            for rid in retire:
+                self.db.execute("UPDATE ledger SET active=0, retired_turn=?, retired_by='llm' WHERE key=? AND id=? AND active=1", (idx, key, rid))
+            for n, a in enumerate(asks):
+                self.db.execute("INSERT OR IGNORE INTO asks(key,ref,kind,text,turn_idx,asked_at) VALUES(?,?,?,?,?,?)",
+                                (key, f"{LLM_ASK}{idx}:{n}", "text", a["text"], idx, turn.get("ended_at") or turn.get("started_at")))
+            # a prompt that already answered it (catch-up over older turns)
+            nxt = self.db.execute("SELECT data FROM turns WHERE key=? AND idx>? ORDER BY idx", (key, idx)).fetchall()
+            for (data,) in nxt:
+                t = json.loads(data)
+                if typed(t):
+                    self._close_llm_asks(key, t); break
+            hist = st["purpose_history"]
+            p, pt = st["purpose"], st["purpose_turn"]
+            if purpose and purpose != p:
+                if p:
+                    hist.append({"purpose": p, "turn": pt})
+                p, pt = purpose, idx
+            self.db.execute("INSERT INTO tracker(key,through_idx,purpose,purpose_turn,purpose_history,updated) VALUES(?,?,?,?,?,?) "
+                            "ON CONFLICT(key) DO UPDATE SET through_idx=excluded.through_idx, purpose=excluded.purpose, "
+                            "purpose_turn=excluded.purpose_turn, purpose_history=excluded.purpose_history, updated=excluded.updated",
+                            (key, idx, p, pt, json.dumps(hist), now))
+            self._bump()
+            return True
+
+    def retire_row(self, key: str, row_id: int, by: str = "operator") -> bool:
+        with self._lock:
+            self.db.execute("UPDATE ledger SET active=0, retired_by=? WHERE key=? AND id=? AND active=1", (by, key, row_id))
+            ok = self.db.execute("SELECT changes()").fetchone()[0] > 0
+            if ok:
+                self._bump()
+            return ok
+
     def mark_viewed(self, key: str, when: str) -> None:
         with self._lock:
             self.db.execute("UPDATE sessions SET last_viewed_at=? WHERE key=?", (when, key)); self._bump()
 
-    def set_recap(self, key: str, text: str, anchor: str) -> None:
+    def set_recap(self, key: str, text: str, anchor: str, reentry: str | None = None) -> None:
         with self._lock:
-            self.db.execute("UPDATE sessions SET recap=?, recap_anchor=?, recap_at=? WHERE key=?", (text, anchor, time.time(), key))
+            self.db.execute("UPDATE sessions SET recap=?, recap_anchor=?, recap_at=?, reentry=COALESCE(?, reentry) WHERE key=?",
+                            (text, anchor, time.time(), reentry, key))
             self._bump()
 
     # -- queries --------------------------------------------------------------------------------------------------
@@ -187,6 +289,9 @@ class Store:
         d = self._session_row(r)
         d["turns"] = [json.loads(t[0]) for t in self.db.execute("SELECT data FROM turns WHERE key=? ORDER BY idx DESC LIMIT ?", (key, turns))][::-1]
         d["asks"] = [dict(a) for a in self.db.execute("SELECT * FROM asks WHERE key=? ORDER BY asked_at", (key,))]
+        d["ledger"] = self.ledger(key)
+        st = self.tracker_state(key)
+        d["purpose"], d["purpose_history"], d["tracked_through"] = st["purpose"], st["purpose_history"], st["through_idx"]
         return d
 
     def attention(self, host: str | None = None) -> list[dict[str, Any]]:
@@ -210,3 +315,14 @@ class Store:
 
     def close(self) -> None:
         self.db.close()
+
+
+def typed(turn: dict[str, Any]) -> bool:
+    """A prompt you typed: not a task notification or peer message, and not a command wrapper (<bash-input> etc)."""
+    text = (turn.get("user_text") or "").strip()
+    return turn.get("user_origin") == "human" and bool(text) and not text.startswith("<")
+
+
+def _clip(text: str | None, n: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"

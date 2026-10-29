@@ -38,6 +38,7 @@ from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
 STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
+CLAIM_STYLE = {"done": "green", "tests_pass": "green", "tests_fail": "red", "blocked": "yellow"}
 REACH_STYLE = {"pane": "bold", "resume": "", "foreign": "red", "remote": "blue", "none": "dim"}
 
 
@@ -277,7 +278,11 @@ class CtxApp(App):
         t.append(f"{fmt.short_key(s)} {fmt.repo_label(s)}\n", style="dim")
         t.append(f"{s.get('cwd') or '-'}\n", style="dim")
         model = (s['meta'].get('model') or '').rsplit('/', 1)[-1]
-        t.append(f"{model} {s['meta'].get('permission_mode') or ''}\n\n", style="dim")
+        t.append(f"{model} {s['meta'].get('permission_mode') or ''}\n", style="dim")
+        if s.get("purpose"):
+            t.append("for: ", style="bold")
+            t.append(s["purpose"] + "\n")
+        t.append("\n")
         opens = [x for x in s.get("asks", []) if not x["answered"]]
         if opens:
             t.append("WAITING ON YOU\n", style="bold yellow")
@@ -289,7 +294,25 @@ class CtxApp(App):
         if s.get("recap"):
             stale = s.get("recap_anchor") != _anchor(s)
             t.append("RECAP" + (" (updating…)" if stale else "") + "\n", style="bold")
-            t.append(s["recap"] + "\n\n", style="cyan")
+            t.append(s["recap"] + "\n", style="cyan")
+            for line in (s.get("reentry") or "").splitlines():
+                t.append(f"› {line}\n")
+            t.append("\n")
+        rules = fmt.instructions(s)
+        if rules:
+            t.append("YOUR INSTRUCTIONS\n", style="bold")
+            for r in rules:
+                t.append(f"• {fmt.one_line(r['text'], 160)}")
+                t.append(f"  #{r['turn_idx']}\n", style="dim")
+            t.append("\n")
+        claimed = fmt.claims(s)
+        if claimed:
+            t.append("AGENT SAYS\n", style="bold")
+            for r in claimed:
+                kind = r["extra"].get("claim", "other")
+                t.append(f"{fmt.CLAIM_GLYPH.get(kind, '·')} {fmt.one_line(r['text'], 160)}", style=CLAIM_STYLE.get(kind, ""))
+                t.append(f"  #{r['turn_idx']}\n", style="dim")
+            t.append("\n")
         if turns:
             last = turns[-1]
             # "you" = the operator's last real prompt; "agent" = the newest agent text, even if a task notification
@@ -310,12 +333,13 @@ class CtxApp(App):
             if not last.get("complete"):
                 t.append(f"  working on a {last.get('user_origin')} turn…\n" if last.get("user_origin") != "human" else "  (in progress)\n", style="green")
             t.append("\n")
-        answered = [x for x in s.get("asks", []) if x["answered"]]
-        if answered:
+        decided = fmt.decisions(s)
+        if decided:
             t.append("DECISIONS\n", style="bold")
-            for x in answered[-6:]:
-                t.append(f"✓ {fmt.one_line(x['text'], 120)}\n", style="dim")
-                t.append(f"  → {fmt.one_line(x.get('answer'), 160)}\n")
+            for _, q, a in decided:
+                if q:
+                    t.append(f"✓ {fmt.one_line(q, 120)}\n", style="dim")
+                t.append(f"  → {fmt.one_line(a, 160)}\n")
             t.append("\n")
         if len(turns) > 1:
             t.append("EARLIER\n", style="bold")

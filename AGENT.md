@@ -15,12 +15,13 @@ shows must survive that width.
 ## Invariants: don't break these
 1. **Collectors connect outbound only.** One host blocks all inbound traffic. The hub must never need to reach
    a collector.
-2. **LLM calls stay local.** The recap tracker calls an OpenAI-compatible seat on the LAN (`[[seats]]` in
+2. **LLM calls stay local.** The recap and ledger trackers call an OpenAI-compatible seat on the LAN (`[[seats]]` in
    config). Never add a cloud model call.
 3. **Deterministic first.** Facts the harness states outright (asks, answers, plan approvals, live/idle,
    last prompt) are parsed in code, and model output never overwrites them.
 4. **Recaps are regenerated from source**, never by editing the previous recap. On seat failure, keep the old
-   one and back off.
+   one and back off. **Ledger rows are extracted, never rewritten**: each cites its turn and a verbatim quote that
+   must be found in the text, and rows are retired, not deleted.
 5. **Capture is automatic.** Nothing may depend on an agent or the operator remembering to do something.
 6. **Nothing destructive to sessions without a confirmation.** `Q` (kill the tmux session) asks y/n. Swapping
    panes never kills a running agent.
@@ -44,7 +45,9 @@ src/ctxswitch/
     api.py                REST /v1/{ingest,sessions,sessions/<key>[/viewed],attention,hosts,health} + /v1/ws live updates
     store.py              SQLite (WAL); schema migrations are ALTER TABLE in place
     hooks.py              hook events → permission / elicitation / prompt asks and their resolution
-    tracker/recap.py      one-line recap per session; anchor = last turn idx:complete:open_asks:live_status
+    tracker/recap.py      one-line recap + re-entry card per session; anchor = last turn idx:complete:open_asks:live_status
+    tracker/extract.py    ledger: one seat call per exchange you typed → instructions, decisions, claims, asks, purpose
+    tracker/scheduler.py  the one loop that runs both (recap first)
   client/
     cli.py                `ctx` subcommands (ls, show, attention, hosts, tui, tmux, internal tmux-exit)
     hubclient.py          HubClient(cfg): constructed from the Config, not a URL
@@ -90,6 +93,10 @@ tests/                    pytest; transcript fixtures are synthetic (tests/claud
 - **Recapper:** a hub asyncio task. A session is recapped once its anchor has held still for 4 s. Only sessions
   that are live or active in the last 7 days are recapped. Seat requests use `response_format` json_schema
   (strict) and `chat_template_kwargs.enable_thinking=false` (Qwen seats otherwise spend the budget on thinking).
+- **Ledger extractor:** `tracker.through_idx` per session is the last exchange read; `apply_extraction` is
+  idempotent on it. `validate()` drops any row whose quote isn't in its own side of the exchange; that check is the
+  only defence against invented rows, so don't loosen it without re-running a calibration. LLM asks have ref
+  `llm:<idx>:<n>` and are closed by `store.typed()` prompts (not task/peer turns or `<bash-input>` wrappers).
 
 ## Working on it
 ```sh
@@ -117,6 +124,6 @@ uv sync --extra test
 - **TUI:** clients run from the repo venv. Restart `ctx tui` (q, then `ctx tmux`) to pick up changes.
 
 ## What's next
-Phase 2 is done. Unverified: hook/extension payloads on harness versions newer than `VALIDATED`, and the Windows
-session registry with a live Windows session. Next: messaging (inject into live sessions; idea: send a tmux copy-mode selection from one pane to another session), cross-host resume over
-ssh, and MCP. Validated harness versions are in `client/install.py` `VALIDATED`; `ctx doctor` warns on others.
+Phases 2 and 3 are done. Unverified: hook/extension payloads on harness versions newer than `VALIDATED`, and the Windows
+session registry with a live Windows session. Next: cross-host resume over ssh, then messaging (inject into live sessions; idea: send a tmux copy-mode selection
+from one pane to another session), then MCP. Validated harness versions are in `client/install.py` `VALIDATED`; `ctx doctor` warns on others.

@@ -35,6 +35,15 @@ def test_brief_card():
     assert "recap  : on track" in brief(_session(recap="on track"), NOW)
 
 
+def test_brief_carries_the_trackers_purpose_and_your_standing_instructions():
+    rule = lambda i, text, active=True: {"id": i, "kind": "instruction", "text": text, "active": active}
+    led = [rule(1, "use the pool"), *[rule(i, f"rule {i}") for i in range(4, 7)], {"id": 3, "kind": "claim", "text": "done", "active": True},
+           rule(7, "never push", active=False)]
+    lines = brief(_session(purpose="Fix the flaky test", recap="on track", ledger=led), NOW).splitlines()
+    assert lines[1:6] == ["for    : Fix the flaky test", "recap  : on track",
+                          "said   : rule 4", "said   : rule 5", "said   : rule 6"]       # newest MAX_RULES still in force
+
+
 def test_brief_says_nothing_when_there_is_nothing_to_say():
     assert brief(None, NOW) is None
     assert brief(_session(last_activity="2026-10-29T11:50:00Z"), NOW) is None             # away 10 min: you remember

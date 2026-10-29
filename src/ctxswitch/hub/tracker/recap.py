@@ -34,9 +34,14 @@ SYSTEM = (
     "now: where the work stands and what, if anything, it needs from them. If it is waiting on them, start with "
     "that. Be concrete (name the feature, file, PR or decision). Do not repeat the session title or say whether it "
     "is busy, idle or ended: the operator already sees those. Use only facts in the input; never invent results. "
-    "Address the operator as \"you\". No preamble, no quotes."
+    "Address the operator as \"you\". No preamble, no quotes.\n"
+    "Also write reentry: at most 4 short lines (newline-separated) for when the operator switches back to this "
+    "session: what it is doing, what they told it that still holds, and what it is waiting on (if anything). Same "
+    "rules: facts from the input only, \"you\" for the operator."
 )
-SCHEMA = {"type": "object", "properties": {"recap": {"type": "string"}}, "required": ["recap"], "additionalProperties": False}
+SCHEMA = {"type": "object", "properties": {"recap": {"type": "string"}, "reentry": {"type": "string"}},
+          "required": ["recap", "reentry"], "additionalProperties": False}
+REENTRY_LINES, REENTRY_CHARS = 4, 160
 
 
 def anchor_of(s: dict[str, Any]) -> str:
@@ -55,8 +60,14 @@ def build_prompt(s: dict[str, Any]) -> str:
     lines = [f"Session: {s.get('title') or '-'} ({s.get('harness')} on {s.get('host_id')}, in {s.get('cwd') or '-'})",
              f"State: {s.get('live_status')}"]
     first = (s.get("meta") or {}).get("first_prompt")
-    if first:
+    if s.get("purpose"):
+        lines.append(f"Purpose: {s['purpose']}")
+    elif first:
         lines.append(f"Original goal (first prompt): {_clip(first, 500)}")
+    held = [r for r in s.get("ledger") or [] if r.get("kind") == "instruction" and r.get("active")]
+    if held:
+        lines.append("Your standing instructions:")
+        lines += [f"- {_clip(r['text'], 200)}" for r in held[-8:]]
     lines.append("Recent exchanges, oldest first:")
     for t in turns[-6:]:
         who = {"human": "you", "peer": "peer session", "task": "task notification"}.get(t.get("user_origin"), t.get("user_origin") or "?")
@@ -111,9 +122,9 @@ class Recapper:
                 out.append(s["key"])
         return out                                          # store.sessions() order: live first, then most recent
 
-    async def call_seat(self, prompt: str) -> str:
+    async def call_seat(self, prompt: str) -> tuple[str, str]:
         body: dict[str, Any] = {
-            "model": self.seat.model, "temperature": 0.2, "max_tokens": 120,
+            "model": self.seat.model, "temperature": 0.2, "max_tokens": 400,
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
             "response_format": {"type": "json_schema", "json_schema": {"name": "recap", "strict": True, "schema": SCHEMA}},
         }
@@ -124,18 +135,19 @@ class Recapper:
                              headers={"Authorization": f"Bearer {self.seat.api_key}"})
             r.raise_for_status()
             content = r.json()["choices"][0]["message"]["content"] or ""
-        text = json.loads(content)["recap"]
-        return _clip(text, MAX_CHARS)
+        out = json.loads(content)
+        lines = [_clip(x, REENTRY_CHARS) for x in str(out.get("reentry") or "").splitlines() if x.strip()]
+        return _clip(out["recap"], MAX_CHARS), "\n".join(lines[:REENTRY_LINES])
 
     async def recap_one(self, key: str) -> bool:
         s = self.store.session(key, turns=8)
         if s is None:
             return False
         a = anchor_of(s)
-        text = await self.call_seat(build_prompt(s))
+        text, reentry = await self.call_seat(build_prompt(s))
         if not text.strip():
             return False
-        self.store.set_recap(key, text, a)
+        self.store.set_recap(key, text, a, reentry or None)
         self.status["last_ok"] = time.time()
         self._pending.pop(key, None)
         self.notify()
@@ -156,10 +168,5 @@ class Recapper:
         return n
 
     async def run(self) -> None:
-        log.info("recap tracker on %s (%s), last %d days", self.seat.url, self.seat.model, self.days)
-        while True:
-            try:
-                await self.step()
-            except Exception:                               # noqa: BLE001
-                log.exception("recap loop")
-            await asyncio.sleep(self.interval)
+        from ctxswitch.hub.tracker.scheduler import run
+        await run(self, None, self.interval)

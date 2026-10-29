@@ -32,7 +32,8 @@ class HubConfig:
     port: int = 7433
     db_path: str = ""                      # default: <data_dir>/hub.db
     recap: bool = True                     # one-line LLM recap per session (local seat)
-    recap_days: int = 7                    # only sessions live or active this recently
+    recap_days: int = 7                    # only sessions live or active this recently (recap and ledger)
+    ledger: bool = True                    # extract instructions/decisions/claims/asks per exchange (same seat)
 
 
 @dataclass

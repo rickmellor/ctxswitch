@@ -401,6 +401,13 @@ def doctor(cfg: Config | None = None) -> list[Check]:
                                  "check the seat; the board works without recaps"))
             else:
                 out.append(Check("✓", "recaps", f"{rs.get('seat')} last ok {_age(rs.get('last_ok'))}"))
+            ls = health.get("ledger")
+            if rs is not None and ls is None:
+                out.append(Check("!", "ledger", "off on the hub ([hub] ledger = false)"))
+            elif ls and ls.get("error_at") and (ls.get("last_ok") or 0) < ls["error_at"]:
+                out.append(Check("!", "ledger", f"{ls.get('last_error')} ({_age(ls['error_at'])})", "check the seat; recaps and asks still work"))
+            elif ls:
+                out.append(Check("✓", "ledger", f"{ls.get('extracted', 0)} exchanges read, {ls.get('backlog', 0)} sessions behind"))
     r = _systemctl("is-active", UNIT)
     if r is None:
         out.append(Check("!", "collector", "no systemd --user here", "run ctx-collector some other way"))

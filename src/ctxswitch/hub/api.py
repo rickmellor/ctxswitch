@@ -6,6 +6,7 @@
   GET  /v1/sessions/{key}
   POST /v1/sessions/{key}/viewed   {at}
   GET  /v1/sessions/{key}/brief    {text: resume briefing or null}  (hub/brief.py)
+  POST /v1/sessions/{key}/ledger/{id}/retire   operator retires a ledger row (e.g. an instruction that no longer holds)
   GET  /v1/attention?host=
   GET  /v1/health
   WS   /v1/ws                      server pushes {"change": N} whenever the store changes
@@ -37,6 +38,7 @@ class Hub:
         self.store, self.token = store, token
         self.hooks = HookApplier(store)
         self.recap_status: dict[str, Any] | None = None      # set by the Recapper: {seat, last_ok, last_error, error_at}
+        self.ledger_status: dict[str, Any] | None = None     # set by the Extractor: {extracted, dropped, backlog, ...}
         self.subscribers: set[asyncio.Queue] = set()
         self.background: list = []                       # coroutine factories started with the app (e.g. the recap tracker)
         self._tasks: list[asyncio.Task] = []
@@ -111,6 +113,13 @@ class Hub:
         self._notify()
         return JSONResponse({"ok": True})
 
+    async def retire(self, req: Request) -> Response:
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        ok = self.store.retire_row(req.path_params["key"], int(req.path_params["row"]))
+        if ok:
+            self._notify()
+        return JSONResponse({"ok": ok}, 200 if ok else 404)
+
     async def attention(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         return JSONResponse({"change": self.store.change, "items": self.store.attention(req.query_params.get("host") or None)})
@@ -118,7 +127,8 @@ class Hub:
     async def health(self, req: Request) -> Response:
         auth = self._authorized(req.headers)                 # unauthenticated callers don't learn the seat
         return JSONResponse({"ok": True, "change": self.store.change, "hosts": len(self.store.hosts()),
-                             "auth": auth, "recap": self.recap_status if auth else None})
+                             "auth": auth, "recap": self.recap_status if auth else None,
+                             "ledger": self.ledger_status if auth else None})
 
     async def ws(self, ws: WebSocket) -> None:
         if not self._authorized(ws.headers) and ws.query_params.get("token") != self.token:
@@ -155,6 +165,7 @@ class Hub:
             Route("/v1/sessions", self.sessions),
             Route("/v1/sessions/{key:path}/viewed", self.viewed, methods=["POST"]),
             Route("/v1/sessions/{key:path}/brief", self.brief),
+            Route("/v1/sessions/{key:path}/ledger/{row:int}/retire", self.retire, methods=["POST"]),
             Route("/v1/sessions/{key:path}", self.session),
             Route("/v1/attention", self.attention),
             Route("/v1/health", self.health),

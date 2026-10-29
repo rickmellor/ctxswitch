@@ -30,14 +30,16 @@ in one narrow side panel next to whatever you are doing.
   is busy, idle, waiting on you or ended.
 - **Puts what needs you on top.** An attention strip lists open questions, plan approvals, permission prompts
   ("allow Bash: rm -rf build") and pi confirm dialogs, oldest wait first. Each one clears itself when you answer.
-- **Writes a one-line recap per session**, so you know what matters right now. The recap comes from a *local*
-  LLM seat. Nothing leaves your network.
+- **Writes a one-line recap per session**, so you know what matters right now, and keeps a ledger of what you
+  told it: your standing instructions ("don't push without asking"), the choices you made, what the agent claims
+  (done, tests pass, blocked) and what the session is for. Every ledger row quotes the transcript word for word.
+  Both come from a *local* LLM seat. Nothing leaves your network.
 - **Switches sessions for you.** Inside tmux, Enter swaps a session into the main pane, resumes an ended one, or
   says why it can't (running in another terminal, or on another host). `c` / `p` start a new Claude / pi session.
   When an agent exits, the next one takes its place.
 - **Briefs you when you come back.** Resume a session you left more than 15 minutes ago (`claude --resume`,
-  `pi --session`) and it prints a short card first: how long you were away, the recap, your last prompt, the
-  agent's last reply and any questions still open. It's shown to you, not sent to the model.
+  `pi --session`) and it prints a short card first: how long you were away, what it's for, the recap, your
+  standing instructions, your last prompt, the agent's last reply and any questions still open. It's shown to you, not sent to the model.
 - **One source of truth.** A central hub holds all state. Every TUI on every machine shows the same thing,
   filterable by this host, a named host or all hosts. `ctx tui` opens on this host; `h` cycles the filter
   (the border shows which), or start with `ctx tui --all`.
@@ -62,9 +64,9 @@ in one narrow side panel next to whatever you are doing.
 
 ## Status
 Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is done, plus the tmux manager and
-LLM recaps. Phase 2 is done: Claude hooks and a pi extension report permission prompts and dialogs, resuming a
+LLM recaps. Phase 3 (the ledger tracker) is done. Phase 2 is done: Claude hooks and a pi extension report permission prompts and dialogs, resuming a
 session prints a briefing, Windows-native Claude sessions show up (read-only) on a WSL host, and `ctx install` /
-`ctx doctor` wire up and check a host. Still to come: messaging live sessions, cross-host resume and MCP. See the
+`ctx doctor` wire up and check a host. Still to come: cross-host resume, messaging live sessions and MCP. See the
 phases in [DESIGN.md](DESIGN.md).
 
 # User guide
@@ -170,12 +172,16 @@ filter and how many sessions are live.
 **Detail pane** for the selected session:
 - the title, state and age, number of exchanges, and when you last looked (`seen 2h`);
 - what Enter will do with it, the session key, repo, working directory, model and permission mode;
+- **for:** what the session is for (from the tracker; it changes only when your goal does);
 - **WAITING ON YOU**: every open question, approval or prompt, verbatim, with how long it's been waiting.
   Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
   input), `prompt` (a pi dialog), `plain` (its reply ended in a question);
-- **RECAP**: one line on where it stands and what it needs from you (see below);
+- **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
+- **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, with the exchange (`#12`) they came from;
+- **AGENT SAYS**: its latest claims: `✓` done / tests pass, `✗` tests fail, `!` blocked;
 - **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
-- **DECISIONS**: the questions it asked and the answers you gave, verbatim;
+- **DECISIONS**: the questions it asked and the answers you gave, verbatim, plus the choices the tracker read from
+  your prompts;
 - **EARLIER**: the few exchanges before that.
 
 ## 4. Keys
@@ -215,11 +221,17 @@ regenerated a few seconds after a session's latest exchange settles. It's shown 
 Only sessions that are live or were active in the last 7 days get one. If the endpoint is down, the board works
 as normal without recaps. Turn them off with `ctx-hub --no-recap`.
 
+The same seat keeps each session's **ledger**. It reads every exchange you typed once, and records only what it
+can quote word for word: a row whose quote isn't in the transcript is dropped. Instructions stay in force until
+you cancel them in a prompt, or retire one by hand with
+`curl -X POST -H "Authorization: Bearer $TOKEN" <hub>/v1/sessions/<key>/ledger/<id>/retire` (`ctx show` prints
+the ids). Set `[hub] ledger = false` to keep recaps without the ledger.
+
 ## 7. Command line
 | Command | Shows |
 |---|---|
 | `ctx ls [--host H \| --all] [--live]` | one line per session (default: this host) |
-| `ctx show <key-or-title-fragment>` | one session in full: recap, open asks, decisions, recent exchanges (marks it viewed; `--no-mark` to not) |
+| `ctx show <key-or-title-fragment>` | one session in full: purpose, recap, your instructions, the agent's claims, open asks, decisions, recent exchanges (marks it viewed; `--no-mark` to not) |
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
@@ -239,7 +251,8 @@ option. The ones you'll touch:
 | `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
 | `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
-| `[[seats]]` | hub only: the LLM endpoint for recaps |
+| `[hub] ledger` | hub only: keep the ledger (instructions, decisions, claims) as well as recaps (default true) |
+| `[[seats]]` | hub only: the LLM endpoint for recaps and the ledger |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
 
 ## 9. Troubleshooting

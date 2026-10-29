@@ -73,18 +73,32 @@ def cmd_show(a) -> int:
     print(f"  where : {s.get('cwd') or '-'}  ({fmt.repo_label(s)})   model: {s['meta'].get('model') or '-'}  perm: {s['meta'].get('permission_mode') or '-'}")
     print(f"  turns : {s.get('turn_count')}   started {fmt.age(s.get('started_at'), now)} ago, last activity {fmt.age(s.get('last_activity'), now)} ago"
           + (f", viewed {fmt.age(s.get('last_viewed_at'), now)} ago" if s.get('last_viewed_at') else ""))
+    if s.get("purpose"):
+        print(f"  for   : {s['purpose']}")
     if s.get("recap"):
         print(f"  recap : {s['recap']}")
+    for line in (s.get("reentry") or "").splitlines():
+        print(f"        › {line}")
+    rules = fmt.instructions(s)
+    if rules:
+        print("  your instructions:")
+        for r in rules:
+            print(f"    • {fmt.one_line(r['text'], 100)}   (#{r['turn_idx']}, ledger id {r['id']})")
+    said = fmt.claims(s)
+    if said:
+        print("  agent says:")
+        for r in said:
+            print(f"    {fmt.CLAIM_GLYPH.get(r['extra'].get('claim'), '·')} {fmt.one_line(r['text'], 100)}   (#{r['turn_idx']})")
     opens = [x for x in s.get("asks", []) if not x["answered"]]
     if opens:
         print("  OPEN ASKS:")
         for x in opens:
             print(f"    ◐ [{x['kind']}] {fmt.one_line(x['text'], 100)}   (waiting {fmt.age(x.get('asked_at'), now)})")
-    answered = [x for x in s.get("asks", []) if x["answered"]][-a.decisions:]
-    if answered:
+    decided = fmt.decisions(s, a.decisions)
+    if decided:
         print("  decisions:")
-        for x in answered:
-            print(f"    ✓ {fmt.one_line(x['text'], 70)}  →  {fmt.one_line(x.get('answer'), 60)}")
+        for _, q, ans in decided:
+            print(f"    ✓ {fmt.one_line(q, 70) + '  →  ' if q else ''}{fmt.one_line(ans, 60)}")
     print("  exchanges:")
     for t in s.get("turns", [])[-a.turns:]:
         flag = "" if t.get("complete") else " (in progress)"

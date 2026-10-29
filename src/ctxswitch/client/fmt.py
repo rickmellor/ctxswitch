@@ -65,3 +65,25 @@ def repo_label(s: dict) -> str:
     name = root.rstrip("/").rsplit("/", 1)[-1] if root else ""
     br = s.get("git_branch") or ""
     return f"{name}@{br}" if name and br and br != "HEAD" else name or "?"
+
+
+CLAIM_GLYPH = {"done": "✓", "tests_pass": "✓", "tests_fail": "✗", "blocked": "!", "other": "·"}
+
+
+def instructions(s: dict) -> list[dict]:
+    """Your standing instructions to this session that are still in force, oldest first."""
+    return [r for r in s.get("ledger") or [] if r["kind"] == "instruction" and r["active"]]
+
+
+def claims(s: dict, n: int = 4) -> list[dict]:
+    """The agent's latest claims (done / tests / blocked), newest last."""
+    return [r for r in s.get("ledger") or [] if r["kind"] == "claim"][-n:]
+
+
+def decisions(s: dict, n: int = 6) -> list[tuple[int, str, str]]:
+    """(turn, question, answer), oldest first: answered asks (hard or plain-text) and the choices the tracker read
+    from your prompts."""
+    out = [(a.get("turn_idx") or 0, a["text"], a.get("answer") or "") for a in s.get("asks") or [] if a["answered"]]
+    out += [(r["turn_idx"], (r.get("extra") or {}).get("question") or "", r["text"])
+            for r in s.get("ledger") or [] if r["kind"] == "decision"]
+    return sorted(out, key=lambda d: d[0])[-n:]
