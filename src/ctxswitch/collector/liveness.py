@@ -3,6 +3,8 @@
 Claude Code writes ~/.claude/sessions/<pid>.json for every interactive/-p session (status busy|idle,
 statusUpdatedAt, messagingSocketPath, procStart). Files outlive crashed sessions, so an entry counts as live only
 when the pid exists AND its /proc start time matches procStart (a reused pid fails the second check).
+Windows-native Claude (read from WSL) writes the same registry; its pids are Windows pids, checked with
+tasklist.exe (no start time available, so a reused pid would read as live until the next check).
 """
 from __future__ import annotations
 
@@ -36,6 +38,22 @@ def proc_start(pid: int, proc: str = "/proc") -> str | None:
 
 def read_claude_registry(sessions_dir: Path, host_id: str, proc: str = "/proc") -> dict[str, Liveness]:
     """Live Claude sessions keyed by session_key. Stale registry files are ignored (not deleted)."""
+    return _claude_registry(sessions_dir, host_id, "claude", lambda pid, d: proc_start(pid, proc) == str(d.get("procStart")))
+
+
+def read_claude_win_registry(sessions_dir: Path, host_id: str, pids=None) -> dict[str, Liveness] | None:
+    """Live Windows-native Claude sessions; None when liveness can't be known (tasklist.exe not reachable).
+    ``pids`` is the Windows pid set, or a callable producing it (only called when there are registry files)."""
+    files = list(sessions_dir.glob("*.json")) if sessions_dir.is_dir() else []
+    if not files:
+        return {}
+    alive = pids() if callable(pids) else pids
+    if alive is None:
+        return None
+    return _claude_registry(sessions_dir, host_id, "claude-win", lambda pid, d: pid in alive)
+
+
+def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> dict[str, Liveness]:
     out: dict[str, Liveness] = {}
     if not sessions_dir.is_dir():
         return out
@@ -48,11 +66,11 @@ def read_claude_registry(sessions_dir: Path, host_id: str, proc: str = "/proc") 
         pid, sid = d.get("pid"), d.get("sessionId")
         if not isinstance(pid, int) or not isinstance(sid, str):
             continue
-        if proc_start(pid, proc) != str(d.get("procStart")):
+        if not alive(pid, d):
             continue
         status = d.get("status") if d.get("status") in LIVE else "unknown"
-        out[session_key(host_id, "claude", sid)] = Liveness(
-            key=session_key(host_id, "claude", sid), status=status,
+        out[session_key(host_id, harness, sid)] = Liveness(
+            key=session_key(host_id, harness, sid), status=status,
             status_since=_iso_ms(d.get("statusUpdatedAt") or d.get("updatedAt")), pid=pid,
             socket=d.get("messagingSocketPath") if isinstance(d.get("messagingSocketPath"), str) else None)
     return out

@@ -17,6 +17,7 @@ def home(tmp_path, monkeypatch):
     for v in ("CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "CTXSWITCH_SPOOL", "CTXSWITCH_CONFIG"):
         monkeypatch.delenv(v, raising=False)
     (tmp_path / ".claude").mkdir()
+    monkeypatch.setattr(ins, "windows_claude_root", lambda: None)               # not this laptop's real Windows home
     return tmp_path
 
 
@@ -38,7 +39,10 @@ def test_merge_keeps_other_hooks_and_is_idempotent(home):
     assert s["model"] == "opus" and s["hooks"]["SessionStart"][0] == SAINT
     for ev in hook.EVENTS:
         ours = [g for g in s["hooks"][ev] if ins._ours(g)]
-        assert len(ours) == 1 and ours[0]["hooks"][0]["async"] is True
+        assert len(ours) == (2 if ev == "SessionStart" else 1) and ours[0]["hooks"][0]["async"] is True
+    (brief,) = [g for g in s["hooks"]["SessionStart"] if ins._ours(g) and "brief" in g["hooks"][0]["command"]]
+    assert brief["matcher"] == "resume" and "async" not in brief["hooks"][0]                      # output is dropped if async
+    assert brief["hooks"][0]["command"] == f"{ins.hook_exe()} brief claude"
     assert oct(p.stat().st_mode & 0o777) == "0o600"
     before = p.read_bytes()
     assert "already" in _run(ins.install_claude)[0]
@@ -102,6 +106,7 @@ def test_pi_link_and_unlink(home):
     ins.install_pi(st, False, False, lines.append)
     link = home / ".pi" / "agent" / "extensions" / "ctxswitch.ts"
     assert link.is_symlink() and link.resolve() == ins.ext_source().resolve()
+    assert ins.State().d["pi"]["hook"] == str(ins.hook_exe())                          # the extension reads this
     ins.install_pi(st, False, False, lines.append)
     assert "already" in lines[-1]
     ins.uninstall_pi(st, False, lines.append)
@@ -147,3 +152,8 @@ def test_doctor_flags_missing_wiring(home, monkeypatch):
     s = _settings(home); s["hooks"]["Stop"] = []; (home / ".claude" / "settings.json").write_text(json.dumps(s))
     c = ins._check_claude()
     assert c.status == "✗" and "Stop" in c.detail
+    s["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": ins.hook_command()}]}]
+    s["hooks"]["SessionStart"] = [g for g in s["hooks"]["SessionStart"] if "brief" not in str(g)]
+    (home / ".claude" / "settings.json").write_text(json.dumps(s))
+    c = ins._check_claude()
+    assert c.status == "✗" and c.detail == "missing for SessionStart (briefing)"

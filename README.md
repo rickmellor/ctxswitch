@@ -35,6 +35,9 @@ in one narrow side panel next to whatever you are doing.
 - **Switches sessions for you.** Inside tmux, Enter swaps a session into the main pane, resumes an ended one, or
   says why it can't (running in another terminal, or on another host). `c` / `p` start a new Claude / pi session.
   When an agent exits, the next one takes its place.
+- **Briefs you when you come back.** Resume a session you left more than 15 minutes ago (`claude --resume`,
+  `pi --session`) and it prints a short card first: how long you were away, the recap, your last prompt, the
+  agent's last reply and any questions still open. It's shown to you, not sent to the model.
 - **One source of truth.** A central hub holds all state. Every TUI on every machine shows the same thing,
   filterable by this host, a named host or all hosts.
 
@@ -58,9 +61,10 @@ in one narrow side panel next to whatever you are doing.
 
 ## Status
 Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is done, plus the tmux manager and
-LLM recaps. Phase 2 is mostly done: Claude hooks and a pi extension report permission prompts and dialogs, and
-`ctx install` / `ctx doctor` wire up and check a host. Still to come: a resume briefing, Windows-native
-sessions, messaging live sessions, cross-host resume and MCP. See the phases in [DESIGN.md](DESIGN.md).
+LLM recaps. Phase 2 is done: Claude hooks and a pi extension report permission prompts and dialogs, resuming a
+session prints a briefing, Windows-native Claude sessions show up (read-only) on a WSL host, and `ctx install` /
+`ctx doctor` wire up and check a host. Still to come: messaging live sessions, cross-host resume and MCP. See the
+phases in [DESIGN.md](DESIGN.md).
 
 # User guide
 
@@ -199,6 +203,8 @@ The footer shows as many keys as fit; the rest still work.
   waits for Enter first so you can read the error.
 - **Outside tmux** (`ctx tui` on its own), Enter opens the session in a new Windows Terminal tab under WSL, or
   shows the command to run.
+- **Windows-native Claude sessions** (`cw`) are read-only: Enter tells you the command to run in a Windows
+  terminal. They're picked up within 30 s (Windows writes don't wake the Linux file watcher).
 - **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
 
 ## 6. Recaps
@@ -230,7 +236,7 @@ option. The ones you'll touch:
 | `[hub] url`, `token` | where collectors push and clients read; must match the hub's token |
 | `[collector] host_id` | short stable name for this machine (default: hostname) |
 | `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
-| `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only) |
+| `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
 | `[[seats]]` | hub only: the LLM endpoint for recaps |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
@@ -246,6 +252,8 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | a host is missing | `ctx hosts`; on that host, `systemctl --user status ctx-collector` and `~/.local/state/ctxswitch/collector.log` |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
+| no briefing on resume | it only shows after 15 min away. `ctx doctor` (claude hooks line should not say "SessionStart (briefing)" missing); pi needs a new pi process after `ctx install --pi` |
+| Windows sessions never go live | `ctx doctor` "claude (windows)" line: liveness needs WSL interop (`tasklist.exe`) |
 | no recaps | the hub log (`docker logs ctxswitch-hub`) shows `recap … failed` lines if the seat is unreachable |
 | a TUI change didn't show up | restart it: `q`, then `ctx tmux` |
 

@@ -1,7 +1,8 @@
 """ctx install / uninstall / doctor: wire this host's Claude Code, pi and collector to ctxswitch, and check it.
 
-  install    Claude hooks merged into settings.json (ctx-hook, async; other hooks untouched), the pi extension
-             symlinked into pi's extensions dir, a config stub, the collector's systemd --user unit (re)started.
+  install    Claude hooks merged into settings.json (ctx-hook, async; other hooks untouched) plus one synchronous
+             SessionStart(resume) hook for the resume briefing, the pi extension symlinked into pi's extensions dir
+             (it finds ctx-hook through <state>/install.json), a config stub, the collector's systemd --user unit (re)started.
              Idempotent. The first install backs settings.json up; state is kept in <state>/install.json.
   uninstall  settings.json restored byte-for-byte when nothing else changed it since, else our hooks removed
              surgically; the extension link and (with --collector) the unit removed.
@@ -56,8 +57,12 @@ def ext_source() -> Path:
     return Path(hook.__file__).parent / "pi_ext" / EXT_NAME
 
 
+def hook_exe() -> Path:
+    return scripts_dir() / "ctx-hook"
+
+
 def hook_command() -> str:
-    return f"{scripts_dir() / 'ctx-hook'} claude"
+    return f"{hook_exe()} claude"
 
 
 def _sha(b: bytes) -> str:
@@ -112,13 +117,22 @@ def _ours(group: Any) -> bool:
     return isinstance(group, dict) and any(MARK in str(h.get("command", "")) for h in group.get("hooks", []) if isinstance(h, dict))
 
 
+def brief_group(command: str) -> dict[str, Any]:
+    """The resume briefing: synchronous (an async hook's output is dropped), resume only, short timeout."""
+    exe = command.rsplit(" ", 1)[0]
+    return {"matcher": "resume", "hooks": [{"type": "command", "command": f"{exe} brief claude", "timeout": 5}]}
+
+
 def merge_hooks(settings: dict[str, Any], command: str) -> dict[str, Any]:
-    """settings with exactly one ctx-hook group per event in hook.EVENTS; everything else as it was."""
+    """settings with exactly one ctx-hook group per event in hook.EVENTS (plus the briefing on SessionStart);
+    everything else as it was."""
     out = json.loads(json.dumps(settings))
     hooks = out.setdefault("hooks", {})
     for ev in hook.EVENTS:
         groups = [g for g in hooks.get(ev, []) if not _ours(g)]
         groups.append({"hooks": [{"type": "command", "command": command, "async": True, "timeout": 10}]})
+        if ev == "SessionStart":
+            groups.append(brief_group(command))
         hooks[ev] = groups
     return out
 
@@ -199,6 +213,8 @@ def uninstall_claude(st: State, dry: bool, log) -> None:
 def install_pi(st: State, dry: bool, force: bool, log) -> None:
     link, src = pi_ext_dir() / EXT_NAME, ext_source()
     if link.is_symlink() and link.resolve() == src.resolve():
+        if not dry and (st.d.get("pi") or {}).get("hook") != str(hook_exe()):
+            st.d["pi"] = {"link": str(link), "hook": str(hook_exe())}; st.save()
         log(f"pi: extension already linked at {link}"); return
     if (link.exists() or link.is_symlink()) and not link.is_symlink() and not force:
         log(f"pi: {link} exists and is not our link; left alone (--force replaces it)"); return
@@ -208,7 +224,7 @@ def install_pi(st: State, dry: bool, force: bool, log) -> None:
     if link.is_symlink() or link.exists():
         link.unlink()
     link.symlink_to(src); _own(link)
-    st.d["pi"] = {"link": str(link)}; st.save()
+    st.d["pi"] = {"link": str(link), "hook": str(hook_exe())}; st.save()
     log(f"pi: linked {link} -> {src} (takes effect in new pi sessions)")
 
 
@@ -265,12 +281,22 @@ def write_config(hub: str | None, token: str | None, dry: bool, log) -> None:
         new.setdefault("hub", {})["url"] = hub
     if token:
         new.setdefault("hub", {})["token"] = token
+    if "claude_win_roots" not in new["collector"] and (win := windows_claude_root()):
+        new["collector"]["claude_win_roots"] = [str(win)]      # WSL: also read Windows-native Claude (read-only)
     if new == raw:
         log(f"config: {p} unchanged"); return
     if dry:
         log(f"config: would write {p}"); return
     _write(p, tomli_w.dumps(new).encode(), mode=0o600)       # holds the hub token
     log(f"config: wrote {p}" + ("" if new.get("hub", {}).get("url") else " (set [hub] url and token)"))
+
+
+def windows_claude_root() -> Path | None:
+    """<windows home>/.claude/projects when this is WSL and Windows-native Claude has been used."""
+    from ctxswitch.common.wsl import windows_home
+    home = windows_home()
+    p = home / ".claude" / "projects" if home else None
+    return p if p and p.is_dir() else None
 
 
 def install_collector(dry: bool, start: bool, log) -> None:
@@ -397,6 +423,8 @@ def doctor(cfg: Config | None = None) -> list[Check]:
         out.append(Check("✓" if v == VALIDATED[harness] else "!", f"{harness} version", f"{v or '?'}" +
                          ("" if v == VALIDATED[harness] else f" (payloads validated on {VALIDATED[harness]})")))
         out.append(check())
+    for root in cfg.collector.claude_win_roots:
+        out.append(_check_claude_win(Path(os.path.expanduser(root))))
     out.append(Check("✓", "tmux", shutil.which("tmux")) if shutil.which("tmux") else
                Check("!", "tmux", "not installed: `ctx tmux` (the manager) won't work"))
     return out
@@ -410,12 +438,24 @@ def _check_claude() -> Check:
         return Check("✗", "claude hooks", f"{p} is not valid JSON")
     cmds = {ev: [h.get("command", "") for g in hooks.get(ev, []) if _ours(g) for h in g["hooks"]] for ev in hook.EVENTS}
     missing = [ev for ev, c in cmds.items() if not c]
+    if not any(" brief claude" in c for c in cmds.get("SessionStart", [])):
+        missing.append("SessionStart (briefing)")
     if missing:
         return Check("✗", "claude hooks", f"missing for {', '.join(missing)}", "ctx install --claude")
     exe = next(iter(cmds.values()))[0].split()[0]
     if not os.access(exe, os.X_OK):
         return Check("✗", "claude hooks", f"{exe} not executable", "ctx install --claude (re-points the hooks)")
     return Check("✓", "claude hooks", f"{len(hook.EVENTS)} events -> {exe}")
+
+
+def _check_claude_win(root: Path) -> Check:
+    if not root.is_dir():
+        return Check("✗", "claude (windows)", f"{root} missing", "fix [collector] claude_win_roots")
+    from ctxswitch.common.wsl import windows_pids
+    n = sum(1 for _ in root.glob("*/*.jsonl"))
+    if windows_pids() is None:
+        return Check("!", "claude (windows)", f"{n} transcripts; tasklist.exe unavailable, so no liveness", "enable WSL interop")
+    return Check("✓", "claude (windows)", f"{n} transcripts in {root} (read-only, polled)")
 
 
 def _check_pi() -> Check:

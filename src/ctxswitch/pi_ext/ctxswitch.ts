@@ -7,7 +7,10 @@
 // Spool: <spool>/<time_ns>-<pid>.json, one per event, the same record ctx-hook writes for Claude:
 //   {harness:"pi", session_id, event, ts, data}. Only blocking UI prompts and session start/end are spooled;
 //   everything else is in the transcript.
+// Briefing: on a resumed session (/resume, or pi started into a session that has entries), `ctx-hook brief pi <id>` (path from <state>/install.json, written by
+//   `ctx install`) asks the hub what you need back in your head; shown with ui.notify. Async, 4 s cap.
 // Nothing here may throw into pi: every write is best-effort.
+import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +36,14 @@ function procStart(): string | undefined {
 	} catch {
 		return undefined; // no /proc (macOS): the collector falls back to "pid exists"
 	}
+}
+
+function hookExe(): string {
+	try {
+		const hook = JSON.parse(readFileSync(join(STATE, "install.json"), "utf8"))?.pi?.hook;
+		if (typeof hook === "string" && hook) return hook;
+	} catch { /* not installed by ctx install */ }
+	return "ctx-hook";
 }
 
 function atomicWrite(dir: string, name: string, body: unknown): void {
@@ -78,6 +89,16 @@ export default function (pi: ExtensionAPI) {
 		status = ctx.isIdle() ? "idle" : "busy"; since = new Date().toISOString();
 		register();
 		spool("session_start", { reason: ev.reason, cwd: ctx.cwd, session_file: session.file });
+		// resume = /resume inside pi; `pi -c` / `pi --session X` start with "startup" into an existing session
+		const resumed = ev.reason === "resume" || (ev.reason === "startup" && ctx.sessionManager.getLeafEntry() !== undefined);
+		if (resumed) {
+			try {
+				execFile(hookExe(), ["brief", "pi", session.id], { timeout: 4000 }, (err, out) => {
+					const text = String(out ?? "").trim();
+					if (!err && text) try { ctx.ui.notify(text, "info"); } catch { /* no UI */ }
+				});
+			} catch { /* best-effort */ }
+		}
 	});
 	pi.on("agent_start", async () => setStatus("busy"));
 	pi.on("agent_settled", async () => setStatus("idle"));

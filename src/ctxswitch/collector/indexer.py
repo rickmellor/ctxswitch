@@ -17,6 +17,7 @@ from ctxswitch.collector.adapters import parse_json_line
 from ctxswitch.collector.adapters.claude import ClaudeParser
 from ctxswitch.collector.adapters.pi import PiParser
 from ctxswitch.collector.gitinfo import repo_info
+from ctxswitch.common.wsl import wsl_path
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import CollectorConfig
 from ctxswitch.common.schema import SessionMeta, session_key
@@ -76,6 +77,26 @@ class Indexer:
                     continue
                 out.append((p, h))
         return sorted(out, key=lambda t: t[0].stat().st_mtime if t[0].exists() else 0)
+
+    def poll(self, harness: str) -> int:
+        """Process the transcripts of one harness whose size or mtime changed (for roots no watcher sees: inotify
+        does not fire on /mnt/c for writes made by Windows processes)."""
+        n = 0
+        for root, h in self.roots:
+            if h != harness or not root.is_dir():
+                continue
+            for p in root.glob("*/*.jsonl"):
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                rec = self.state.file(str(p))
+                if rec and rec["size"] == st.st_size and rec["mtime"] == st.st_mtime:
+                    continue
+                if rec is None and st.st_mtime < time.time() - self.cfg.backfill_days * 86400:
+                    continue
+                self.process(p, h); n += 1
+        return n
 
     def scan_all(self) -> int:
         n = 0
@@ -138,7 +159,8 @@ class Indexer:
 
     def _meta(self, pm: dict[str, Any], key: str, path: Path, harness: str, st: os.stat_result) -> dict[str, Any]:
         cwd = pm.get("cwd", "")
-        root, remote = repo_info(cwd) if cwd else ("", "")
+        local = wsl_path(cwd) if harness == "claude-win" else cwd     # C:\x -> /mnt/c/x, so git can be asked
+        root, remote = repo_info(local) if cwd else ("", "")
         title = pm.get("title") or pm.get("first_prompt") or ""
         m = SessionMeta(host_id=self.host_id, harness=harness, session_id=key.rsplit("/", 1)[1],
                         transcript_path=str(path), cwd=cwd, repo_root=root, repo_remote=remote,

@@ -3,6 +3,8 @@
 Loop: initial scan -> watch transcript roots (watchfiles) + liveness poll every 5 s -> every event lands in the
 local outbox -> a pusher drains the outbox to POST /v1/ingest with retry/backoff. The hub being down just grows
 the outbox.
+Windows-native Claude roots (read from WSL under /mnt/c) are polled every WIN_POLL_S instead: inotify does not fire
+for writes made by Windows processes, and tasklist.exe (their liveness) costs ~1.5 s a call.
 """
 from __future__ import annotations
 
@@ -21,11 +23,13 @@ from watchfiles import Change, awatch
 
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
-from ctxswitch.collector.liveness import read_claude_registry, read_pi_registry, runtime_dir
+from ctxswitch.collector.liveness import read_claude_registry, read_claude_win_registry, read_pi_registry, runtime_dir
+from ctxswitch.common.wsl import windows_pids
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import Config, data_dir, load
 
 log = logging.getLogger("ctxswitch.collector")
+WIN_POLL_S = 30
 
 
 class Collector:
@@ -37,6 +41,7 @@ class Collector:
         self._dirty = asyncio.Event()
         self._last_liveness: str | None = None
         self.spool = spool.spool_dir(cfg.collector.spool_dir)
+        self.win_live: dict = {}                       # last Windows registry read (refreshed every WIN_POLL_S)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         self.state.enqueue(kind, payload)
@@ -46,12 +51,33 @@ class Collector:
     def poll_liveness(self) -> None:
         live = read_claude_registry(Path(os.path.expanduser(self.cfg.collector.claude_sessions_dir)), self.host_id)
         live |= read_pi_registry(runtime_dir(), self.host_id)
+        live |= self.win_live
         self.ix.live_keys = set(live)
         snap = {"host_id": self.host_id, "sessions": [l.to_dict() for l in live.values()]}
         fp = json.dumps(snap, sort_keys=True)
         if fp != self._last_liveness:
             self._last_liveness = fp
             self._emit("liveness", snap)
+
+    def win_sessions_dirs(self) -> list[Path]:
+        """<windows home>/.claude/sessions for each <windows home>/.claude/projects root."""
+        return [r.parent / "sessions" for r, h in self.ix.roots if h == "claude-win"]
+
+    def read_windows_liveness(self) -> dict | None:
+        """Blocking (tasklist.exe) but touches no collector state, so it can run in a thread. None = unknown."""
+        live: dict = {}
+        for d in self.win_sessions_dirs():
+            got = read_claude_win_registry(d, self.host_id, windows_pids)
+            if got is None:
+                return None
+            live |= got
+        return live
+
+    def poll_windows(self, live: dict | None) -> None:
+        if live is not None:                           # interop unavailable: keep the last answer rather than end them all
+            self.win_live = live
+        self.poll_liveness()                           # first: poll() decides "ended" from live_keys
+        self.ix.poll("claude-win")
 
     def drain_spool(self) -> int:
         n = spool.drain(self.spool, self._emit)
@@ -96,7 +122,7 @@ class Collector:
 
     # -- watchers -------------------------------------------------------------------------------------------------
     async def watch_loop(self) -> None:
-        roots = [str(r) for r, _ in self.ix.roots if r.is_dir()]
+        roots = [str(r) for r, h in self.ix.roots if r.is_dir() and h != "claude-win"]
         if not roots:
             log.warning("no transcript roots exist: %s", [str(r) for r, _ in self.ix.roots]); return
         async for changes in awatch(*roots, step=300):
@@ -129,6 +155,16 @@ class Collector:
                 log.exception("liveness poll")
             await asyncio.sleep(5)
 
+    async def windows_loop(self) -> None:
+        if not self.win_sessions_dirs():
+            return
+        while True:
+            try:
+                self.poll_windows(await asyncio.to_thread(self.read_windows_liveness))
+            except Exception:                          # noqa: BLE001
+                log.exception("windows poll")
+            await asyncio.sleep(WIN_POLL_S)
+
     async def sweep_loop(self) -> None:
         """Re-process everything every 10 min so sessions age into 'ended' without a file change."""
         while True:
@@ -148,7 +184,7 @@ class Collector:
         if self.once:
             await self.push_loop(); return
         await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop(),
-                             self.spool_loop())
+                             self.spool_loop(), self.windows_loop())
 
 
 def main() -> None:

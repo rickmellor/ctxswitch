@@ -5,6 +5,7 @@
   GET  /v1/sessions?host=&live=1
   GET  /v1/sessions/{key}
   POST /v1/sessions/{key}/viewed   {at}
+  GET  /v1/sessions/{key}/brief    {text: resume briefing or null}  (hub/brief.py)
   GET  /v1/attention?host=
   GET  /v1/health
   WS   /v1/ws                      server pushes {"change": N} whenever the store changes
@@ -24,6 +25,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
 from ctxswitch.hub.store import Store
 
@@ -98,6 +100,10 @@ class Hub:
         s = self.store.session(req.path_params["key"], turns=int(req.query_params.get("turns", "50")))
         return JSONResponse(s) if s else JSONResponse({"error": "not found"}, 404)
 
+    async def brief(self, req: Request) -> Response:
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        return JSONResponse({"text": brief(self.store.session(req.path_params["key"], turns=10))})
+
     async def viewed(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         body = await req.json()
@@ -148,6 +154,7 @@ class Hub:
             Route("/v1/hosts", self.hosts),
             Route("/v1/sessions", self.sessions),
             Route("/v1/sessions/{key:path}/viewed", self.viewed, methods=["POST"]),
+            Route("/v1/sessions/{key:path}/brief", self.brief),
             Route("/v1/sessions/{key:path}", self.session),
             Route("/v1/attention", self.attention),
             Route("/v1/health", self.health),

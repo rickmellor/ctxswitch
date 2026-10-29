@@ -143,3 +143,15 @@ def test_task_notification_prompt_is_task_origin():
             assistant([text("Continuing.")], "2026-10-28T10:00:01Z")]
     p = feed_all(ClaudeParser(), rows)
     assert p.current.user_origin == "task" and "first_prompt" not in p.meta
+
+
+def test_interrupt_marker_is_an_event_not_a_prompt():
+    marker = [{"type": "text", "text": "[Request interrupted by user for tool use]"}]
+    rows = [user("run touch x", "2026-10-28T10:00:00Z"),
+            assistant([tool_use("Bash", "t1", {"command": "touch x"})], "2026-10-28T10:00:01Z"),
+            tool_result("t1", "The user doesn't want to proceed", "2026-10-28T10:00:05Z", is_error=True),
+            user(marker, "2026-10-28T10:00:05Z"),
+            user("[Request interrupted by user]", "2026-10-28T10:00:06Z")]
+    p = feed_all(ClaudeParser(), rows)
+    assert p.drain() == [] and p.current.user_text == "run touch x"
+    assert p.current.events.count("interrupted") == 2

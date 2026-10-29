@@ -77,6 +77,11 @@ tests/                    pytest; transcript fixtures are synthetic (tests/claud
   and resolves it on PostToolUse, PermissionDenied, Stop, UserPromptSubmit, SessionEnd or `ui_prompt_end`. Each
   event applies once (`hook_seen`). Esc on a permission prompt fires **no** hook: the registry's `idle` closes it.
   Tool events are spooled only while `spool/.pending/<sid>` exists, so ordinary tool calls cost one tiny process.
+- **Briefing:** `hub/brief.py` builds the card; `ctx-hook brief claude` (SessionStart, `matcher: resume`,
+  synchronous) and `ctx-hook brief pi <sid>` (run by the pi extension) fetch it with a 2 s timeout and print
+  nothing on any failure. Turn text comes straight from the parser, so fix bad text there, not in the card.
+- **Windows Claude:** harness `claude-win`, WSL only (`common/wsl.py`). Polled every 30 s by `Collector.windows_loop`
+  (`Indexer.poll`), never watched. `tasklist.exe` runs in a thread; all collector state stays on the event loop.
 - **Live states:** `LIVE` in `common/schema.py` (busy, waiting, idle, shell). `waiting` comes straight from
   Claude's registry while a dialog is up. Don't hardcode the list.
 - **Install:** `ctx install` merges into `settings.json` (our entries are found by the string `ctx-hook`), keeps the
@@ -112,6 +117,6 @@ uv sync --extra test
 - **TUI:** clients run from the repo venv. Restart `ctx tui` (q, then `ctx tmux`) to pick up changes.
 
 ## What's next
-Left from Phase 2: the resume briefing and a Windows-native read-only adapter. Then messaging (inject into
-live sessions; idea: send a tmux copy-mode selection from one pane to another session), cross-host resume over
+Phase 2 is done. Unverified: hook/extension payloads on harness versions newer than `VALIDATED`, and the Windows
+session registry with a live Windows session. Next: messaging (inject into live sessions; idea: send a tmux copy-mode selection from one pane to another session), cross-host resume over
 ssh, and MCP. Validated harness versions are in `client/install.py` `VALIDATED`; `ctx doctor` warns on others.

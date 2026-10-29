@@ -132,6 +132,8 @@ class ClaudeParser:
             self._event(f"slash_command:{m.group(1)}", offset_end, e.get("timestamp")); return
         if stripped.startswith(("<local-command-stdout>", "<local-command-caveat>")):
             return                                           # output of such a command; nothing to track
+        if stripped.startswith("[Request interrupted by user"):
+            self._event("interrupted", offset_end, e.get("timestamp")); return   # Esc: ends that turn, says nothing
         if stripped.startswith("<task-notification>") and origin == "human":
             origin = "task"                                  # background work reporting in, not the operator
         if self._cur is not None:

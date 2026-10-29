@@ -1,6 +1,8 @@
 """ctx-hook: Claude Code hook → one spool file per event. Stdlib only; it runs on every hooked event.
 
-  ctx-hook claude      reads the hook's JSON on stdin (installed by `ctx install` for the events in EVENTS)
+  ctx-hook claude          reads the hook's JSON on stdin (installed by `ctx install` for the events in EVENTS)
+  ctx-hook brief claude    SessionStart(resume), synchronous: prints {"systemMessage": <briefing>} from the hub
+  ctx-hook brief pi <sid>  the pi extension's session_start(resume): prints the briefing as plain text
 
 The transcript already holds prompts, replies, questions and plan approvals. Hooks add what it can't show: a
 permission dialog waiting on the operator (PermissionRequest / Notification) and how it ended (PostToolUse,
@@ -9,7 +11,8 @@ renamed, so the collector never reads half a file). The collector pushes and del
 
 Tool events fire on every tool call, so they are only spooled while a permission is pending for that session
 (a marker file under ``<spool>/.pending/``, set by PermissionRequest and cleared when the turn ends).
-This must never fail or slow the agent: every error is swallowed and the exit code is always 0.
+This must never fail or slow the agent: every error is swallowed and the exit code is always 0. The briefing
+is the one blocking call: it gives the hub BRIEF_TIMEOUT_S and prints nothing if that isn't enough.
 """
 from __future__ import annotations
 
@@ -28,6 +31,7 @@ CLOSES = {"Stop", "UserPromptSubmit", "SessionEnd", "SessionStart"}       # Sess
 KEEP = ("source", "reason", "notification_type", "message", "title", "tool_name", "tool_input", "permission_mode",
         "cwd", "transcript_path", "agent_type")
 MAX_STR = 400
+BRIEF_TIMEOUT_S = 2.0
 
 
 def spool_dir() -> Path:
@@ -71,11 +75,43 @@ def handle_claude(d: dict, spool: Path) -> Path | None:
     return out
 
 
+def fetch_brief(harness: str, sid: str, cfg=None) -> str | None:
+    """The hub's resume briefing for this host's session, or None (no hub, no token, too slow, nothing to say)."""
+    import urllib.parse
+    import urllib.request
+    from ctxswitch.common.config import load
+    from ctxswitch.common.schema import session_key
+    cfg = cfg or load()
+    key = urllib.parse.quote(session_key(cfg.host_id, harness, sid), safe="/")
+    req = urllib.request.Request(f"{cfg.hub.url.rstrip('/')}/v1/sessions/{key}/brief",
+                                 headers={"Authorization": f"Bearer {cfg.hub.token}"} if cfg.hub.token else {})
+    with urllib.request.urlopen(req, timeout=BRIEF_TIMEOUT_S) as r:
+        text = json.loads(r.read(200_000)).get("text")
+    return text if isinstance(text, str) and text.strip() else None
+
+
+def brief_claude(d: dict) -> str | None:
+    sid = d.get("session_id")
+    if d.get("hook_event_name") != "SessionStart" or d.get("source") != "resume" or not isinstance(sid, str) or not sid:
+        return None
+    text = fetch_brief("claude", sid)
+    return json.dumps({"systemMessage": text}, ensure_ascii=False) if text else None
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
+        if argv[:2] == ["brief", "pi"] and len(argv) > 2:
+            text = fetch_brief("pi", argv[2])
+            if text:
+                print(text)
+            return 0
         raw = sys.stdin.read(1_000_000)
-        if argv[:1] == ["claude"]:
+        if argv[:2] == ["brief", "claude"]:
+            out = brief_claude(json.loads(raw))
+            if out:
+                print(out)
+        elif argv[:1] == ["claude"]:
             handle_claude(json.loads(raw), spool_dir())
     except Exception:                                   # noqa: BLE001 - a hook must never break the agent
         pass

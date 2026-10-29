@@ -24,6 +24,17 @@ Greenfield repo: `~/repos/ctxswitch`.
   spool one file per event; tool events are spooled only while a permission is pending. Claude's own registry
   reports `status: "waiting"` (+ `waitingFor`) while a dialog is up, so `idle` closes hook asks that no hook
   resolved (Esc on a permission prompt fires none). The pi registry is authoritative, so a vanished pi session ends.
+- 2026-10-29 (Phase 2): the resume briefing is built on the hub (`hub/brief.py`, `GET /v1/sessions/<key>/brief`)
+  from hard signals only, and shown to the operator, not the model: Claude via a synchronous SessionStart hook
+  (`matcher: resume`) printing `systemMessage` (async hook output is dropped), pi via `ui.notify`. `claude --resume`
+  keeps the session id; `pi --session` / `pi -c` report `reason: "startup"`, so pi detects a resume by an existing
+  leaf entry. Nothing is shown under 15 min away, and the hook gives up after 2 s.
+- 2026-10-29 (Phase 2): Windows-native Claude is read from WSL as harness `claude-win`. Its roots are polled every
+  30 s rather than watched (inotify doesn't fire for Windows-side writes on /mnt/c). Liveness reads the Windows
+  `~/.claude/sessions` registry and checks pids with `tasklist.exe` (~1.5 s, run in a thread, only when registry
+  files exist; no start-time check, so a reused pid reads live until the next poll). The registry format is
+  assumed to match Linux; it was **not** seen with a live Windows session. Windows cwds are mapped to WSL paths for
+  repo grouping; resume is a hint only (no injection in v1).
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles
@@ -40,7 +51,7 @@ Greenfield repo: `~/repos/ctxswitch`.
 | Host | Reach | Runtimes | Sessions |
 |---|---|---|---|
 | laptop WSL (this) | inbound blocked; outbound LAN ok; `wt.exe` available | claude 2.1.280, pi 1.2.0, systemd --user running | 257 Claude + 75 pi transcripts |
-| laptop Windows-native | files via `/mnt/c/Users/<you>/.claude` | claude (detribble) | 34 transcripts, last 2026-10-05 |
+| laptop Windows-native | files via `/mnt/c/Users/<you>/.claude` | claude | 34 transcripts, last 2026-10-05 |
 | gpu-host | ssh ok (id_rsa) | docker, Python 3.12, SAINT gateway :4000, claude/pi not on non-login PATH | 47 Claude + 78 pi |
 | devbox | ssh ok (id_ed25519) | docker, Python 3.14, claude + pi | 13 Claude + 10 pi |
 | NAS | my ssh keys refused; runs containers (megaplan :8932, mosquitto) | — | — |
@@ -156,8 +167,8 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    filter + `ctx ls/show`. Run hub locally first; deploy to gpu-host at the end of the phase.
 2. Hooks + pi extension + spool; Notification-driven permission asks; resume briefing (hard-signal version);
    `install`/`doctor` on all three hosts; Windows-native read-only adapter.
-   **Done:** hooks, pi extension, spool, permission/elicitation/prompt asks, `install`/`uninstall`/`doctor`.
-   **Open:** resume briefing, Windows-native adapter.
+   **Done** (2026-10-29): hooks, pi extension, spool, permission/elicitation/prompt asks, `install`/`uninstall`/
+   `doctor`, resume briefing, Windows-native read-only adapter.
 3. Tracker: extraction rows (instructions, decisions, claims, plain-text asks), reentry/purpose; scheduler.
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
 5. Messaging: pi inject + reply; Claude inject (per spike); queued delivery; quick-reply; cross-host resume.

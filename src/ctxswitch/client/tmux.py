@@ -253,6 +253,9 @@ def show(s: dict, focus: bool = True) -> str:
     viewer = viewer_pane(ps)
     if viewer is None:
         return "no viewer pane: split the window so the TUI has a neighbour (ctx tmux)"
+    if s.get("harness") == "claude-win":
+        from ctxswitch.client.launch import windows_hint
+        return windows_hint(s)
     r, pane = _reach(s, ps, _this_host())
     created = False
     if r == "remote":

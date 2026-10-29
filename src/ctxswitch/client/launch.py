@@ -15,8 +15,15 @@ def resume_command(s: dict) -> list[str] | None:
     return None
 
 
+def windows_hint(s: dict) -> str:
+    """Windows-native Claude sessions are read-only: say how to resume one, from Windows."""
+    return f"Windows session: in a Windows terminal, cd {s.get('cwd') or '~'} && claude --resume {s.get('session_id')}"
+
+
 def open_tab(s: dict, this_host: str | None = None) -> str:
     """Launch in a new Windows Terminal tab (WSL) or print the command. Returns a human message."""
+    if s.get("harness") == "claude-win":
+        return windows_hint(s)
     cmd = resume_command(s)
     if not cmd:
         return "no resume command for this harness"
