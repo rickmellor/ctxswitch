@@ -458,8 +458,7 @@ class CtxApp(App):
             said = next((x for x in reversed(turns) if x.get("assistant_text")), None)
             t.append("LAST EXCHANGE\n", style="bold")
             if you is not None:
-                who = "you" if you.get("user_origin") == "human" else "peer"
-                t.append(f"{who} ({fmt.age(you.get('started_at'), now)}): ", style="bold")
+                t.append(f"{fmt.who(you)} ({fmt.age(you.get('started_at'), now)}): ", style="bold")
                 t.append(fmt.one_line(you.get("user_text"), 400) + "\n")
             if said is not None:
                 t.append(f"agent ({fmt.age(said.get('ended_at') or said.get('started_at'), now)}): ", style="bold")

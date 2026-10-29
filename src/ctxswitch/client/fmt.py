@@ -114,6 +114,12 @@ def messages(s: dict, n: int = 4) -> list[dict]:
     return [m for m in s.get("messages") or [] if m["status"] != "cancelled"][-n:]
 
 
+def who(t: dict) -> str:
+    """Who started a turn: you, the agent session that messaged it, or a peer / task notification."""
+    o = t.get("user_origin")
+    return "you" if o in ("human", None) else f"from {t['from_key']}" if t.get("from_key") else o
+
+
 def sender(m: dict) -> str:
     """"from <session>: " for another agent's message; yours need no label."""
     return f"from {m['from_key']}: " if m.get("from_key") else ""
@@ -247,7 +253,7 @@ def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | No
     for t in s.get("turns", [])[-turns:]:
         flag = "" if t.get("complete") else " (in progress)"
         out.append(f"    #{t['idx']} {age(t.get('started_at'), now):>5} ago [{t.get('user_origin')}]{flag}")
-        out.append(f"       you  : {one_line(t.get('user_text'), 110)}")
+        out.append(f"       {who(t):<5}: {one_line(t.get('user_text'), 110)}")
         if t.get("assistant_text"):
             out.append(f"       agent: {one_line(t.get('assistant_text'), 110)}")
         tally = t.get("tally") or {}

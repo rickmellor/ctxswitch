@@ -7,6 +7,7 @@ import httpx
 from starlette.testclient import TestClient
 from test_messages import FakeSocket, Hub2, _collector
 
+from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client.mcp_server import Server, own_session
 from ctxswitch.collector import deliver
@@ -15,6 +16,7 @@ from ctxswitch.common.schema import Liveness
 from ctxswitch.hub import store as store_mod
 from ctxswitch.hub.api import Hub
 from ctxswitch.hub.store import Store
+from ctxswitch.hub.tracker.recap import build_prompt
 
 H = {"Authorization": "Bearer t"}
 A, B, P = "laptop/claude/s1", "devbox/claude/s2", "laptop/pi/p1"
@@ -94,15 +96,19 @@ def test_the_delivered_turn_is_the_agents_not_yours(tmp_path):
     assert a["llm:0:0"]["answered"] == 0                                        # an agent's message isn't your prompt
     assert s["messages"][0]["status"] == "replied"
     assert [r["text"] for r in store.search("docs", kinds=("prompt",))] == []  # nor one of your prompts
+    lines = fmt.show_lines(s, 2)
+    assert f"       from {B}: yes, docs too" in lines and "       you  : go" in lines    # labelled with who sent it
+    assert f"- #1 another agent session ({B}), not you: yes, docs too" in build_prompt(s)   # the recap isn't told it's you
+    assert fmt.who({"user_origin": "peer"}) == "peer" and fmt.who({"user_origin": "task"}) == "task"
 
 
 def test_header_names_the_sender_for_both_harnesses():
     h = deliver.agent_header(B, "api   work\nnow")
     assert h.startswith("Message from another agent session, not from the operator") and deliver.HEADER not in h
     assert f'From: session {B} "api work now" on host devbox' in h and f'session "{B}"' in h
-    for harness in ("claude", "pi"):
+    for harness, tool in (("claude", "use the mcp__ctxswitch__send_message tool"), ("pi", "use the ctxswitch MCP server's send_message tool")):
         c = json.loads(deliver.line(harness, "s", "hi", 3, from_key=B, from_title="api work"))["message"]["content"]
-        assert c == deliver.agent_header(B, "api work") + "hi"
+        assert c == deliver.agent_header(B, "api work", harness) + "hi" and tool in c
     assert "From: session devbox/pi/x on host devbox\n" in deliver.agent_header("devbox/pi/x", "")
 
 

@@ -346,9 +346,10 @@ it can't send at all. It's delivered like yours (Messages, above) but headed
 
     Message from another agent session, not from the operator (sent with ctxswitch).
     From: session laptop/claude/1f0c… "docs layout" on host laptop
-    To reply, use the ctxswitch send_message tool with session "laptop/claude/1f0c…".
+    To reply, use the mcp__ctxswitch__send_message tool (ctxswitch MCP; not SendMessage) with session "laptop/claude/1f0c…".
 
-and recorded as that session's turn (`from <session>`), not yours: it never answers a question for you or shows
+(Claude's own SendMessage only reaches sessions on its machine, so Claude is given the full tool name.) It's
+recorded as that session's turn (`from <session>`), not yours: it never answers a question for you or shows
 up as your prompt in a search. Limits, so two agents can't keep each other busy: one message in flight from one
 session to another, 20 an hour per session, none to itself, and it can't answer a question (that's `a`, yours).
 A host whose collector predates this doesn't get agents' messages (they wait, queued, until it's updated), so an

@@ -18,18 +18,24 @@ TIMEOUT = 5.0
 HEADER = "Message from the operator (sent with ctxswitch):\n\n"
 
 
-def agent_header(from_key: str, title: str | None = None) -> str:
+# Claude's own SendMessage only reaches sessions on its host, and a haiku session given "the send_message tool"
+# picked it (2026-10-29), so Claude gets the MCP tool's full name
+REPLY_TOOL = {"claude": "mcp__ctxswitch__send_message tool (ctxswitch MCP; not SendMessage)"}
+
+
+def agent_header(from_key: str, title: str | None = None, harness: str = "pi") -> str:
     """Heads another agent's message, for either harness (pi would otherwise show it as the operator's prompt)."""
     host = from_key.split("/", 1)[0]
     name = f' "{" ".join(title.split())[:80]}"' if title and title.strip() else ""
+    tool = REPLY_TOOL.get(harness, "ctxswitch MCP server's send_message tool")
     return (f"Message from another agent session, not from the operator (sent with ctxswitch).\n"
             f"From: session {from_key}{name} on host {host}\n"
-            f"To reply, use the ctxswitch send_message tool with session \"{from_key}\".\n\n")
+            f"To reply, use the {tool} with session \"{from_key}\".\n\n")
 
 
 def line(harness: str, session_id: str, body: str, msg_id: int, from_key: str | None = None, from_title: str | None = None) -> bytes:
     if from_key:
-        content = agent_header(from_key, from_title) + body
+        content = agent_header(from_key, from_title, harness) + body
     else:
         content = HEADER + body if harness == "claude" else body
     return (json.dumps({"type": "user", "message": {"content": content}, "msg_id": f"ctx-{msg_id}",

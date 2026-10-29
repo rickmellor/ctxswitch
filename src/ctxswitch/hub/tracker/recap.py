@@ -71,6 +71,8 @@ def build_prompt(s: dict[str, Any]) -> str:
     lines.append("Recent exchanges, oldest first:")
     for t in turns[-6:]:
         who = {"human": "you", "peer": "peer session", "task": "task notification"}.get(t.get("user_origin"), t.get("user_origin") or "?")
+        if t.get("from_key"):
+            who = f"another agent session ({t['from_key']}), not you"
         lines.append(f"- #{t['idx']} {who}: {_clip(t.get('user_text'), 600)}")
         if t.get("assistant_text"):
             lines.append(f"  agent: {_clip(t.get('assistant_text'), 900)}")
