@@ -184,7 +184,8 @@ def _item(key, ref=None, item="ask", at="t0", title="T", txt="Q?"):
 def test_notifier_pops_up_only_what_is_new():
     n = Notifier()
     a = _item("k1", "r1")
-    assert n.fresh([a]) == []                                        # already waiting at start: not news
+    old_idle = _item("k0", item="idle")
+    assert n.fresh([a, old_idle]) == [a] and n.fresh([a]) == []      # waiting at start: pops up once (idle doesn't)
     b, idle, wait = _item("k2", "r2"), _item("k3", item="idle"), _item("k4", item="waiting")
     assert n.fresh([a, b, idle, wait]) == [b, wait]                  # an agent that only finished: not by default
     assert n.fresh([a, b, idle, wait]) == []
@@ -207,3 +208,5 @@ def test_tmux_popup_escapes_formats():
         returncode = 0
     assert tmux_popup("use #{pane_id} and #[fg=red]", run=lambda argv, **kw: calls.append(argv) or R())
     assert calls == [["tmux", "display-message", "-d", "8000", "use ##{pane_id} and ##[fg=red]"]]
+    R.returncode = 1
+    assert not tmux_popup("x", run=lambda argv, **kw: R())

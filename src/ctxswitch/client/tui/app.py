@@ -36,7 +36,7 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
-from ctxswitch.client.notify import Notifier, text as popup_text, tmux_popup
+from ctxswitch.client.notify import Notifier, item_id, log as popup_log, text as popup_text, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
@@ -187,8 +187,10 @@ class CtxApp(App):
         if not new:
             return
         msg = popup_text(new)
-        if not (tmux.in_tmux() and tmux_popup(msg)):
-            self.notify(msg, timeout=8)                 # outside tmux: the TUI's own toast
+        shown = tmux.in_tmux() and tmux_popup(msg)
+        popup_log(f"{'tmux' if shown else 'toast'} skip={self.visible_key} {[item_id(i) for i in new]} {msg}")
+        if not shown:
+            self.notify(msg, timeout=8)                 # outside tmux (or tmux refused): the TUI's own toast
 
     def _visible(self) -> list[dict]:
         out = []

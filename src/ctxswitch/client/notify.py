@@ -1,16 +1,20 @@
 """Pop-ups for new attention items: a tmux status-line message (display-message), nothing outside tmux.
 
 The hub's attention list is the source; each TUI diffs it against what it has already seen, so a pop-up is per
-machine (config ``notify``) and nothing is shown for what was already waiting when the TUI started. Questions and
-dialogs always pop up; an agent that merely finished its turn ("idle") only with ``notify_idle``.
+machine (config ``notify``). What's waiting when the TUI starts pops up once (one line, "+N more"). Questions and
+dialogs always pop up; an agent that merely finished its turn ("idle") only with ``notify_idle``. Each attempt is
+logged to ~/.local/state/ctxswitch/popup.log.
 """
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
 from ctxswitch.client import fmt
 
 SHOW_MS = 8000
+LOG = Path.home() / ".local/state/ctxswitch/popup.log"
 
 
 def item_id(i: dict) -> str:
@@ -23,13 +27,11 @@ def item_id(i: dict) -> str:
 class Notifier:
     def __init__(self, idle: bool = False):
         self.idle = idle
-        self.seen: set[str] | None = None                # None until the first list: what's already there is not news
+        self.seen: set[str] = set()
 
     def fresh(self, items: list[dict], skip: str | None = None) -> list[dict]:
-        """Items not seen before (the first call only primes); ``skip`` = the session on screen right now."""
+        """Items not seen before; ``skip`` = the session on screen right now."""
         ids = {item_id(i): i for i in items}
-        if self.seen is None:
-            self.seen = set(ids); return []
         new = [i for k, i in ids.items() if k not in self.seen
                and (i.get("item") != "idle" or self.idle) and i.get("key") != skip]
         # forget what left, so the same session can pop up again; what was skipped on screen stays unseen, so it
@@ -47,6 +49,16 @@ def text(new: list[dict]) -> str:
 
 
 def tmux_popup(msg: str, run=subprocess.run) -> bool:
-    """display-message expands #{…} and #[…], so every # is doubled; argv, no shell."""
+    """display-message expands #{…} and #[…], so every # is doubled; argv, no shell. rc 0 even with no client attached
+    (the message goes nowhere), so this only catches a missing or refusing tmux."""
     r = run(["tmux", "display-message", "-d", str(SHOW_MS), msg.replace("#", "##")], capture_output=True, text=True)
     return r.returncode == 0
+
+
+def log(line: str) -> None:
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} {line}\n")
+    except OSError:
+        pass
