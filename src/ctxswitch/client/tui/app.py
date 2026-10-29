@@ -416,12 +416,14 @@ class CtxApp(App):
             t.append("\n")
         msgs = fmt.messages(s)
         if msgs:
-            t.append("YOUR MESSAGES\n", style="bold")
+            t.append("MESSAGES\n", style="bold")
             asked = {a["ref"]: a for a in s.get("asks") or []}
             for m in msgs:
                 t.append(f"{fmt.MSG_GLYPH.get(m['status'], '?')} ", style=MSG_STYLE.get(m["status"], "dim"))
                 if m.get("ask_ref") in asked:
                     t.append(f"re \"{fmt.one_line(asked[m['ask_ref']]['text'], 60)}\": ", style="dim")
+                if m.get("from_key"):
+                    t.append(fmt.sender(m), style="magenta")
                 t.append(fmt.one_line(m["body"], 160) + "\n")
                 t.append(f"  {fmt.one_line(fmt.message_note(s, m), 300)}\n", style="dim" if m["status"] != "failed" else "red")
             t.append("\n")

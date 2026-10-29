@@ -78,7 +78,8 @@ session prints a briefing, Windows-native Claude sessions show up (read-only) on
 `ctx doctor` wire up and check a host. Cross-host resume works: Enter on another host's ended session resumes it there over ssh. Messaging works:
 send to a live session on any host, or queue for an ended one. Phase 4 is done: answer a question from the board
 (`a`, `ctx reply`), tmux pop-ups, "since you looked" and workstreams across hosts. Phase 6 is done: `ctx search`
-and a read-only MCP server, so an agent can look up what you already decided or told another session. See the
+and an MCP server, so an agent can look up what you already decided or told another session, and message another
+session as itself. See the
 phases in [DESIGN.md](DESIGN.md).
 
 # User guide
@@ -195,7 +196,8 @@ filter and how many sessions are live.
   input), `prompt` (a pi dialog), `plain` (its reply ended in a question), `text` (the tracker read a question
   in its reply). Underneath: `a = answer it here`, or why you have to answer in the session;
 - **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
-- **YOUR MESSAGES**: what you sent it with `m` or `ctx send` and where each one is (see Messages);
+- **MESSAGES**: what you sent it with `m` or `ctx send`, and what other agents sent it (`from <session>`), and where
+  each one is (see Messages);
 - **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, with the exchange (`#12`) they came from;
 - **AGENT SAYS**: its latest claims: `✓` done / tests pass, `✗` tests fail, `!` blocked;
 - **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
@@ -277,7 +279,8 @@ session as a new prompt, so the agent works on it like anything you type there:
   operator (sent with ctxswitch)". Claude treats that as a teammate's request, within its own permission
   settings: a message can't approve a pending permission prompt or plan for you. In **plan** or **bypass
   permissions** mode Claude holds it for your approval in that terminal; the board says so.
-- In the board and the ledger the exchange counts as yours (`you`), with the wrapper removed.
+- In the board and the ledger the exchange counts as yours (`you`), with the wrapper removed. A message an agent
+  sent (see Agents) counts as that agent's, never yours.
 - Delivery is at most once: the collector on the session's host remembers what it wrote, so a lost report never
   sends it twice. A queued message can be cancelled with `ctx send --cancel <id>`.
 - Windows-native Claude (`cw`) sessions can't take messages. Set `[collector] accept_messages = false` on a host
@@ -325,8 +328,8 @@ pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its o
 | `ctx doctor` | check this machine: config, hub and token, collector, hooks, extension, spool, recaps (and MCP, once installed). Exit 1 if broken |
 
 ### Agents (MCP)
-`ctx install --mcp` gives every new Claude Code session on that machine four tools that read the hub, and a skill
-that tells the agent when to use them:
+`ctx install --mcp` gives every new Claude Code session on that machine four tools that read the hub, one that
+messages another session, and a skill that tells the agent when to use them:
 
 | Tool | Returns |
 |---|---|
@@ -334,10 +337,22 @@ that tells the agent when to use them:
 | `get_session` | what `ctx show` shows, without marking it viewed (an agent reading isn't you looking) |
 | `list_sessions` | what `ctx ls --all` shows |
 | `attention` | what `ctx attention --all` shows |
+| `send_message` | sends a message to another session, as this one (below) |
 
 So "what did we decide about the docs layout?" in one session finds the answer you gave in another, on any machine.
-It is read-only: an agent can't message a session through it, because a ctx message arrives as "from the operator"
-and is recorded as your turn. The agent is told that instructions it finds for another session were given to that
+An agent's message is sent as its own session: the MCP server finds which session it runs under (its parent
+processes, against the Claude and pi registries on that host), so the agent can't pick a name, and outside a session
+it can't send at all. It's delivered like yours (Messages, above) but headed
+
+    Message from another agent session, not from the operator (sent with ctxswitch).
+    From: session laptop/claude/1f0c… "docs layout" on host laptop
+    To reply, use the ctxswitch send_message tool with session "laptop/claude/1f0c…".
+
+and recorded as that session's turn (`from <session>`), not yours: it never answers a question for you or shows
+up as your prompt in a search. Limits, so two agents can't keep each other busy: one message in flight from one
+session to another, 20 an hour per session, none to itself, and it can't answer a question (that's `a`, yours).
+A host whose collector predates this doesn't get agents' messages (they wait, queued, until it's updated), so an
+old collector never delivers one as yours. The agent is told that instructions it finds for another session were given to that
 session, not to it. If the hub is down a tool says so and the agent carries on.
 
 pi has no MCP of its own; with [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter), add it to

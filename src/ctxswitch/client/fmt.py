@@ -110,8 +110,13 @@ def can_message(s: dict) -> str | None:
 
 
 def messages(s: dict, n: int = 4) -> list[dict]:
-    """Your newest messages to this session (cancelled ones left out), oldest first."""
+    """The newest messages to this session, yours and other agents' (cancelled ones left out), oldest first."""
     return [m for m in s.get("messages") or [] if m["status"] != "cancelled"][-n:]
+
+
+def sender(m: dict) -> str:
+    """"from <session>: " for another agent's message; yours need no label."""
+    return f"from {m['from_key']}: " if m.get("from_key") else ""
 
 
 def message_note(s: dict, m: dict) -> str:
@@ -227,9 +232,9 @@ def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | No
             out.append(f"    ✓ {one_line(q, 70) + '  →  ' if q else ''}{one_line(ans, 60)}")
     msgs = messages(s, 6)
     if msgs:
-        out.append("  your messages:")
+        out.append("  messages:")
         for m in msgs:
-            out.append(f"    {MSG_GLYPH.get(m['status'], '?')} [{m['id']}] {one_line(m['body'], 70)}")
+            out.append(f"    {MSG_GLYPH.get(m['status'], '?')} [{m['id']}] {sender(m)}{one_line(m['body'], 70)}")
             out.append(f"        {one_line(message_note(s, m), 100)}")
     sibs = s.get("siblings") or []
     if sibs:

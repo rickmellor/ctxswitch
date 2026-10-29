@@ -115,10 +115,10 @@ def test_handshake_lists_tools_and_answers_only_requests(tmp_path):
               {"jsonrpc": "2.0", "id": 3, "method": "resources/list"}, "{not json", {"id": 4, "method": "ping"})
     assert [m.get("id") for m in r] == [0, "x", 2, 3, None, 4]       # the notification and blank line: no reply
     assert r[0]["result"]["protocolVersion"] == "2025-03-26" and r[0]["result"]["capabilities"] == {"tools": {}}
-    assert "read-only" in r[0]["result"]["instructions"]
+    assert "not the operator's" in r[0]["result"]["instructions"]
     assert r[1]["result"] == {}
     tools = {t["name"]: t for t in r[2]["result"]["tools"]}
-    assert sorted(tools) == ["attention", "get_session", "list_sessions", "search"]     # nothing that sends
+    assert sorted(tools) == ["attention", "get_session", "list_sessions", "search", "send_message"]
     assert tools["get_session"]["inputSchema"]["required"] == ["session"]
     assert (r[3]["error"]["code"], r[4]["error"]["code"], r[5]["error"]["code"]) == (-32601, -32700, -32600)
     (old,) = _talk(s, init | {"params": {"protocolVersion": "1999-01-01"}})
@@ -156,7 +156,7 @@ def test_bad_calls_come_back_as_tool_errors(tmp_path):
     assert _call(s, "get_session", session="x", turns=True) == (True, "turns must be a integer")
     assert _call(s, "get_session", session="x", turns=99) == (True, "turns must be between 0 and 50")
     assert _call(s, "search", query="x", kind="bogus")[0]
-    (r,) = _talk(s, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "send_message", "arguments": {}}})
+    (r,) = _talk(s, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "post_message", "arguments": {}}})
     assert r["error"]["code"] == -32602
     (r,) = _talk(s, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search", "arguments": []}})
     assert r["result"]["isError"]

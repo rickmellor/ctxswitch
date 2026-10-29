@@ -38,7 +38,8 @@ def test_lifecycle_rewrites_the_delivering_turn_as_yours(tmp_path):
     mid = store.add_message(KEY, "Please   run the tests\nand report.", "laptop")
     store.upsert_turns(KEY, [_turn(0, deliver.HEADER + "Please run the tests and report.")], None)
     assert store.messages(KEY)[0]["status"] == "queued"                 # not sent yet: no match, even if the text is there
-    assert store.outbox("laptop") == [{"id": mid, "key": KEY, "body": "Please   run the tests\nand report.", "harness": "claude"}]
+    assert store.outbox("laptop") == [{"id": mid, "key": KEY, "body": "Please   run the tests\nand report.", "harness": "claude",
+                                     "from_key": None, "from_title": None}]
     assert not store.set_message_status(mid, "devbox", "sent")          # another host can't report it
     assert not store.set_message_status(mid, "laptop", "delivered")    # only sent / failed come from a collector
     assert store.set_message_status(mid, "laptop", "sent") and store.outbox("laptop") == []

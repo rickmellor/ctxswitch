@@ -138,7 +138,8 @@ class Collector:
             return False
         done = self.state.get(f"msg:{mid}")
         if done is None:                               # never write the same message twice, even if the report is lost
-            err = await deliver(live.socket, harness, key.split("/", 2)[2], m["body"], mid)
+            err = await deliver(live.socket, harness, key.split("/", 2)[2], m["body"], mid,
+                                from_key=m.get("from_key"), from_title=m.get("from_title"))
             done = err or ""
             self.state.set(f"msg:{mid}", done)
             log.info("message %d -> %s: %s", mid, key, done or "sent")
@@ -155,7 +156,7 @@ class Collector:
         async with httpx.AsyncClient(timeout=40) as client:
             while True:
                 try:
-                    r = await client.get(self.urls["outbox"], params={"host": self.host_id, "wait": 25}, headers=self.headers)
+                    r = await client.get(self.urls["outbox"], params={"host": self.host_id, "wait": 25, "agents": 1}, headers=self.headers)
                     r.raise_for_status()
                     msgs = r.json().get("messages") or []
                 except (httpx.HTTPError, ValueError):

@@ -7,10 +7,12 @@
   POST /v1/sessions/{key}/viewed   {at}
   GET  /v1/sessions/{key}/brief    {text: resume briefing or null}  (hub/brief.py)
   POST /v1/sessions/{key}/ledger/{id}/retire   operator retires a ledger row (e.g. an instruction that no longer holds)
-  POST /v1/sessions/{key}/messages   {body, from_host, answers} -> {id}   queue a message for a session (live or not);
-                                     answers = ref of the open plain-text ask it replies to (a quick-reply)
+  POST /v1/sessions/{key}/messages   {body, from_host, answers, from_key} -> {id}   queue a message for a session (live
+                                     or not); answers = ref of the open plain-text ask it replies to (a quick-reply);
+                                     from_key = the agent session sending it (none: the operator)
   POST /v1/messages/{id}/cancel      a queued message only
-  GET  /v1/outbox?host=&wait=25      collector long-poll: queued messages for that host's live sessions
+  GET  /v1/outbox?host=&wait=25&agents=1   collector long-poll: queued messages for that host's live sessions (agents'
+                                     messages only with agents=1)
   POST /v1/messages/{id}/status      collector report {host_id, status: sent|failed, error}
   GET  /v1/attention?host=
   GET  /v1/health
@@ -141,14 +143,24 @@ class Hub:
             return JSONResponse({"error": "not found"}, 404)
         if s["harness"] in NOT_DELIVERABLE:
             return JSONResponse({"error": f"can't deliver to {s['harness']} sessions"}, 400)
-        ref = body.get("answers")
+        ref, sender = body.get("answers"), body.get("from_key")
+        if sender is not None:
+            if not isinstance(sender, str) or self.store.session(sender, turns=0) is None:
+                return JSONResponse({"error": f"no session {sender!r} to send from"}, 400)
+            if sender == key:
+                return JSONResponse({"error": "a session can't message itself"}, 400)
+            if ref is not None:
+                return JSONResponse({"error": "only the operator answers a session's questions"}, 400)
+            refused = self.store.agent_send_refused(sender, key)
+            if refused:
+                return JSONResponse({"error": refused[1]}, refused[0])
         if ref is not None:
             ask = self.store.open_ask(key, str(ref))
             if ask is None:
                 return JSONResponse({"error": "that question is already answered, an answer is on its way, or it isn't this session's"}, 409)
             if ask["kind"] not in REPLYABLE:
                 return JSONResponse({"error": f"a {ask['kind']} ask is a dialog in the session: answer it there"}, 400)
-        mid = self.store.add_message(key, text, body.get("from_host"), ref)
+        mid = self.store.add_message(key, text, body.get("from_host"), ref, sender)
         self._notify()
         return JSONResponse({"id": mid})
 
@@ -166,12 +178,13 @@ class Hub:
         if not host:
             return JSONResponse({"error": "host required"}, 400)
         wait = min(float(req.query_params.get("wait", "0") or 0), OUTBOX_WAIT)
+        agents = req.query_params.get("agents") == "1"
         q: asyncio.Queue = asyncio.Queue()
         self.subscribers.add(q)
         try:
             deadline = asyncio.get_running_loop().time() + wait
             while True:
-                items = self.store.outbox(host)
+                items = self.store.outbox(host, agents)
                 left = deadline - asyncio.get_running_loop().time()
                 if items or left <= 0:
                     return JSONResponse({"messages": items})

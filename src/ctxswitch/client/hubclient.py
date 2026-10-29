@@ -53,8 +53,10 @@ class HubClient:
     def viewed(self, key: str, at: str) -> None:
         self._c.post(f"/v1/sessions/{key}/viewed", json={"at": at}).raise_for_status()
 
-    def send(self, key: str, body: str, from_host: str | None = None, answers: str | None = None) -> int:
-        r = self._c.post(f"/v1/sessions/{key}/messages", json={"body": body, "from_host": from_host, "answers": answers})
+    def send(self, key: str, body: str, from_host: str | None = None, answers: str | None = None, from_key: str | None = None) -> int:
+        """``from_key``: the agent session sending it; None = the operator."""
+        r = self._c.post(f"/v1/sessions/{key}/messages", json={"body": body, "from_host": from_host, "answers": answers,
+                                                              **({"from_key": from_key} if from_key else {})})
         if r.status_code != 200:
             raise ValueError(_error(r))
         return int(r.json()["id"])
