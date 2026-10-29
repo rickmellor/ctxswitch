@@ -205,6 +205,9 @@ class Store:
             if idx <= st["through_idx"]:
                 return False
             now = time.time()
+            if any(r["kind"] == "decision" for r in rows):
+                answers = self._answered_by(key, idx)
+                rows = [r | {"extra": (r.get("extra") or {}) | {"answers": answers}} if r["kind"] == "decision" else r for r in rows]
             for r in rows:
                 self.db.execute("INSERT INTO ledger(key,kind,text,quote,turn_idx,extra,created) VALUES(?,?,?,?,?,?,?)",
                                 (key, r["kind"], r["text"], r["quote"], idx, json.dumps(r.get("extra") or {}), now))
@@ -231,6 +234,17 @@ class Store:
                             (key, idx, p, pt, json.dumps(hist), now))
             self._bump()
             return True
+
+    def _answered_by(self, key: str, idx: int) -> list[str]:
+        """Refs of the plain-text asks your prompt at ``idx`` answered: those raised since your previous typed prompt."""
+        since = -1
+        for (data,) in self.db.execute("SELECT data FROM turns WHERE key=? AND idx<? ORDER BY idx DESC", (key, idx)):
+            t = json.loads(data)
+            if typed(t):
+                since = t["idx"]; break
+        return [r[0] for r in self.db.execute(
+            "SELECT ref FROM asks WHERE key=? AND answered=1 AND kind IN ('plain','text') AND turn_idx>=? AND turn_idx<? ORDER BY turn_idx, ref",
+            (key, since, idx))]
 
     def retire_row(self, key: str, row_id: int, by: str = "operator") -> bool:
         with self._lock:

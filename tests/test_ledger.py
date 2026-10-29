@@ -178,11 +178,31 @@ def test_api_retire_row(tmp_path):
 
 
 def test_decisions_merge_answered_asks_with_your_choices_in_turn_order():
-    s = {"asks": [{"turn_idx": 4, "text": "push now?", "answered": 1, "answer": "yes"},
-                  {"turn_idx": 1, "text": "which db?", "answered": 0, "answer": None}],
+    s = {"asks": [{"ref": "4:plain", "turn_idx": 4, "text": "push now?", "answered": 1, "answer": "yes"},
+                  {"ref": "1:plain", "turn_idx": 1, "text": "which db?", "answered": 0, "answer": None}],
          "ledger": [{"kind": "decision", "turn_idx": 2, "text": "sqlite", "extra": {"question": "which db?"}, "active": True},
                     {"kind": "instruction", "turn_idx": 0, "text": "use the pool", "extra": {}, "active": True},
                     {"kind": "instruction", "turn_idx": 1, "text": "never push", "extra": {}, "active": False}]}
     assert fmt.decisions(s) == [(2, "which db?", "sqlite"), (4, "push now?", "yes")]
     assert fmt.decisions(s, 1) == [(4, "push now?", "yes")]
     assert [r["text"] for r in fmt.instructions(s)] == ["use the pool"]
+
+
+def test_a_choice_that_answers_an_ask_is_shown_once(tmp_path):
+    store = Store(tmp_path / "hub.db")
+    _session(store)
+    plain = lambda i, text: {"kind": "plain", "text": text, "ref": f"{i}:plain", "answered": True, "answer": "raw", "answered_at": NOW}
+    dialog = {"kind": "question", "text": "Which seat?", "ref": "2:q", "answered": True, "answer": "text", "answered_at": NOW}
+    store.upsert_turns(KEY, [_turn(0, "start", "Old or new?", asks=[plain(0, "Old or new?")]),
+                             _turn(1, "new one", "Postgres or sqlite?", asks=[plain(1, "Postgres or sqlite?")]),
+                             _turn(2, "<bash-input>ls</bash-input>", "Proceed?", asks=[plain(2, "Proceed?"), dialog]),
+                             _turn(3, "sqlite, and yes go ahead", "Done.")], None)
+    store.apply_extraction(KEY, _turn(3, "", ""), [{"kind": "decision", "text": "use sqlite", "quote": "sqlite",
+                                                    "extra": {"question": "which db"}}], [], [], None)
+    (row,) = store.ledger(KEY)
+    assert row["extra"]["answers"] == ["1:plain", "2:plain"]     # since your previous typed prompt (#1); not the dialog
+    d = fmt.decisions(store.session(KEY))
+    assert d == [(0, "Old or new?", "raw"), (2, "Which seat?", "text"), (3, "which db", "use sqlite")]   # 2 linked: model's question
+    one = store.session(KEY) | {"ledger": [row | {"extra": {"question": "which db", "answers": ["1:plain"]}}]}
+    assert (3, "Postgres or sqlite?", "use sqlite") in fmt.decisions(one)    # 1 linked: the ask verbatim, then your choice
+    assert not any(q == "Postgres or sqlite?" and a == "raw" for _, q, a in fmt.decisions(one))

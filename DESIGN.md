@@ -48,6 +48,8 @@ Greenfield repo: `~/repos/ctxswitch`.
   The recap and the extractor share one scheduler loop (recap first: it is what the board shows), and the recap
   call now also writes the ≤4-line re-entry card and sees your standing instructions. Three unparseable replies
   for one exchange skip it; an HTTP error backs off 30 s without moving past it.
+  A decision row records the plain-text asks your prompt answered (`extra.answers`: asks raised since your previous
+  typed prompt), so the board shows an answered question once: the ask verbatim, then your choice.
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles

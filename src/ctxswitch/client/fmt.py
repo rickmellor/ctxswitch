@@ -82,8 +82,17 @@ def claims(s: dict, n: int = 4) -> list[dict]:
 
 def decisions(s: dict, n: int = 6) -> list[tuple[int, str, str]]:
     """(turn, question, answer), oldest first: answered asks (hard or plain-text) and the choices the tracker read
-    from your prompts."""
-    out = [(a.get("turn_idx") or 0, a["text"], a.get("answer") or "") for a in s.get("asks") or [] if a["answered"]]
-    out += [(r["turn_idx"], (r.get("extra") or {}).get("question") or "", r["text"])
-            for r in s.get("ledger") or [] if r["kind"] == "decision"]
+    from your prompts. A choice that answers one ask is shown once: the ask verbatim, then the choice instead of
+    your raw prompt."""
+    asks = {a["ref"]: a for a in s.get("asks") or [] if a["answered"]}
+    out, merged = [], set()
+    for r in s.get("ledger") or []:
+        if r["kind"] != "decision":
+            continue
+        extra = r.get("extra") or {}
+        linked = [asks[ref] for ref in extra.get("answers") or [] if ref in asks]
+        merged.update(a["ref"] for a in linked)
+        q = linked[0]["text"] if len(linked) == 1 else extra.get("question") or ""
+        out.append((r["turn_idx"], q, r["text"]))
+    out += [(a.get("turn_idx") or 0, a["text"], a.get("answer") or "") for ref, a in asks.items() if ref not in merged]
     return sorted(out, key=lambda d: d[0])[-n:]
