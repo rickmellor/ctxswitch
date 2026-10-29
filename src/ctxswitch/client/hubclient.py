@@ -65,6 +65,15 @@ class HubClient:
             raise ValueError(_error(r))
         return int(r.json()["id"])
 
+    def send_workstream(self, workstream: str, body: str, from_host: str | None = None) -> int:
+        r = self._c.post("/v1/workstreams/messages", json={"workstream": workstream, "body": body, "from_host": from_host})
+        if r.status_code != 200:
+            raise ValueError(_error(r))
+        return int(r.json()["id"])
+
+    def retire(self, key: str, row_id: int) -> bool:
+        return self._c.post(f"/v1/sessions/{key}/ledger/{row_id}/retire").status_code == 200
+
     def cancel(self, msg_id: int) -> bool:
         return self._c.post(f"/v1/messages/{msg_id}/cancel").status_code == 200
 

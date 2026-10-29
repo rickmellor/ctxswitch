@@ -45,8 +45,17 @@ def claude_settings() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
 
 
+def pi_agent_dir() -> Path:
+    return Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent")
+
+
 def pi_ext_dir() -> Path:
-    return Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent") / "extensions"
+    return pi_agent_dir() / "extensions"
+
+
+def pi_mcp_json() -> Path:
+    """pi-mcp-adapter's server list (pi has no MCP of its own)."""
+    return pi_agent_dir() / "mcp.json"
 
 
 def unit_path() -> Path:
@@ -302,6 +311,71 @@ def uninstall_mcp(st: State, dry: bool, log, run=subprocess.run) -> None:
     st.d.pop("mcp", None); st.save()
 
 
+def pi_mcp_entry() -> dict[str, Any]:
+    return {"command": str(ctx_exe()), "args": ["mcp"]}
+
+
+def _pi_adapter() -> bool:
+    """pi-mcp-adapter is installed: listed in pi's packages, or its server list exists."""
+    try:
+        pkgs = json.loads((pi_agent_dir() / "settings.json").read_text()).get("packages") or []
+    except (OSError, ValueError, AttributeError):
+        pkgs = []
+    return pi_mcp_json().exists() or any("pi-mcp-adapter" in str(x) for x in pkgs)
+
+
+def _read_pi_mcp() -> tuple[dict[str, Any] | None, bytes | None]:
+    """(the parsed file, its bytes); ({}, None) when absent; (None, bytes) when it isn't a JSON object."""
+    p = pi_mcp_json()
+    if not p.exists():
+        return {}, None
+    raw = p.read_bytes()
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return None, raw
+    return (d, raw) if isinstance(d, dict) and isinstance(d.get("mcpServers", {}), dict) else (None, raw)
+
+
+def install_pi_mcp(st: State, dry: bool, log) -> None:
+    """Our server in pi-mcp-adapter's mcp.json, the rest kept as it was. The file holds other servers' keys: it's
+    never printed, keeps its mode (0600 when new), and the original is backed up 0600."""
+    p = pi_mcp_json()
+    if not _pi_adapter():
+        log("pi mcp: pi-mcp-adapter not installed here; pi agents don't get the ctxswitch tools"); return
+    d, raw = _read_pi_mcp()
+    if d is None:
+        log(f"pi mcp: {p} isn't a JSON object with an mcpServers object; left alone"); return
+    if (d.get("mcpServers") or {}).get(MCP_NAME) == pi_mcp_entry():
+        log(f"pi mcp: {MCP_NAME} already in {p}"); return
+    if dry:
+        log(f"pi mcp: would add {MCP_NAME} -> {ctx_exe()} mcp to {p}"); return
+    backup = None
+    if raw is not None:
+        backup = state_dir() / "backup" / f"pi-mcp.json.{time.strftime('%Y%m%d-%H%M%S')}"
+        _write(backup, raw, 0o600)
+    d.setdefault("mcpServers", {})[MCP_NAME] = pi_mcp_entry()
+    _write(p, (json.dumps(d, indent=2) + "\n").encode(), 0o600)
+    st.d["pi_mcp"] = {"file": str(p), "backup": str(backup) if backup else None}; st.save()
+    log(f"pi mcp: {MCP_NAME} added to {p} (new pi sessions get it)" + (f"; backup {backup}" if backup else ""))
+
+
+def uninstall_pi_mcp(st: State, dry: bool, log) -> None:
+    p = pi_mcp_json()
+    d, _ = _read_pi_mcp()
+    if not d or MCP_NAME not in (d.get("mcpServers") or {}):
+        log(f"pi mcp: {MCP_NAME} not in {p}")
+        if not dry and st.d.pop("pi_mcp", None):
+            st.save()
+        return
+    if dry:
+        log(f"pi mcp: would remove {MCP_NAME} from {p}"); return
+    del d["mcpServers"][MCP_NAME]
+    _write(p, (json.dumps(d, indent=2) + "\n").encode())
+    st.d.pop("pi_mcp", None); st.save()
+    log(f"pi mcp: {MCP_NAME} removed from {p}")
+
+
 # -- pi extension -----------------------------------------------------------------------------------------------
 def install_pi(st: State, dry: bool, force: bool, log) -> None:
     link, src = pi_ext_dir() / EXT_NAME, ext_source()
@@ -530,6 +604,11 @@ def doctor(cfg: Config | None = None) -> list[Check]:
         out.append(Check("✓", "mcp", f"{MCP_NAME} -> {ctx_exe()} mcp") if ok else
                    Check("!", "mcp", f"{MCP_NAME} not registered for this install" if ok is False else "claude not on PATH",
                          "ctx install --mcp"))
+    if State().d.get("pi_mcp"):
+        d, _ = _read_pi_mcp()
+        ok = bool(d) and (d.get("mcpServers") or {}).get(MCP_NAME) == pi_mcp_entry()
+        out.append(Check("✓", "pi mcp", f"{MCP_NAME} in {pi_mcp_json()}") if ok else
+                   Check("!", "pi mcp", f"{MCP_NAME} missing from {pi_mcp_json()} or another command", "ctx install --mcp"))
     out.append(Check("✓", "tmux", shutil.which("tmux")) if shutil.which("tmux") else
                Check("!", "tmux", "not installed: `ctx tmux` (the manager) won't work"))
     return out
@@ -591,6 +670,7 @@ def cmd_install(a) -> int:
     if a.mcp:
         install_mcp(st, a.dry_run, log)
         install_skill(st, a.dry_run, log)
+        install_pi_mcp(st, a.dry_run, log)
     if not a.dry_run:
         log("next: `ctx doctor`")
     return 0
@@ -608,6 +688,7 @@ def cmd_uninstall(a) -> int:
     if a.mcp:
         uninstall_mcp(st, a.dry_run, log)
         uninstall_skill(st, a.dry_run, log)
+        uninstall_pi_mcp(st, a.dry_run, log)
     return 0
 
 

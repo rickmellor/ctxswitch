@@ -261,18 +261,25 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
 3. Tracker: extraction rows (instructions, decisions, claims, plain-text asks), reentry/purpose; scheduler.
    **Done** (2026-10-29): ledger rows with verbatim quotes, purpose + history, re-entry card, operator retire
    (`POST /v1/sessions/<key>/ledger/<id>/retire`), shown in the TUI, `ctx show` and the resume briefing.
-   Not done: a TUI key to retire a row (`e` is taken by "show ended"); confidence scores.
+   Wrapped up (2026-10-29): `x` on the board and `ctx retire` retire an instruction. **Dropped**: confidence
+   scores (a row must quote the transcript verbatim or it's discarded: that's the precision gate, and a local
+   model's self-reported confidence isn't calibrated). Editing a row: dropped too (retire it and say it again).
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
    **Done** (2026-10-29): tmux pop-ups per TUI (no desktop toasts yet), `+N` unseen and SINCE YOU LOOKED,
    workstreams across hosts (`w` groups the board; SAME WORK ELSEWHERE lists siblings and their instructions).
-   Not done: workstream messages, the hub `attention.new` event, Windows toasts.
+   Wrapped up (2026-10-29): workstream messages (`W`, `ctx send --work`): bound in the outbox to the first
+   session live on that work on the asking host (idle first), atomically, else the next to run. **Superseded**:
+   a hub `attention.new` event (the WebSocket change notice + each TUI diffing the attention list does it).
+   **Dropped**: desktop/Windows toasts (Rick: tmux pop-ups only, no host integration).
 5. Messaging: pi inject + reply; Claude inject (per spike); queued delivery; quick-reply; cross-host resume.
    Cross-host resume **done** (2026-10-29, ssh from the client, `[ssh]` config). Messaging **done** (2026-10-29):
    pi + Claude inject, queued delivery for ended sessions, `m`/`M` keys, `ctx send`. Quick-reply **done**
    (2026-10-29): `a`, `ctx reply`, for plain-text and tracker asks; dialogs are answered in the session.
 6. MCP + skill.
    **Done** (2026-10-29): `ctx mcp` (4 read tools + `send_message` as the calling session), `ctx search` + `/v1/search`, the skill, `ctx install --mcp`.
-   Not done: an FTS index, pi's mcp.json wiring.
+   Wrapped up (2026-10-29): `ctx install --mcp` adds ctxswitch to pi-mcp-adapter's `~/.pi/agent/mcp.json`.
+   **Dropped**: an FTS index (`ctx search` answers in ~0.2 s end to end over 2,354 turns / 440 sessions; revisit if
+   that grows tenfold).
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 

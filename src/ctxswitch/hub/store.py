@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS ledger_key ON ledger(key, kind, active);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL,
     from_host TEXT, created REAL NOT NULL, sent_at REAL, delivered_at REAL, turn_idx INTEGER, reply TEXT, error TEXT,
-    ask_ref TEXT, from_key TEXT
+    ask_ref TEXT, from_key TEXT, workstream TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_key ON messages(key, status);
 CREATE TABLE IF NOT EXISTS tracker (
@@ -95,7 +95,7 @@ class Store:
             if col not in cols:
                 self.db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
         mcols = {r[1] for r in self.db.execute("PRAGMA table_info(messages)")}
-        for col in ("ask_ref", "from_key"):
+        for col in ("ask_ref", "from_key", "workstream"):
             if col not in mcols:
                 self.db.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
         self._lock = threading.Lock()
@@ -200,10 +200,30 @@ class Store:
     def add_message(self, key: str, body: str, from_host: str | None = None, ask_ref: str | None = None,
                     from_key: str | None = None) -> int:
         with self._lock:
-            cur = self.db.execute("INSERT INTO messages(key,body,status,from_host,created,ask_ref,from_key) VALUES(?,?,?,?,?,?,?)",
-                                  (key, body, "queued", from_host, time.time(), ask_ref, from_key))
-            self._bump()
-            return int(cur.lastrowid)
+            return self._insert_message(key, body, from_host, ask_ref, from_key)
+
+    def add_workstream_message(self, workstream: str, body: str, from_host: str | None = None) -> int:
+        """A message for whichever session works on ``workstream`` (any host): the first one live when a collector
+        asks (outbox), else the next to run. Unbound until then (key '')."""
+        with self._lock:
+            return self._insert_message("", body, from_host, None, None, workstream)
+
+    def has_workstream(self, workstream: str) -> bool:
+        return any(workstream_of(dict(r)) == workstream for r in self.db.execute(
+            "SELECT host_id, repo_remote, repo_root, git_branch FROM sessions WHERE repo_remote IS NOT NULL OR repo_root IS NOT NULL"))
+
+    def workstream_messages(self, workstream: str | None) -> list[dict[str, Any]]:
+        """Messages for this work no session has taken yet."""
+        if not workstream:
+            return []
+        return [dict(r) for r in self.db.execute("SELECT * FROM messages WHERE key='' AND workstream=? AND status='queued' ORDER BY id", (workstream,))]
+
+    def _insert_message(self, key: str, body: str, from_host: str | None, ask_ref: str | None, from_key: str | None,
+                        workstream: str | None = None) -> int:
+        cur = self.db.execute("INSERT INTO messages(key,body,status,from_host,created,ask_ref,from_key,workstream) VALUES(?,?,?,?,?,?,?,?)",
+                              (key, body, "queued", from_host, time.time(), ask_ref, from_key, workstream))
+        self._bump()
+        return int(cur.lastrowid)
 
     def messages(self, key: str, limit: int = 20) -> list[dict[str, Any]]:
         rows = self.db.execute("SELECT * FROM messages WHERE key=? ORDER BY id DESC LIMIT ?", (key, limit)).fetchall()
@@ -212,11 +232,29 @@ class Store:
     def outbox(self, host_id: str, agents: bool = False) -> list[dict[str, Any]]:
         """Queued messages for sessions live on ``host_id`` right now, oldest first. The collector checks each
         against its own registry before writing anything: the hub only says what is waiting. Agents' messages (with
-        the sender's key and title) only to a collector that asks for them."""
+        the sender's key and title) only to a collector that asks for them. A workstream message is bound here to a
+        session live on this host on that work, the first such host to ask taking it."""
+        self._bind_workstream_messages(host_id)
         q = (f"SELECT m.id, m.key, m.body, s.harness, m.from_key, COALESCE(NULLIF(f.live_name,''), f.title) AS from_title "
              f"FROM messages m JOIN sessions s ON s.key=m.key LEFT JOIN sessions f ON f.key=m.from_key WHERE m.status='queued' "
              f"AND s.host_id=? AND s.live_status IN ({_LIVE_SQL}){'' if agents else ' AND m.from_key IS NULL'} ORDER BY m.id")
         return [dict(r) for r in self.db.execute(q, (host_id,))]
+
+    def _bind_workstream_messages(self, host_id: str) -> None:
+        if not self.db.execute("SELECT 1 FROM messages WHERE key='' AND status='queued' LIMIT 1").fetchone():
+            return
+        rank = {"idle": 0, "busy": 1}                       # an idle session starts on it now; a dialog last
+        live = [dict(r) for r in self.db.execute(
+            f"SELECT key, host_id, harness, repo_remote, repo_root, git_branch, live_status, last_activity FROM sessions "
+            f"WHERE host_id=? AND live_status IN ({_LIVE_SQL}) AND harness NOT IN ({','.join(repr(h) for h in NOT_DELIVERABLE)})", (host_id,))]
+        live.sort(key=lambda s: s["last_activity"] or "", reverse=True)
+        live.sort(key=lambda s: rank.get(s["live_status"], 2))
+        with self._lock:
+            for m in self.db.execute("SELECT id, workstream FROM messages WHERE key='' AND status='queued' ORDER BY id").fetchall():
+                s = next((s for s in live if workstream_of(s) == m["workstream"]), None)
+                if s is not None:
+                    self.db.execute("UPDATE messages SET key=? WHERE id=? AND key=''", (s["key"], m["id"]))
+                    self._bump()
 
     def agent_send_refused(self, from_key: str, key: str) -> tuple[int, str] | None:
         """(HTTP status, why) when this agent may not send to ``key`` now, else None."""
@@ -432,6 +470,7 @@ class Store:
         st = self.tracker_state(key)
         d["purpose"], d["purpose_history"], d["tracked_through"] = st["purpose"], st["purpose_history"], st["through_idx"]
         d["siblings"] = self.siblings(d)
+        d["workstream_messages"] = self.workstream_messages(d.get("workstream"))
         return d
 
     def search(self, query: str, kinds: tuple[str, ...] = SEARCH_KINDS, host: str | None = None,

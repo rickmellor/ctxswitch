@@ -10,6 +10,8 @@
   POST /v1/sessions/{key}/messages   {body, from_host, answers, from_key} -> {id}   queue a message for a session (live
                                      or not); answers = ref of the open plain-text ask it replies to (a quick-reply);
                                      from_key = the agent session sending it (none: the operator)
+  POST /v1/workstreams/messages      {workstream, body, from_host} -> {id}   for whichever session is (or next is) live
+                                     on that repo + branch, any host
   POST /v1/messages/{id}/cancel      a queued message only
   GET  /v1/outbox?host=&wait=25&agents=1   collector long-poll: queued messages for that host's live sessions (agents'
                                      messages only with agents=1)
@@ -128,6 +130,20 @@ class Hub:
         if ok:
             self._notify()
         return JSONResponse({"ok": ok}, 200 if ok else 404)
+
+    async def send_workstream(self, req: Request) -> Response:
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        body = await req.json()
+        text, ws = body.get("body"), body.get("workstream")
+        if not isinstance(text, str) or not text.strip():
+            return JSONResponse({"error": "body required"}, 400)
+        if len(text) > MAX_BODY:
+            return JSONResponse({"error": f"message longer than {MAX_BODY} characters"}, 400)
+        if not isinstance(ws, str) or not self.store.has_workstream(ws):
+            return JSONResponse({"error": f"no session works on {ws!r}"}, 404)
+        mid = self.store.add_workstream_message(ws, text, body.get("from_host"))
+        self._notify()
+        return JSONResponse({"id": mid})
 
     async def send(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
@@ -258,6 +274,7 @@ class Hub:
             Route("/v1/sessions/{key:path}/brief", self.brief),
             Route("/v1/sessions/{key:path}/ledger/{row:int}/retire", self.retire, methods=["POST"]),
             Route("/v1/sessions/{key:path}/messages", self.send, methods=["POST"]),
+            Route("/v1/workstreams/messages", self.send_workstream, methods=["POST"]),
             Route("/v1/sessions/{key:path}", self.session),
             Route("/v1/messages/{id:int}/cancel", self.cancel, methods=["POST"]),
             Route("/v1/messages/{id:int}/status", self.message_status, methods=["POST"]),

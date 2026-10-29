@@ -105,6 +105,15 @@ def cmd_send(a) -> int:
     if key is None:
         return 1
     s = c.session(key, turns=0)
+    if a.work:
+        if not (s or {}).get("workstream"):
+            print("that session isn't in a repo, so it has no workstream"); return 1
+        try:
+            mid = c.send_workstream(s["workstream"], body, load().host_id)
+        except ValueError as e:
+            print(f"not sent: {e}"); return 1
+        print(f"message {mid} queued for {fmt.workstream_label(s['workstream'])}: the first session live on it (any host) takes it")
+        return 0
     why = fmt.can_message(s or {})
     if s is None or why:
         print(why or "not found"); return 1
@@ -115,6 +124,16 @@ def cmd_send(a) -> int:
     live = s.get("live_status") in LIVE
     print(f"message {mid} queued for {fmt.short_key(s)}: " + ("delivering now" if live else "delivered when it next runs"))
     return 0
+
+
+def cmd_retire(a) -> int:
+    c = _client()
+    key = _resolve(c, a.key)
+    if key is None:
+        return 1
+    ok = c.retire(key, a.id)
+    print(f"retired {a.id}" if ok else f"no active row {a.id} in {key}")
+    return 0 if ok else 1
 
 
 def _body(a) -> str:
@@ -219,6 +238,9 @@ def main(argv=None) -> None:
     p.add_argument("key", nargs="?"); p.add_argument("text", nargs="*")
     p.add_argument("--buffer", action="store_true", help="send the tmux paste buffer (e.g. a copy-mode selection)")
     p.add_argument("--cancel", type=int, metavar="ID", help="cancel a queued message")
+    p.add_argument("--work", action="store_true", help="to its workstream (repo + branch): whichever session is, or next is, live on it")
+    p = sub.add_parser("retire", help="retire an instruction that no longer holds (ids in `ctx show`)"); p.set_defaults(fn=cmd_retire)
+    p.add_argument("key"); p.add_argument("id", type=int)
     p = sub.add_parser("reply"); p.set_defaults(fn=cmd_reply)
     p.add_argument("key"); p.add_argument("text", nargs="*")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)

@@ -65,7 +65,8 @@ class CtxApp(App):
         Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
-        Binding("n", "toggle_popups", "pop-ups"),
+        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"),
+        Binding("W", "message_work", "msg work", show=False),
         Binding("escape", "clear_filter", show=False),
     ]
 
@@ -87,6 +88,8 @@ class CtxApp(App):
         self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:<harness>" | "msg:<key>" | "confirm:…"
         self.pending_body = ""                       # the tmux buffer waiting on a y/n
         self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
+        self.pending_rules: tuple[str, list[int]] | None = None   # (session key, row ids by number) x retires one of
+        self.detail: dict | None = None              # the session shown in the detail pane
         self.group_ws = False                        # w: rows grouped under workstream headers
         self.notifier = Notifier(cfg.notify_idle)
         self.popups = cfg.notify                     # n toggles it for this run; off still tracks what's been seen
@@ -371,6 +374,7 @@ class CtxApp(App):
             self.load_detail(); return
         if s.get("key") != self.selected:               # a slow load for a row you've moved off
             return
+        self.detail = s
         now = datetime.now(timezone.utc)
         st = fmt.session_state(s)
         t = Text()
@@ -427,6 +431,13 @@ class CtxApp(App):
                 t.append(fmt.one_line(m["body"], 160) + "\n")
                 t.append(f"  {fmt.one_line(fmt.message_note(s, m), 300)}\n", style="dim" if m["status"] != "failed" else "red")
             t.append("\n")
+        work = s.get("workstream_messages") or []
+        if work:
+            t.append(f"FOR THIS WORK ({fmt.workstream_label(s.get('workstream'))})\n", style="bold")
+            for m in work:
+                t.append(f"{fmt.MSG_GLYPH['queued']} ", style=MSG_STYLE.get("queued", "dim"))
+                t.append(fmt.one_line(m["body"], 160) + "\n")
+            t.append(f"  {fmt.WORK_NOTE}\n\n", style="dim")
         turns = s.get("turns", [])
         if s.get("recap"):
             stale = s.get("recap_anchor") != _anchor(s)
@@ -438,7 +449,8 @@ class CtxApp(App):
         rules = fmt.instructions(s)
         if rules:
             t.append("YOUR INSTRUCTIONS\n", style="bold")
-            for r in rules:
+            for n, r in enumerate(rules, 1):
+                t.append(f"{n} ", style="dim")
                 t.append(f"• {fmt.one_line(r['text'], 160)}")
                 t.append(f"  #{r['turn_idx']}\n", style="dim")
             t.append("\n")
@@ -581,13 +593,15 @@ class CtxApp(App):
             msg = tmux.new_agent(harness, cwd)
         except Exception as e:                          # noqa: BLE001
             msg = f"tmux: {e}"
-        popup_log(f"open {s['key']}: {msg}")            # what Enter (on a row or in the box) did
+        popup_log(f"new {harness} in {cwd}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=6)
 
     def _selected_session(self) -> dict | None:
         return next((x for x in self.sessions if x["key"] == self.selected), None)
 
     def action_message(self) -> None:
+        if (self.selected or "").startswith("ws:"):
+            self.action_message_work(); return
         s = self._selected_session()
         if not s:
             return
@@ -606,6 +620,41 @@ class CtxApp(App):
             self.notify(why, severity="warning", timeout=6); return
         self.pending_reply = (s["key"], ask["ref"])
         self._show_input("reply", f"answer \"{fmt.one_line(ask['text'], 50)}\", enter to send")
+
+    def action_message_work(self) -> None:
+        """W, or m on a workstream header: a message for whichever session is (or next is) live on that work."""
+        ws = self.selected[3:] if (self.selected or "").startswith("ws:") else (self._selected_session() or {}).get("workstream")
+        if not ws:
+            self.notify("not in a repo: no workstream to message", severity="warning"); return
+        self._show_input(f"work:{ws}", f"message to {fmt.workstream_label(ws)} (the first session live on it, any host), enter to send")
+
+    def action_retire(self) -> None:
+        s = self.detail if self.detail and self.detail.get("key") == self.selected else None
+        rules = fmt.instructions(s or {})
+        if not rules:
+            self.notify("no instructions in force to retire", severity="warning"); return
+        self.pending_rules = (s["key"], [r["id"] for r in rules])
+        self._show_input("retire", f"retire which instruction (1-{len(rules)})? enter")
+
+    @work(group="send", thread=True)
+    def send_work(self, workstream: str, body: str) -> None:
+        try:
+            mid = self.client.send_workstream(workstream, body, self.this_host)
+            msg, sev = f"message {mid} queued for {fmt.workstream_label(workstream)}", "information"
+        except Exception as e:                          # noqa: BLE001
+            msg, sev = f"not sent: {e}", "error"
+        self.call_from_thread(self.notify, msg, severity=sev, timeout=6)
+        self.call_from_thread(self.load_detail)
+
+    @work(group="send", thread=True)
+    def retire_row(self, key: str, row_id: int) -> None:
+        try:
+            ok = self.client.retire(key, row_id)
+            msg, sev = ("retired", "information") if ok else ("already retired", "warning")
+        except Exception as e:                          # noqa: BLE001
+            msg, sev = f"not retired: {e}", "error"
+        self.call_from_thread(self.notify, msg, severity=sev, timeout=6)
+        self.call_from_thread(self.load_detail)
 
     def action_message_buffer(self) -> None:
         s = self._selected_session()
@@ -689,6 +738,20 @@ class CtxApp(App):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             if target and value.strip():
                 self.send_message(target[0], value, target[1])
+            return
+        if mode == "retire":
+            target, self.pending_rules = self.pending_rules, None
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            n = value.strip()
+            if target and n.isdigit() and 1 <= int(n) <= len(target[1]):
+                self.retire_row(target[0], target[1][int(n) - 1])
+            elif target:
+                self.notify(f"no instruction {n!r}", severity="warning")
+            return
+        if mode.startswith("work:"):
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            if value.strip():
+                self.send_work(mode.split(":", 1)[1], value)
             return
         if mode.startswith("msg:"):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""

@@ -211,14 +211,14 @@ def test_mcp_registration_is_opt_in_idempotent_and_repoints(home, monkeypatch):
 
 def test_install_without_flags_leaves_mcp_alone(home, monkeypatch):
     seen = []
-    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_mcp", "install_skill"):
+    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_mcp", "install_skill", "install_pi_mcp"):
         monkeypatch.setattr(ins, name, lambda *a, _n=name, **k: seen.append(_n))
     args = dict(claude=False, pi=False, collector=False, mcp=False, dry_run=False, hub=None, token=None, no_start=True, force=False)
     ins.cmd_install(type("A", (), args)())
     assert seen == ["write_config", "install_collector", "install_claude", "install_pi"]
     seen.clear()
     ins.cmd_install(type("A", (), args | {"mcp": True})())
-    assert seen == ["install_mcp", "install_skill"]                   # --mcp alone: only that
+    assert seen == ["install_mcp", "install_skill", "install_pi_mcp"]   # --mcp alone: only that
 
 
 def test_doctor_checks_mcp_only_once_installed(home, monkeypatch):
@@ -263,3 +263,47 @@ def test_skill_is_linked_and_only_our_link_removed(home):
     assert "no link of ours" in _run(ins.uninstall_skill)[0] and link.is_dir()
     link.rmdir(); link.symlink_to(home)                               # someone else's link
     assert "no link of ours" in _run(ins.uninstall_skill)[0] and link.is_symlink()
+
+
+def test_pi_mcp_entry_is_added_beside_other_servers_and_removed_alone(home, monkeypatch):
+    agent = home / ".pi" / "agent"
+    assert "not installed" in _run(ins.install_pi_mcp)[0] and not (agent / "mcp.json").exists()   # no adapter: nothing
+    agent.mkdir(parents=True)
+    (agent / "settings.json").write_text(json.dumps({"packages": ["npm:pi-mcp-adapter"]}))
+    _run(ins.install_pi_mcp)                                          # adapter but no file yet: created, 0600
+    p = agent / "mcp.json"
+    assert json.loads(p.read_text()) == {"mcpServers": {"ctxswitch": ins.pi_mcp_entry()}} and oct(p.stat().st_mode & 0o777) == "0o600"
+    other = {"mcpServers": {"brave": {"command": "npx", "env": {"KEY": "s3cret"}}}, "settings": {"x": 1}}
+    p.write_text(json.dumps(other)); os.chmod(p, 0o640)
+    lines = _run(ins.install_pi_mcp)
+    assert not any("s3cret" in ln for ln in lines)                    # other servers' keys are never printed
+    d = json.loads(p.read_text())
+    assert d["mcpServers"]["brave"] == other["mcpServers"]["brave"] and d["settings"] == {"x": 1}
+    assert d["mcpServers"]["ctxswitch"] == {"command": str(ins.ctx_exe()), "args": ["mcp"]}
+    assert oct(p.stat().st_mode & 0o777) == "0o640"                   # its mode kept
+    backup = __import__("pathlib").Path(ins.State().d["pi_mcp"]["backup"])
+    assert json.loads(backup.read_text()) == other and oct(backup.stat().st_mode & 0o777) == "0o600"
+    before = p.read_bytes()
+    assert "already" in _run(ins.install_pi_mcp)[0] and p.read_bytes() == before
+    _run(ins.uninstall_pi_mcp)
+    assert json.loads(p.read_text()) == other and "pi_mcp" not in ins.State().d
+    assert "not in" in _run(ins.uninstall_pi_mcp)[0]
+    p.write_text(json.dumps({"mcpServers": {"ctxswitch": {"command": "/old/venv/bin/ctx", "args": ["mcp"]}}}))
+    assert "added" in _run(ins.install_pi_mcp)[0]                    # another venv's ctx: re-pointed
+    assert json.loads(p.read_text())["mcpServers"]["ctxswitch"] == ins.pi_mcp_entry()
+    for bad in ("[1, 2]", '{"mcpServers": []}', "{not json"):
+        p.write_text(bad)
+        assert "left alone" in _run(ins.install_pi_mcp)[0] and p.read_text() == bad
+
+
+def test_doctor_checks_pi_mcp_once_installed(home, monkeypatch):
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: None)
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    from ctxswitch.common.config import Config
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    assert "pi mcp" not in {c.name for c in ins.doctor(cfg)}
+    (home / ".pi" / "agent").mkdir(parents=True); (home / ".pi/agent/mcp.json").write_text("{}")
+    _run(ins.install_pi_mcp)
+    assert [c.status for c in ins.doctor(cfg) if c.name == "pi mcp"] == ["✓"]
+    (home / ".pi/agent/mcp.json").write_text(json.dumps({"mcpServers": {"ctxswitch": {"command": "/old/ctx", "args": ["mcp"]}}}))
+    assert [c.status for c in ins.doctor(cfg) if c.name == "pi mcp"] == ["!"]

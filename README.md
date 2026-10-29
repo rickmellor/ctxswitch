@@ -198,7 +198,8 @@ filter and how many sessions are live.
 - **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
 - **MESSAGES**: what you sent it with `m` or `ctx send`, and what other agents sent it (`from <session>`), and where
   each one is (see Messages);
-- **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, with the exchange (`#12`) they came from;
+- **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, numbered for `x`, with the exchange
+  (`#12`) they came from;
 - **AGENT SAYS**: its latest claims: `✓` done / tests pass, `✗` tests fail, `!` blocked;
 - **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
 - **DECISIONS**: the questions it asked and the answers you gave, verbatim, plus the choices the tracker read from
@@ -217,7 +218,8 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `↑` `↓` | select a session (the detail pane follows) |
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
 | `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's) |
-| `m` | message the selected session: type it, Enter sends (Esc cancels) |
+| `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
+| `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y/n |
 | `a` | answer the question it's waiting on: type the answer, Enter sends (see Answering a question) |
 | `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
@@ -227,6 +229,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `v` | mark the selected session viewed (it's also marked whenever you open it, on any machine) |
 | `r` | refresh now (the board also updates live over a WebSocket) |
 | `n` | pop-ups off / on for this run (`notify` sets how it starts) |
+| `x` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `q` | detach: close your terminal, keep everything running |
 | `Q` | quit all: end the tmux session and every agent in it, after a y/n |
 
@@ -258,8 +261,7 @@ as normal without recaps. Turn them off with `ctx-hub --no-recap`.
 
 The same seat keeps each session's **ledger**. It reads every exchange you typed once, and records only what it
 can quote word for word: a row whose quote isn't in the transcript is dropped. Instructions stay in force until
-you cancel them in a prompt, or retire one by hand with
-`curl -X POST -H "Authorization: Bearer $TOKEN" <hub>/v1/sessions/<key>/ledger/<id>/retire` (`ctx show` prints
+you cancel them in a prompt, or retire one: `x` on the board, or `ctx retire <session> <id>` (`ctx show` prints
 the ids). Set `[hub] ledger = false` to keep recaps without the ledger.
 
 ## 7. Messages
@@ -285,6 +287,14 @@ session as a new prompt, so the agent works on it like anything you type there:
   sends it twice. A queued message can be cancelled with `ctx send --cancel <id>`.
 - Windows-native Claude (`cw`) sessions can't take messages. Set `[collector] accept_messages = false` on a host
   to refuse all of them there.
+
+### Messaging the work, not a session
+`W` (or `m` on a workstream header), or `ctx send --work <session> "text"`, sends to that session's workstream
+(repo + branch, any host) instead: the first session live on it when its host's collector next asks takes it
+(idle before busy), otherwise the next one you start or resume there, on any machine. Until then it's shown under
+every session on that work as "for this work, not taken yet", and `ctx send --cancel <id>` withdraws it. A new
+session counts once it has a first exchange (until then the hub doesn't know its repo). Taken, it's an ordinary
+message to that session.
 
 ### Answering a question
 `a` on the board, or `ctx reply <session> "text"`, answers the question the session is waiting on. It's sent as a
@@ -315,7 +325,8 @@ pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its o
 |---|---|
 | `ctx ls [--host H \| --all] [--live]` | one line per session (default: this host) |
 | `ctx show <key-or-title-fragment>` | one session in full: what's new since you looked, purpose, recap, your instructions, the agent's claims, open asks, decisions, the same work on other hosts, recent exchanges (marks it viewed; `--no-mark` to not) |
-| `ctx send <session> [text \| -] [--buffer] [--cancel ID]` | message a session (text, stdin with `-` or no text, or the tmux paste buffer); `--cancel` withdraws a queued one |
+| `ctx send <session> [text \| -] [--buffer] [--work] [--cancel ID]` | message a session (text, stdin with `-` or no text, or the tmux paste buffer); `--work`: its workstream instead; `--cancel` withdraws a queued one |
+| `ctx retire <session> <id>` | retire an instruction that no longer holds (`ctx show` prints the ids) |
 | `ctx reply <session> [text \| -]` | answer the question it's waiting on (see Answering a question) |
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
@@ -356,9 +367,11 @@ A host whose collector predates this doesn't get agents' messages (they wait, qu
 old collector never delivers one as yours. The agent is told that instructions it finds for another session were given to that
 session, not to it. If the hub is down a tool says so and the agent carries on.
 
-pi has no MCP of its own; with [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter), add it to
-`~/.pi/agent/mcp.json` under `mcpServers` as `"ctxswitch": {"command": "<venv>/bin/ctx", "args": ["mcp"]}` (not done
-by `ctx install`). Any other MCP client works the same way.
+pi has no MCP of its own. Where [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) is installed,
+`ctx install --mcp` also adds `"ctxswitch": {"command": "<venv>/bin/ctx", "args": ["mcp"]}` under `mcpServers` in
+`~/.pi/agent/mcp.json`, leaving the other servers as they were (it never prints the file: other servers' keys live
+there; the original is backed up 0600 under `~/.local/state/ctxswitch/backup/`). `ctx uninstall --mcp` removes just
+that entry. Any other MCP client works the same way.
 
 ## 9. Configuration
 `~/.config/ctxswitch/config.toml` (or `$CTXSWITCH_CONFIG`). [config.example.toml](config.example.toml) has every

@@ -125,6 +125,9 @@ def sender(m: dict) -> str:
     return f"from {m['from_key']}: " if m.get("from_key") else ""
 
 
+WORK_NOTE = "the first session live on this work (any host) takes it"
+
+
 def message_note(s: dict, m: dict) -> str:
     """What's happening to a message, in words."""
     st = m["status"]
@@ -242,6 +245,12 @@ def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | No
         for m in msgs:
             out.append(f"    {MSG_GLYPH.get(m['status'], '?')} [{m['id']}] {sender(m)}{one_line(m['body'], 70)}")
             out.append(f"        {one_line(message_note(s, m), 100)}")
+    work = s.get("workstream_messages") or []
+    if work:
+        out.append(f"  for this work ({workstream_label(s.get('workstream'))}), not taken yet:")
+        for m in work:
+            out.append(f"    {MSG_GLYPH['queued']} [{m['id']}] {one_line(m['body'], 70)}")
+            out.append(f"        {WORK_NOTE}")
     sibs = s.get("siblings") or []
     if sibs:
         out.append(f"  same work elsewhere ({workstream_label(s.get('workstream'))}):")
