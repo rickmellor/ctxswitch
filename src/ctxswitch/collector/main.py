@@ -138,6 +138,7 @@ def main() -> None:
     if a.hub:
         cfg.hub.url = a.hub
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)       # one INFO line per push otherwise
     asyncio.run(Collector(cfg, once=a.once).run())
 
 

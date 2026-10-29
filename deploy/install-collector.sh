@@ -2,6 +2,7 @@
 # Install/upgrade the collector on this host: venv, config stub, systemd --user unit.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export PATH="$HOME/.local/bin:$PATH"       # uv lives here; non-login ssh shells miss it
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync --all-extras
 mkdir -p ~/.config/ctxswitch ~/.config/systemd/user ~/.local/state/ctxswitch
