@@ -48,6 +48,14 @@ Greenfield repo: `~/repos/ctxswitch`.
   The recap and the extractor share one scheduler loop (recap first: it is what the board shows), and the recap
   call now also writes the ≤4-line re-entry card and sees your standing instructions. Three unparseable replies
   for one exchange skip it; an HTTP error backs off 30 s without moving past it.
+- 2026-10-29 (Phase 5, cross-host resume): Enter on a session that ended on another host runs
+  `ssh -t <target> bash -lc 'cd <cwd> || cd; exec claude --resume <id>'` (or `pi --session`) in a new ctx tmux
+  window named `<host>/<title>` (outside tmux: a `wt.exe` tab or the printed command). A login shell because the
+  agents aren't on the non-login PATH everywhere. The target comes from client config `[ssh] <host> = "…"`,
+  defaulting to the host id as an ssh alias; `""` marks a host as unreachable (the laptop, inbound blocked), which
+  keeps the old "run this there" hint. A session still live on its host is not resumed a second time (that would
+  fork the transcript). The resumed pane is recognised by its tmux tag, not by pid (the pid is remote). No
+  collector changes: the remote collector sees the resumed session as it would a local one.
   A decision row records the plain-text asks your prompt answered (`extra.answers`: asks raised since your previous
   typed prompt), so the board shows an answered question once: the ask verbatim, then your choice.
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
@@ -190,6 +198,7 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    Not done: a TUI key to retire a row (`e` is taken by "show ended"); confidence scores.
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
 5. Messaging: pi inject + reply; Claude inject (per spike); queued delivery; quick-reply; cross-host resume.
+   Cross-host resume **done** (2026-10-29, ssh from the client, `[ssh]` config). Messaging still to do.
 6. MCP + skill.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.

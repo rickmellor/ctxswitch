@@ -27,4 +27,10 @@ concurrency = 1
 priority = 10
 disable_thinking = true
 
+# How this machine reaches other hosts to resume their sessions (client side). Unlisted hosts use the host id as
+# the ssh destination (an ~/.ssh/config alias); "" = not reachable from here.
+# [ssh]
+# devbox = "me@devbox.lan"
+# laptop = ""                          # inbound blocked: show the command to run there instead
+
 notify = true                         # desktop toasts on this machine (Phase 4)

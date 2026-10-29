@@ -35,6 +35,7 @@ def server(monkeypatch):
         return real(args, **kw)
     monkeypatch.setattr(tmux.subprocess, "run", run)
     monkeypatch.setattr(tmux, "_this_host", lambda: "laptop")     # sessions in these tests live on "laptop"
+    monkeypatch.setattr(tmux, "_ssh", lambda: {})                  # never the real config's [ssh] table
     tm("new-session", "-d", "-s", "ctx", "-n", "mgr", "-x", "160", "-y", "40")
     tm("split-window", "-h", "-l", "50", "-t", "ctx:mgr")
     yield
@@ -224,6 +225,46 @@ def test_reach_classifies_every_way_enter_can_open_a_session(server, monkeypatch
     assert r["laptop/claude/inpane"] == "foreign" and r["laptop/claude/ended"] == "resume"
 
 
+def test_another_hosts_session_resumes_there_over_ssh(server, monkeypatch, tmp_path):
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    fake = tmp_path / "ssh"; fake.write_text("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %s/argv; sleep 30\n" % tmp_path); fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    far = {"key": "devbox/claude/far", "session_id": "far", "harness": "claude", "host_id": "devbox", "title": "Far one",
+           "cwd": "/home/me/my repo", "pid": None, "live_status": "ended"}
+    pi = {**far, "key": "devbox/pi/p1", "session_id": "p1", "harness": "pi", "meta": {"transcript_path": "/home/me/.pi/s.jsonl"}}
+    ssh = {"gpu": "me@gpu-host", "devbox": "me@devbox.lan", "laptop": ""}
+    assert tmux.reach_all([far, pi, {**far, "key": "laptop/claude/x", "host_id": "laptop"}], "gpu", ssh) == {
+        "devbox/claude/far": "ssh", "devbox/pi/p1": "ssh", "laptop/claude/x": "remote"}   # "" = no route
+    assert tmux.ssh_target("scrubby", ssh) == "scrubby"                                 # unlisted: the host id is the alias
+    assert tmux.ssh_argv(pi, "devbox")[-1] == ("bash -lc 'cd '\"'\"'/home/me/my repo'\"'\"' 2>/dev/null || cd; "
+                                                "exec pi --session /home/me/.pi/s.jsonl'")
+    assert "no ssh route" in tmux.reach_help({**far, "host_id": "laptop"}, "remote", ssh)
+    assert tmux.show(far, focus=False, ssh=ssh).startswith("resumed")
+    for _ in range(20):
+        if (tmp_path / "argv").exists(): break
+        time.sleep(0.1)
+    argv = (tmp_path / "argv").read_text().splitlines()
+    assert argv[0] == "-t" and argv[-2] == "me@devbox.lan"
+    assert argv[-1] == "bash -lc 'cd '\"'\"'/home/me/my repo'\"'\"' 2>/dev/null || cd; exec claude --resume far'"
+    ps = tmux.panes()
+    assert tmux.viewer_pane(ps).key == "devbox/claude/far" and tmux.viewer_pane(ps).window_name == "mgr"
+    assert next(p for p in ps if p.id == viewer.id).window_name == "devbox/Far one"   # the old viewer's new home
+    # live on devbox now, with a pid that happens to be a local pane's: still found by ctx's tag only
+    live = {**far, "live_status": "busy", "pid": tui.pid}
+    assert tmux.reach_all([live], "laptop", ssh) == {"devbox/claude/far": "pane"}
+    assert tmux.show(live, focus=False, ssh=ssh) == "already showing"
+    # running on devbox in some other terminal: not resumed a second time
+    other = {**live, "key": "devbox/claude/other", "session_id": "other"}
+    n = len(tmux.panes())
+    assert tmux.reach_all([other], "laptop", ssh) == {"devbox/claude/other": "remote"}
+    assert "running on devbox" in tmux.show(other, focus=False, ssh=ssh) and len(tmux.panes()) == n
+    # an untagged viewer is never mapped to another host's session by pid
+    tm("set-option", "-p", "-u", "-t", tmux.viewer_pane().id, "@ctx_key")
+    assert tmux.visible_key(sessions=[{**other, "pid": tmux.viewer_pane().pid}]) is None
+
+
 def test_kill_all_counts_live_agents_and_ends_only_this_session(server, monkeypatch, tmp_path):
     ps = tmux.panes()
     viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
@@ -241,3 +282,12 @@ def test_kill_all_counts_live_agents_and_ends_only_this_session(server, monkeypa
     assert tmux.my_session() == "ctx"
     tmux.kill_all()
     assert {p.session for p in tmux.panes()} == {"other"}
+
+
+def test_open_tab_resumes_another_hosts_session_over_ssh(monkeypatch):
+    from ctxswitch.client import launch
+    monkeypatch.setattr(launch.shutil, "which", lambda _: None)       # no wt.exe: the command is printed
+    far = {"key": "devbox/claude/far", "session_id": "far", "harness": "claude", "host_id": "devbox", "cwd": "/r"}
+    assert launch.open_tab(far, "laptop", {}) == ("run: cd ~ && ssh -t -o ConnectTimeout=5 -o ServerAliveInterval=30 devbox "
+                                                  "bash -lc 'cd /r 2>/dev/null || cd; exec claude --resume far'")
+    assert launch.open_tab(far, "laptop", {"devbox": ""}) == "on devbox: cd /r && claude --resume far"

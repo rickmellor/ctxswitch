@@ -204,15 +204,40 @@ def resume_argv(s: dict) -> list[str] | None:
     return None
 
 
-def new_session_window(s: dict) -> Pane:
-    """Resume the session in a new (detached) window of the viewer's tmux session; returns its pane."""
+def ssh_target(host: str | None, ssh: dict[str, str]) -> str | None:
+    """The ssh destination for ``host``: its [ssh] entry, else the host id itself; None when set to ""."""
+    if not host:
+        return None
+    return ssh.get(host, host) or None
+
+
+def ssh_argv(s: dict, target: str) -> list[str] | None:
+    """Resume ``s`` on its own host over ssh. A login shell, because the agents are often only on a login PATH."""
     argv = resume_argv(s)
     if not argv:
-        raise RuntimeError(f"cannot resume a {s.get('harness')} session")
-    cwd = s.get("cwd") or os.path.expanduser("~")
+        return None
+    inner = f"cd {shlex.quote(s.get('cwd') or '~')} 2>/dev/null || cd; exec {shlex.join(argv)}"
+    return ["ssh", "-t", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=30", target, shlex.join(["bash", "-lc", inner])]
+
+
+def window_name(s: dict) -> str:
+    """A session's tmux window name: its title, prefixed by its host when that isn't this one."""
+    host = f"{s.get('host_id')}/" if _is_remote(s, _this_host()) else ""
+    return (host + (s.get("title") or s.get("session_id") or "ctx"))[:24].replace(":", "-")
+
+
+def new_session_window(s: dict, ssh: dict[str, str] | None = None) -> Pane:
+    """Resume the session in a new (detached) window of the viewer's tmux session; returns its pane. A session
+    from another host is resumed there over ssh (``ssh`` = the config's [ssh] table)."""
+    remote = _is_remote(s, _this_host())
+    target = ssh_target(s.get("host_id"), ssh or {}) if remote else None
+    argv = (ssh_argv(s, target) if target else None) if remote else resume_argv(s)
+    if not argv:
+        raise RuntimeError(f"cannot resume a {s.get('harness')} session" + (f" from {s.get('host_id')}" if remote else ""))
+    cwd = os.path.expanduser("~") if remote else s.get("cwd") or os.path.expanduser("~")
     if not os.path.isdir(cwd):
         cwd = os.path.expanduser("~")
-    name = (s.get("title") or s.get("session_id") or "ctx")[:24].replace(":", "-")
+    name = window_name(s)
     target_session = next((p.session for p in panes() if p.id == os.environ.get("TMUX_PANE")), SESSION)
     pane_id = _agent_window(target_session, cwd, name, argv)
     tag(pane_id, s["key"])
@@ -245,7 +270,7 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
     return f"new {harness} in {cwd}"
 
 
-def show(s: dict, focus: bool = True) -> str:
+def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None) -> str:
     """Bring session ``s`` into the viewer pane. Returns a short status message for the TUI."""
     if not in_tmux():
         return "not inside tmux"
@@ -256,16 +281,17 @@ def show(s: dict, focus: bool = True) -> str:
     if s.get("harness") == "claude-win":
         from ctxswitch.client.launch import windows_hint
         return windows_hint(s)
-    r, pane = _reach(s, ps, _this_host())
+    ssh = _ssh() if ssh is None else ssh
+    r, pane = _reach(s, ps, _this_host(), ssh)
     created = False
     if r == "remote":
-        return f"on {s['host_id']}: run `ctx show {s['session_id'][:8]}` there (cross-host resume is Phase 5)"
+        return reach_help(s, r, ssh)
     if r == "foreign":
         return f"running in another terminal (pid {s.get('pid')}): quit it there, then Enter resumes it here"
     if r == "none":
         return f"cannot resume a {s.get('harness')} session"
     if pane is None:
-        pane = new_session_window(s)
+        pane = new_session_window(s, ssh)
         created = True
     if pane.id == viewer.id:
         if focus:
@@ -273,7 +299,7 @@ def show(s: dict, focus: bool = True) -> str:
         return "already showing"
     tag(pane.id, s["key"])
     # name the session's home window after the session; the viewer window keeps its own name
-    _run("rename-window", "-t", pane.window, (s.get("title") or s.get("session_id") or "ctx")[:24], check=False)
+    _run("rename-window", "-t", pane.window, window_name(s), check=False)
     _run("swap-pane", "-s", pane.id, "-t", viewer.id)
     if focus:
         _run("select-pane", "-t", pane.id, check=False)      # after the swap the session pane sits where the viewer was
@@ -284,20 +310,54 @@ def show(s: dict, focus: bool = True) -> str:
 #   pane     in a pane of this tmux server: Enter swaps it into the viewer
 #   resume   not running here: Enter resumes it in a new window
 #   foreign  running on this host in a terminal outside tmux: can't be adopted (quit it there, then resume)
-#   remote   on another host: open it there
+#   ssh      ended on another host: Enter resumes it there over ssh, in a new window here
+#   remote   on another host and Enter can't help: running there, or no ssh route from here
 #   none     not running and no way to resume it
-REACH_GLYPH = {"pane": "◆", "resume": "↻", "foreign": "⊘", "remote": "⇢", "none": " "}
+REACH_GLYPH = {"pane": "◆", "resume": "↻", "ssh": "↗", "foreign": "⊘", "remote": "⇢", "none": " "}
 REACH_HELP = {"pane": "in ctx's tmux: Enter brings it to the left pane",
               "resume": "not running: Enter resumes it in a new window",
+              "ssh": "on another host: Enter resumes it there over ssh",
               "foreign": "running in another terminal: can't be adopted; quit it there, then Enter resumes it here",
               "remote": "on another host: open it there",
               "none": "can't be resumed"}
 
 
-def _reach(s: dict, ps: list[Pane], this_host: str) -> tuple[str, Pane | None]:
+def reach_help(s: dict, reach: str, ssh: dict[str, str] | None = None) -> str:
+    """The detail pane's line on what Enter does, with the host spelled out for other-host sessions."""
     host = s.get("host_id")
-    if host and host != this_host and host != os.uname().nodename:
-        return "remote", None
+    if reach == "ssh":
+        return f"on {host}: Enter resumes it there over ssh ({ssh_target(host, ssh or {})})"
+    if reach != "remote":
+        return REACH_HELP.get(reach, "")
+    if s.get("live_status") in LIVE and s.get("pid"):
+        return f"running on {host}: quit it there, then Enter resumes it here over ssh"
+    if not resume_argv(s):
+        return f"on {host}: can't be resumed"
+    return f"on {host}, no ssh route from here ([ssh] {host} is \"\"): run `ctx show {(s.get('session_id') or '')[:8]}` there"
+
+
+def _is_remote(s: dict, this_host: str) -> bool:
+    host = s.get("host_id")
+    return bool(host) and host != this_host and host != os.uname().nodename
+
+
+def _ssh() -> dict[str, str]:
+    try:
+        from ctxswitch.common.config import load
+        return load().ssh
+    except Exception:                                      # noqa: BLE001
+        return {}
+
+
+def _reach(s: dict, ps: list[Pane], this_host: str, ssh: dict[str, str] | None = None) -> tuple[str, Pane | None]:
+    if _is_remote(s, this_host):
+        # only ctx's tag finds it: a pid from another host means nothing here
+        pane = next((p for p in ps if p.key and p.key == s.get("key")), None)
+        if pane is not None:
+            return "pane", pane
+        if s.get("live_status") in LIVE and s.get("pid"):
+            return "remote", None
+        return ("ssh" if resume_argv(s) and ssh_target(s.get("host_id"), ssh or {}) else "remote"), None
     pane = pane_for_session(s, ps) if ps else None
     if pane is not None:
         return "pane", pane
@@ -306,11 +366,12 @@ def _reach(s: dict, ps: list[Pane], this_host: str) -> tuple[str, Pane | None]:
     return ("resume" if resume_argv(s) else "none"), None
 
 
-def reach_all(sessions: list[dict], this_host: str | None = None) -> dict[str, str]:
+def reach_all(sessions: list[dict], this_host: str | None = None, ssh: dict[str, str] | None = None) -> dict[str, str]:
     """key -> reach for every session, with one tmux query."""
     ps = panes() if in_tmux() else []
     this_host = this_host or _this_host()
-    return {s["key"]: _reach(s, ps, this_host)[0] for s in sessions}
+    ssh = _ssh() if ssh is None else ssh
+    return {s["key"]: _reach(s, ps, this_host, ssh)[0] for s in sessions}
 
 
 def my_session(ps: list[Pane] | None = None) -> str | None:
@@ -356,7 +417,10 @@ def visible_key(ps: list[Pane] | None = None, sessions: list[dict] | None = None
     known = {s["key"] for s in sessions or []}
     if v.key and (not known or v.key in known):
         return v.key
+    here = _this_host()
     for s in sessions or []:                            # untagged (or stale tag): map by the agent's pid
+        if _is_remote(s, here):
+            continue                                    # its pid is another machine's
         p = pane_for_pid(s.get("pid"), ps)
         if p and p.id == v.id:
             tag(v.id, s["key"])

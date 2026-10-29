@@ -66,7 +66,7 @@ in one narrow side panel next to whatever you are doing.
 Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is done, plus the tmux manager and
 LLM recaps. Phase 3 (the ledger tracker) is done. Phase 2 is done: Claude hooks and a pi extension report permission prompts and dialogs, resuming a
 session prints a briefing, Windows-native Claude sessions show up (read-only) on a WSL host, and `ctx install` /
-`ctx doctor` wire up and check a host. Still to come: cross-host resume, messaging live sessions and MCP. See the
+`ctx doctor` wire up and check a host. Cross-host resume works: Enter on another host's ended session resumes it there over ssh. Still to come: messaging live sessions and MCP. See the
 phases in [DESIGN.md](DESIGN.md).
 
 # User guide
@@ -167,7 +167,8 @@ filter and how many sessions are live.
 | `◆` | brings it to the left pane (it's in ctx's tmux) |
 | `↻` | resumes it (`claude --resume` / `pi --session`) in a new window, then brings it left |
 | `⊘` | can't: it's running in a terminal outside tmux. Quit it there, then Enter resumes it here |
-| `⇢` | can't: it's on another host. The detail pane says which. Open it there |
+| `↗` | it ended on another host: resumes it there over ssh, in a new window here (see `[ssh]`) |
+| `⇢` | can't: it's live on another host, or there's no ssh route to it. The detail pane says which and what to run |
 
 **Detail pane** for the selected session:
 - the title, state and age, number of exchanges, and when you last looked (`seen 2h`);
@@ -210,6 +211,9 @@ The footer shows as many keys as fit; the rest still work.
   waits for Enter first so you can read the error.
 - **Outside tmux** (`ctx tui` on its own), Enter opens the session in a new Windows Terminal tab under WSL, or
   shows the command to run.
+- **Sessions on another host** (`↗`) resume there over ssh, in a new window here named `<host>/<title>`, so you
+  drive them from this machine. A session still live on that host stays `⇢`: quit it there first (two copies of
+  one session would fork it). The window closes when the agent (or ssh) exits.
 - **Windows-native Claude sessions** (`cw`) are read-only: Enter tells you the command to run in a Windows
   terminal. They're picked up within 30 s (Windows writes don't wake the Linux file watcher).
 - **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
@@ -251,6 +255,7 @@ option. The ones you'll touch:
 | `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
 | `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
+| `[ssh]` | client only: `<host_id> = "<ssh destination>"` for resuming another host's sessions. Unlisted hosts use the host id itself (an `~/.ssh/config` alias); `""` = not reachable from here (e.g. a laptop that blocks inbound) |
 | `[hub] ledger` | hub only: keep the ledger (instructions, decisions, claims) as well as recaps (default true) |
 | `[[seats]]` | hub only: the LLM endpoint for recaps and the ledger |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
@@ -264,6 +269,7 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | an answered prompt still shows | it clears on the agent's next tool call, turn end or idle; check the collector is running |
 | `hub unreachable` | `[hub] url` in your config, and that the hub is up (`curl <url>/v1/health`) |
 | a host is missing | `ctx hosts`; on that host, `systemctl --user status ctx-collector` and `~/.local/state/ctxswitch/collector.log` |
+| `↗` resume fails or hangs | Enter runs `ssh -t <target> bash -lc 'claude --resume …'`; try `ssh <target> true` by hand. ssh needs key auth (BatchMode isn't forced, so a password prompt shows in the window). The agent must be on the remote login PATH |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
 | no briefing on resume | it only shows after 15 min away. `ctx doctor` (claude hooks line should not say "SessionStart (briefing)" missing); pi needs a new pi process after `ctx install --pi` |

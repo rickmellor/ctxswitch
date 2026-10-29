@@ -1,4 +1,4 @@
-"""Open a session in a new terminal tab (resume) — same host only in Phase 1; other hosts get the command."""
+"""Open a session in a new terminal tab (resume); a session from another host is resumed there over ssh."""
 from __future__ import annotations
 
 import shutil
@@ -20,8 +20,9 @@ def windows_hint(s: dict) -> str:
     return f"Windows session: in a Windows terminal, cd {s.get('cwd') or '~'} && claude --resume {s.get('session_id')}"
 
 
-def open_tab(s: dict, this_host: str | None = None) -> str:
+def open_tab(s: dict, this_host: str | None = None, ssh: dict[str, str] | None = None) -> str:
     """Launch in a new Windows Terminal tab (WSL) or print the command. Returns a human message."""
+    from ctxswitch.client.tmux import ssh_argv, ssh_target
     if s.get("harness") == "claude-win":
         return windows_hint(s)
     cmd = resume_command(s)
@@ -30,7 +31,10 @@ def open_tab(s: dict, this_host: str | None = None) -> str:
     this_host = this_host or socket.gethostname()
     cwd = s.get("cwd") or "~"
     if s.get("host_id") != this_host:
-        return f"on {s.get('host_id')}: cd {cwd} && {' '.join(cmd)}"
+        target = ssh_target(s.get("host_id"), ssh or {})
+        if not target:
+            return f"on {s.get('host_id')}: cd {cwd} && {' '.join(cmd)}"
+        cmd, cwd = ssh_argv(s, target), "~"
     wt = shutil.which("wt.exe")
     if wt:
         title = (s.get("title") or s.get("session_id") or "ctx")[:40]

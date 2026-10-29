@@ -39,7 +39,7 @@ from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
 STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
 CLAIM_STYLE = {"done": "green", "tests_pass": "green", "tests_fail": "red", "blocked": "yellow"}
-REACH_STYLE = {"pane": "bold", "resume": "", "foreign": "red", "remote": "blue", "none": "dim"}
+REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "foreign": "red", "remote": "blue", "none": "dim"}
 
 
 class CtxApp(App):
@@ -113,7 +113,7 @@ class CtxApp(App):
         try:
             tmux.reap_viewer()                          # an agent exited to a bare shell in the viewer: move on
             self.visible_key = tmux.visible_key(sessions=data["sessions"])
-            self.reach = tmux.reach_all(data["sessions"], self.this_host)
+            self.reach = tmux.reach_all(data["sessions"], self.this_host, self.cfg.ssh)
         except Exception:                               # noqa: BLE001 - tmux is optional
             self.visible_key = None
             self.reach = {}
@@ -269,10 +269,8 @@ class CtxApp(App):
         t.append("\n")
         reach = "pane" if s["key"] == self.visible_key else self.reach.get(s["key"])
         if reach:
-            help_ = "on the left now" if s["key"] == self.visible_key else tmux.REACH_HELP[reach]
-            if reach == "remote":
-                help_ = f"on {s.get('host_id')}: open it there"
-            elif reach == "foreign" and s.get("pid"):
+            help_ = "on the left now" if s["key"] == self.visible_key else tmux.reach_help(s, reach, self.cfg.ssh)
+            if reach == "foreign" and s.get("pid"):
                 help_ += f" (pid {s['pid']})"
             t.append(f"{'▶' if s['key'] == self.visible_key else tmux.REACH_GLYPH[reach]} {help_}\n", style=REACH_STYLE.get(reach, "dim"))
         t.append(f"{fmt.short_key(s)} {fmt.repo_label(s)}\n", style="dim")
@@ -380,12 +378,12 @@ class CtxApp(App):
         if tmux.in_tmux():
             self.show_in_tmux(s)
         else:
-            self.notify(open_tab(s, self.this_host), timeout=8)
+            self.notify(open_tab(s, self.this_host, self.cfg.ssh), timeout=8)
 
     @work(exclusive=True, group="tmux", thread=True)
     def show_in_tmux(self, s: dict) -> None:
         try:
-            msg = tmux.show(s)
+            msg = tmux.show(s, ssh=self.cfg.ssh)
         except Exception as e:                          # noqa: BLE001
             msg = f"tmux: {e}"
         self.call_from_thread(self.notify, msg, timeout=6)

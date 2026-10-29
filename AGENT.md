@@ -73,7 +73,7 @@ tests/                    pytest; transcript fixtures are synthetic (tests/claud
   window. `reap_viewer` is the safety net for an agent pane that dropped to a shell anyway. `SHELLS` deliberately
   excludes `sh`, because `sh` is the wrapper itself. Failures are logged to `~/.local/state/ctxswitch/tmux-exit.log`.
 - **Reach** (what Enter can do): `pane` ◆, `resume` ↻, `foreign` ⊘ (live in a terminal outside tmux),
-  `remote` ⇢ (other host), `none`. `tmux._reach` is the single classifier, and `show()` follows it.
+  `ssh` ↗ (ended on another host, resumable over ssh), `remote` ⇢ (live elsewhere, or no route), `none`. `tmux._reach` is the single classifier, and `show()` follows it.
 - **Hooks (Phase 2):** Claude `async` hooks run `ctx-hook claude`; the pi extension writes the same record. Each
   event is one file in `~/.local/state/ctxswitch/spool/`, which the collector watches, queues and deletes. The hub
   (`hub/hooks.py`) opens an ask on PermissionRequest / permission Notification / elicitation / pi `ui_prompt_start`
@@ -125,5 +125,5 @@ uv sync --extra test
 
 ## What's next
 Phases 2 and 3 are done. Unverified: hook/extension payloads on harness versions newer than `VALIDATED`, and the Windows
-session registry with a live Windows session. Next: cross-host resume over ssh, then messaging (inject into live sessions; idea: send a tmux copy-mode selection
+session registry with a live Windows session. Cross-host resume over ssh is done (`[ssh]` client config; `tmux.ssh_argv`). Next: messaging (inject into live sessions; idea: send a tmux copy-mode selection
 from one pane to another session), then MCP. Validated harness versions are in `client/install.py` `VALIDATED`; `ctx doctor` warns on others.
