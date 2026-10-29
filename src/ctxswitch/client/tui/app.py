@@ -56,7 +56,7 @@ class CtxApp(App):
     BINDINGS = [
         Binding("enter", "resume", "open", show=True), Binding("c", "new_claude", "claude"), Binding("p", "new_pi", "pi"),
         Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
-        Binding("h", "cycle_host", "host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
+        Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("r", "refresh", "refresh"),
         Binding("escape", "clear_filter", show=False),
     ]

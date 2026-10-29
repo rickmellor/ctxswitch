@@ -39,7 +39,8 @@ in one narrow side panel next to whatever you are doing.
   `pi --session`) and it prints a short card first: how long you were away, the recap, your last prompt, the
   agent's last reply and any questions still open. It's shown to you, not sent to the model.
 - **One source of truth.** A central hub holds all state. Every TUI on every machine shows the same thing,
-  filterable by this host, a named host or all hosts.
+  filterable by this host, a named host or all hosts. `ctx tui` opens on this host; `h` cycles the filter
+  (the border shows which), or start with `ctx tui --all`.
 
 ## How it works
 ```
