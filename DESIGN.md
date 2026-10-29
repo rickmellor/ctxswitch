@@ -100,6 +100,17 @@ Greenfield repo: `~/repos/ctxswitch`.
   (no table). pi records no branch, so the collector reads the checkout's HEAD (linked worktrees too). Siblings
   are live or active in the last 14 days, at most 6, live first, with their 3 latest active instructions, shown
   labelled, never applied.
+- 2026-10-29 (Phase 6): the MCP server is **read-only**: `list_sessions`, `attention`, `get_session`, `search`. No
+  `send_message`: a hub message is delivered headed "Message from the operator" and its turn recorded as the
+  operator's, so an agent sending one would speak as the operator; if agents get to send, it needs its own header
+  and origin (not decided). No `read_inbox`: messages are already injected into the session. `get_session` doesn't
+  mark the session viewed. The protocol is written by hand (newline-delimited JSON-RPC 2.0 on stdio, tools only:
+  `initialize`, `ping`, `tools/list`, `tools/call`), checked against the official SDK's client, so no new dependency on
+  every host; a failing tool (hub down, ambiguous name, bad argument) is an `isError` result, never a dead server.
+  Search is SQLite `LIKE` (every word, `%`/`_` literal) over ledger rows (text, quote, a decision's question),
+  answered asks (as decisions) and the operator's own prompts (human origin only), newest first; no FTS index yet.
+  `ctx install --mcp` is opt-in and goes through `claude mcp add -s user` (Claude rewrites `~/.claude.json` itself,
+  so we don't edit it) and links the skill to `~/.claude/skills/ctxswitch`.
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles
@@ -208,8 +219,8 @@ sqlite3). pi extension in TS. One package, three entry points: `ctx` (client), `
   workstreams → sessions (host badge, harness, ●busy/◐waiting/○idle/–ended, waiting-since, purpose); right =
   re-entry card, asks, instructions, decisions, claims, "since you last looked"; bottom = message thread.
   Keys: `a` answer ask, `m` message, `Enter` resume/focus, `/` search, `v` mark viewed, `e` edit/retire a row.
-- **MCP** `ctx mcp` (stdio on each host, talks to the hub) + skill: `list_sessions`, `get_ledger`,
-  `search_decisions`, `send_message`, `read_inbox`. Optional.
+- **MCP** `ctx mcp` (stdio on each host, talks to the hub) + skill: `list_sessions`, `attention`, `get_session`,
+  `search`, read-only (see the decisions log). Optional (`ctx install --mcp`).
 - **CLI**: `ctx ls [--attention] [--host X|--all] | show | send | resume | install | uninstall | doctor`;
   `doctor` checks collector↔hub link, hooks, extension, seat reachability, Claude version vs validated payload.
 
@@ -247,6 +258,8 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    pi + Claude inject, queued delivery for ended sessions, `m`/`M` keys, `ctx send`. Quick-reply **done**
    (2026-10-29): `a`, `ctx reply`, for plain-text and tracker asks; dialogs are answered in the session.
 6. MCP + skill.
+   **Done** (2026-10-29): `ctx mcp` (read-only, 4 tools), `ctx search` + `/v1/search`, the skill, `ctx install --mcp`.
+   Not done: agents sending messages (needs its own header), an FTS index, pi's mcp.json wiring.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 

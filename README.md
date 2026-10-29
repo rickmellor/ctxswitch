@@ -77,7 +77,8 @@ LLM recaps. Phase 3 (the ledger tracker) is done. Phase 2 is done: Claude hooks 
 session prints a briefing, Windows-native Claude sessions show up (read-only) on a WSL host, and `ctx install` /
 `ctx doctor` wire up and check a host. Cross-host resume works: Enter on another host's ended session resumes it there over ssh. Messaging works:
 send to a live session on any host, or queue for an ended one. Phase 4 is done: answer a question from the board
-(`a`, `ctx reply`), tmux pop-ups, "since you looked" and workstreams across hosts. Still to come: MCP. See the
+(`a`, `ctx reply`), tmux pop-ups, "since you looked" and workstreams across hosts. Phase 6 is done: `ctx search`
+and a read-only MCP server, so an agent can look up what you already decided or told another session. See the
 phases in [DESIGN.md](DESIGN.md).
 
 # User guide
@@ -121,8 +122,9 @@ Put `.venv/bin` on your `PATH` (or symlink `ctx` into `~/.local/bin`) so plain `
 | collector | writes `~/.config/systemd/user/ctx-collector.service` pointing at this venv, enables and restarts it | `ctx uninstall --collector` |
 | Claude Code | adds one `async` hook per event to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`), keeping your other hooks; backs the original up to `~/.local/state/ctxswitch/backup/` | `ctx uninstall --claude` restores the original byte-for-byte, or removes just our entries if the file changed since |
 | pi | symlinks `~/.pi/agent/extensions/ctxswitch.ts` to the extension in this repo | `ctx uninstall --pi` |
+| MCP (only with `--mcp`) | `claude mcp add -s user ctxswitch -- <venv>/bin/ctx mcp` (replacing one that points at another venv), and symlinks `~/.claude/skills/ctxswitch` to the skill in this repo | `ctx uninstall --mcp` |
 
-Pick parts with `--claude`, `--pi`, `--collector`; `--dry-run` shows what would change. Running it again is
+Pick parts with `--claude`, `--pi`, `--collector` (`--mcp` is never part of the default: see Agents); `--dry-run` shows what would change. Running it again is
 safe. New pi sessions load the extension; restart running Claude sessions to be sure they have the hooks.
 
 The hooks never block or slow an agent: they run in the background, exit 0 whatever happens, and only write a
@@ -316,9 +318,31 @@ pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its o
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
 | `ctx tmux [--width N\|N%]` | the manager |
-| `ctx install [--claude --pi --collector] [--hub URL --token T] [--dry-run]` | wire this machine up (above) |
-| `ctx uninstall [--claude --pi --collector]` | undo it (the collector only when named) |
-| `ctx doctor` | check this machine: config, hub and token, collector, hooks, extension, spool, recaps. Exit 1 if broken |
+| `ctx search <words> [--kind K,K] [--host H] [--limit N]` | every session's decisions (answered questions too), instructions, agent claims and your own prompts that contain all the words, newest first; kinds `decision`, `instruction`, `claim`, `prompt` |
+| `ctx install [--claude --pi --collector --mcp] [--hub URL --token T] [--dry-run]` | wire this machine up (above) |
+| `ctx uninstall [--claude --pi --collector --mcp]` | undo it (the collector and MCP only when named) |
+| `ctx mcp` | the MCP server on stdio (an agent's client starts it; see Agents) |
+| `ctx doctor` | check this machine: config, hub and token, collector, hooks, extension, spool, recaps (and MCP, once installed). Exit 1 if broken |
+
+### Agents (MCP)
+`ctx install --mcp` gives every new Claude Code session on that machine four tools that read the hub, and a skill
+that tells the agent when to use them:
+
+| Tool | Returns |
+|---|---|
+| `search` | what `ctx search` shows: `key #turn (title) [kind] question → answer`, newest first |
+| `get_session` | what `ctx show` shows, without marking it viewed (an agent reading isn't you looking) |
+| `list_sessions` | what `ctx ls --all` shows |
+| `attention` | what `ctx attention --all` shows |
+
+So "what did we decide about the docs layout?" in one session finds the answer you gave in another, on any machine.
+It is read-only: an agent can't message a session through it, because a ctx message arrives as "from the operator"
+and is recorded as your turn. The agent is told that instructions it finds for another session were given to that
+session, not to it. If the hub is down a tool says so and the agent carries on.
+
+pi has no MCP of its own; with [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter), add it to
+`~/.pi/agent/mcp.json` under `mcpServers` as `"ctxswitch": {"command": "<venv>/bin/ctx", "args": ["mcp"]}` (not done
+by `ctx install`). Any other MCP client works the same way.
 
 ## 9. Configuration
 `~/.config/ctxswitch/config.toml` (or `$CTXSWITCH_CONFIG`). [config.example.toml](config.example.toml) has every

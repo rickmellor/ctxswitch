@@ -72,6 +72,7 @@ NOT_DELIVERABLE = ("claude-win",)                   # Windows-native Claude: no 
 REPLYABLE = ("plain", "text")                       # asks a message can answer; the rest are dialogs in the session
 SIBLINGS = 6                                        # other sessions shown for a workstream
 SIBLING_DAYS = 14                                   # ... live, or active within this many days
+SEARCH_KINDS = ("decision", "instruction", "claim", "prompt")
 
 
 class Store:
@@ -405,6 +406,52 @@ class Store:
         d["purpose"], d["purpose_history"], d["tracked_through"] = st["purpose"], st["purpose_history"], st["through_idx"]
         d["siblings"] = self.siblings(d)
         return d
+
+    def search(self, query: str, kinds: tuple[str, ...] = SEARCH_KINDS, host: str | None = None,
+               limit: int = 30) -> list[dict[str, Any]]:
+        """Across every session, newest first: ledger rows (decision / instruction / claim, retired ones too,
+        marked), answered questions (as decisions: the question, then your answer) and your own prompts. Every word
+        of ``query`` must appear, case-insensitive, in the text (or quote, or question)."""
+        words = query.split()
+        if not words:
+            return []
+
+        def like(cols: list[str]) -> tuple[str, list[str]]:
+            pats = ["%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for w in words]
+            hay = " || ' ' || ".join(f"coalesce({c},'')" for c in cols)
+            return " AND ".join(f"({hay}) LIKE ? ESCAPE '\\'" for _ in pats), pats
+
+        out: list[dict[str, Any]] = []
+        hcond, hargs = (" AND s.host_id=?", [host]) if host else ("", [])
+        led = [k for k in kinds if k in ("decision", "instruction", "claim")]
+        if led:
+            w, a = like(["l.text", "l.quote", "json_extract(l.extra,'$.question')"])
+            q = (f"SELECT l.key, l.kind, l.text, l.turn_idx, l.active, l.extra, t.started_at AS at FROM ledger l "
+                 f"JOIN sessions s ON s.key=l.key LEFT JOIN turns t ON t.key=l.key AND t.idx=l.turn_idx "
+                 f"WHERE l.kind IN ({','.join('?' * len(led))}) AND {w}{hcond}")
+            for r in self.db.execute(q, [*led, *a, *hargs]):
+                d = dict(r); d["active"] = bool(d["active"])
+                d["question"] = json.loads(d.pop("extra") or "{}").get("question") or None
+                out.append(d)
+        if "decision" in kinds:
+            w, a = like(["a.text", "a.answer"])
+            q = (f"SELECT a.key, 'decision' AS kind, a.answer AS text, a.text AS question, a.turn_idx, 1 AS active, "
+                 f"coalesce(a.answered_at, a.asked_at) AS at FROM asks a JOIN sessions s ON s.key=a.key "
+                 f"WHERE a.answered=1 AND {w}{hcond}")
+            out += [dict(r) | {"active": True} for r in self.db.execute(q, [*a, *hargs])]
+        if "prompt" in kinds:
+            w, a = like(["json_extract(t.data,'$.user_text')"])
+            q = (f"SELECT t.key, 'prompt' AS kind, json_extract(t.data,'$.user_text') AS text, t.idx AS turn_idx, "
+                 f"1 AS active, t.started_at AS at FROM turns t JOIN sessions s ON s.key=t.key "
+                 f"WHERE json_extract(t.data,'$.user_origin')='human' AND {w}{hcond}")
+            out += [dict(r) | {"active": True, "question": None} for r in self.db.execute(q, [*a, *hargs])]
+        out.sort(key=lambda d: d.get("at") or "", reverse=True)
+        out = out[:limit]
+        meta = {}
+        for k in {d["key"] for d in out}:
+            r = self.db.execute("SELECT host_id, title, live_name FROM sessions WHERE key=?", (k,)).fetchone()
+            meta[k] = {"host_id": r["host_id"], "title": r["live_name"] or r["title"]}
+        return [d | meta[d["key"]] for d in out]
 
     def siblings(self, s: dict[str, Any]) -> list[dict[str, Any]]:
         """Other sessions in the same workstream (any host), live first then most recent, each with its standing

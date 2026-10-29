@@ -157,3 +157,107 @@ def test_doctor_flags_missing_wiring(home, monkeypatch):
     (home / ".claude" / "settings.json").write_text(json.dumps(s))
     c = ins._check_claude()
     assert c.status == "✗" and c.detail == "missing for SessionStart (briefing)"
+
+
+class FakeClaudeMcp:
+    """`claude mcp get/add/remove` over a dict, like the real CLI's output and exit codes."""
+    def __init__(self, servers=None):
+        self.servers, self.calls = dict(servers or {}), []
+
+    def __call__(self, argv, **kw):
+        assert argv[:2] == ["claude", "mcp"] and kw.get("timeout")
+        self.calls.append(argv[2:])
+        verb, rest = argv[2], argv[3:]
+        r = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if verb == "get":
+            if rest[0] in self.servers:
+                r.stdout = f"{rest[0]}:\n  Scope: User config\n  Type: stdio\n  Command: {self.servers[rest[0]]}\n"
+            else:
+                r.returncode, r.stdout = 1, f'No MCP server named "{rest[0]}". Configured servers: {", ".join(self.servers)}'
+        elif verb == "add":
+            assert rest[:2] == ["-s", "user"] and rest[3] == "--"
+            if rest[2] in self.servers:
+                r.returncode, r.stderr = 1, f"MCP server {rest[2]} already exists in user config"
+            else:
+                self.servers[rest[2]] = " ".join(rest[4:])
+        elif verb == "remove":
+            assert rest[:2] == ["-s", "user"]
+            if self.servers.pop(rest[2], None) is None:
+                r.returncode = 1
+        return r
+
+
+def test_mcp_registration_is_opt_in_idempotent_and_repoints(home, monkeypatch):
+    monkeypatch.setattr(ins.shutil, "which", lambda c: "/usr/bin/" + c)
+    fake = FakeClaudeMcp({"other": "x"})
+    ours = f"{ins.ctx_exe()} mcp"
+    assert _run(ins.install_mcp, dry=True, run=fake)[0].startswith("mcp: would register")
+    assert fake.servers == {"other": "x"}
+    _run(ins.install_mcp, run=fake)
+    assert fake.servers == {"other": "x", "ctxswitch": ours} and ins.State().d["mcp"]["command"] == ours
+    n = len(fake.calls)
+    assert "already registered" in _run(ins.install_mcp, run=fake)[0] and fake.calls[n:] == [["get", "ctxswitch"]]
+    fake.servers["ctxswitch"] = "/old/venv/bin/ctx mcp"                # a moved venv: replaced, not "already exists"
+    _run(ins.install_mcp, run=fake)
+    assert fake.servers["ctxswitch"] == ours
+    _run(ins.uninstall_mcp, run=fake)
+    assert fake.servers == {"other": "x"} and "mcp" not in ins.State().d
+    assert _run(ins.uninstall_mcp, run=fake) == ["mcp: ctxswitch not registered"]
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    assert "not on PATH" in _run(ins.install_mcp, run=fake)[0]
+
+
+def test_install_without_flags_leaves_mcp_alone(home, monkeypatch):
+    seen = []
+    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_mcp", "install_skill"):
+        monkeypatch.setattr(ins, name, lambda *a, _n=name, **k: seen.append(_n))
+    args = dict(claude=False, pi=False, collector=False, mcp=False, dry_run=False, hub=None, token=None, no_start=True, force=False)
+    ins.cmd_install(type("A", (), args)())
+    assert seen == ["write_config", "install_collector", "install_claude", "install_pi"]
+    seen.clear()
+    ins.cmd_install(type("A", (), args | {"mcp": True})())
+    assert seen == ["install_mcp", "install_skill"]                   # --mcp alone: only that
+
+
+def test_doctor_checks_mcp_only_once_installed(home, monkeypatch):
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: None)
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    from ctxswitch.common.config import Config
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    answer = [(True, "")]
+    monkeypatch.setattr(ins, "mcp_registered", lambda: answer[0])
+    assert "mcp" not in {c.name for c in ins.doctor(cfg)}
+    st = ins.State(); st.d["mcp"] = {"name": "ctxswitch"}; st.save()
+    for ok, status, detail in ((True, "✓", "ctxswitch -> "), (False, "!", "ctxswitch not registered"), (None, "!", "claude not on PATH")):
+        answer[0] = (ok, "")
+        (c,) = [c for c in ins.doctor(cfg) if c.name == "mcp"]
+        assert c.status == status and c.detail.startswith(detail)
+
+
+def test_a_failed_mcp_add_records_nothing(home, monkeypatch):
+    monkeypatch.setattr(ins.shutil, "which", lambda c: "/usr/bin/" + c)
+    fake = FakeClaudeMcp()
+    real = fake.__call__
+    def refuse(argv, **kw):
+        r = real(argv, **kw)
+        if argv[2] == "add":
+            r.returncode, r.stderr = 1, "Invalid scope"
+        return r
+    (line,) = _run(ins.install_mcp, run=refuse)
+    assert line == "mcp: claude mcp add failed: Invalid scope" and "mcp" not in ins.State().d
+
+
+def test_skill_is_linked_and_only_our_link_removed(home):
+    link = ins.skill_link()
+    assert link == home / ".claude" / "skills" / "ctxswitch" and (ins.skill_source() / "SKILL.md").is_file()
+    assert _run(ins.install_skill, dry=True)[0].startswith("skill: would link") and not link.is_symlink()
+    _run(ins.install_skill)
+    assert link.resolve() == ins.skill_source().resolve()
+    assert "already linked" in _run(ins.install_skill)[0]
+    _run(ins.uninstall_skill)
+    assert not link.is_symlink()
+    link.mkdir(parents=True)                                          # the user's own skill by that name
+    assert "not our link" in _run(ins.install_skill)[0]
+    assert "no link of ours" in _run(ins.uninstall_skill)[0] and link.is_dir()
+    link.rmdir(); link.symlink_to(home)                               # someone else's link
+    assert "no link of ours" in _run(ins.uninstall_skill)[0] and link.is_symlink()

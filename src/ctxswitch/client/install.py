@@ -6,6 +6,9 @@
              Idempotent. The first install backs settings.json up; state is kept in <state>/install.json.
   uninstall  settings.json restored byte-for-byte when nothing else changed it since, else our hooks removed
              surgically; the extension link and (with --collector) the unit removed.
+  --mcp      (opt-in, not part of the default) `ctx mcp` registered with Claude Code for this user, through
+             `claude mcp add/remove -s user` (~/.claude.json is Claude's own and rewritten constantly, so no edits to it),
+             and the skill that says when to use it linked at ~/.claude/skills/ctxswitch.
   doctor     one line per check (✓ ok, ! warning, ✗ broken, with the fix); exit 1 on any ✗.
 """
 from __future__ import annotations
@@ -30,6 +33,7 @@ VALIDATED = {"claude": "2.1.280", "pi": "1.2.0"}           # versions whose hook
 MARK = "ctx-hook"                                           # identifies our hook entries in settings.json
 UNIT = "ctx-collector.service"
 EXT_NAME = "ctxswitch.ts"
+MCP_NAME = "ctxswitch"
 
 
 # -- paths ------------------------------------------------------------------------------------------------------
@@ -63,6 +67,18 @@ def hook_exe() -> Path:
 
 def hook_command() -> str:
     return f"{hook_exe()} claude"
+
+
+def ctx_exe() -> Path:
+    return scripts_dir() / "ctx"
+
+
+def skill_source() -> Path:
+    return Path(hook.__file__).parent / "skill"
+
+
+def skill_link() -> Path:
+    return claude_settings().parent / "skills" / MCP_NAME
 
 
 def _sha(b: bytes) -> str:
@@ -207,6 +223,82 @@ def uninstall_claude(st: State, dry: bool, log) -> None:
             _write(p, _dump(new)); log(f"claude: removed ctx-hook entries from {p} (other changes kept)")
     if not dry:
         st.d.pop("claude", None); st.save()
+
+
+# -- MCP server registration -----------------------------------------------------------------------------------
+def _claude_mcp(*args: str, run=subprocess.run) -> subprocess.CompletedProcess | None:
+    if not shutil.which("claude"):
+        return None
+    try:
+        return run(["claude", "mcp", *args], capture_output=True, text=True, timeout=60, cwd=str(Path.home()))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def mcp_registered(run=subprocess.run) -> tuple[bool | None, str]:
+    """(None: no claude here | False: not registered or another command | True: points at this install, output)."""
+    r = _claude_mcp("get", MCP_NAME, run=run)
+    if r is None:
+        return None, ""
+    return (r.returncode == 0 and str(ctx_exe()) in r.stdout), r.stdout + r.stderr
+
+
+def install_mcp(st: State, dry: bool, log, run=subprocess.run) -> None:
+    ok, out = mcp_registered(run)
+    if ok is None:
+        log("mcp: claude not on PATH here, nothing registered"); return
+    if ok:
+        log(f"mcp: {MCP_NAME} already registered -> {ctx_exe()} mcp"); return
+    there = "No MCP server named" not in out
+    if dry:
+        log(f"mcp: would {'re-point' if there else 'register'} {MCP_NAME} -> {ctx_exe()} mcp (claude mcp add -s user)"); return
+    if there:                                               # another venv's ctx: replace it
+        _claude_mcp("remove", "-s", "user", MCP_NAME, run=run)
+    r = _claude_mcp("add", "-s", "user", MCP_NAME, "--", str(ctx_exe()), "mcp", run=run)
+    if r is None or r.returncode != 0:
+        log(f"mcp: claude mcp add failed: {(r.stderr or r.stdout).strip() if r else 'claude did not run'}"); return
+    st.d["mcp"] = {"name": MCP_NAME, "command": f"{ctx_exe()} mcp"}; st.save()
+    log(f"mcp: {MCP_NAME} registered -> {ctx_exe()} mcp (new Claude sessions get it)")
+
+
+def install_skill(st: State, dry: bool, log) -> None:
+    """The skill that says when to use the tools, linked like the pi extension (a real directory there is left alone)."""
+    link, src = skill_link(), skill_source()
+    if link.is_symlink() and link.resolve() == src.resolve():
+        log(f"skill: already linked at {link}"); return
+    if link.exists() and not link.is_symlink():
+        log(f"skill: {link} exists and is not our link; left alone"); return
+    if dry:
+        log(f"skill: would link {link} -> {src}"); return
+    _mkdir(link.parent)
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(src); _own(link)
+    log(f"skill: linked {link} -> {src}")
+
+
+def uninstall_skill(st: State, dry: bool, log) -> None:
+    link = skill_link()
+    if not link.is_symlink() or link.resolve() != skill_source().resolve():
+        log(f"skill: no link of ours at {link}"); return
+    if dry:
+        log(f"skill: would remove {link}"); return
+    link.unlink(); log(f"skill: removed {link}")
+
+
+def uninstall_mcp(st: State, dry: bool, log, run=subprocess.run) -> None:
+    ok, out = mcp_registered(run)
+    if ok is None or "No MCP server named" in out:
+        log(f"mcp: {MCP_NAME} not registered")
+        if not dry and st.d.pop("mcp", None):
+            st.save()
+        return
+    if dry:
+        log(f"mcp: would remove {MCP_NAME} (claude mcp remove -s user)"); return
+    r = _claude_mcp("remove", "-s", "user", MCP_NAME, run=run)
+    log(f"mcp: {MCP_NAME} removed" if r is not None and r.returncode == 0 else
+        f"mcp: claude mcp remove failed: {(r.stderr or r.stdout).strip() if r else 'claude did not run'}")
+    st.d.pop("mcp", None); st.save()
 
 
 # -- pi extension -----------------------------------------------------------------------------------------------
@@ -432,6 +524,11 @@ def doctor(cfg: Config | None = None) -> list[Check]:
         out.append(check())
     for root in cfg.collector.claude_win_roots:
         out.append(_check_claude_win(Path(os.path.expanduser(root))))
+    if State().d.get("mcp"):                                # opt-in: only checked once installed
+        ok, _ = mcp_registered()
+        out.append(Check("✓", "mcp", f"{MCP_NAME} -> {ctx_exe()} mcp") if ok else
+                   Check("!", "mcp", f"{MCP_NAME} not registered for this install" if ok is False else "claude not on PATH",
+                         "ctx install --mcp"))
     out.append(Check("✓", "tmux", shutil.which("tmux")) if shutil.which("tmux") else
                Check("!", "tmux", "not installed: `ctx tmux` (the manager) won't work"))
     return out
@@ -477,7 +574,7 @@ def _check_pi() -> Check:
 # -- CLI --------------------------------------------------------------------------------------------------------
 def _parts(a) -> tuple[bool, bool, bool]:
     picked = (a.claude, a.pi, a.collector)
-    return picked if any(picked) else (True, True, True)
+    return picked if any(picked) or a.mcp else (True, True, True)
 
 
 def cmd_install(a) -> int:
@@ -490,6 +587,9 @@ def cmd_install(a) -> int:
         install_claude(st, a.dry_run, log)
     if pi:
         install_pi(st, a.dry_run, a.force, log)
+    if a.mcp:
+        install_mcp(st, a.dry_run, log)
+        install_skill(st, a.dry_run, log)
     if not a.dry_run:
         log("next: `ctx doctor`")
     return 0
@@ -504,6 +604,9 @@ def cmd_uninstall(a) -> int:
         uninstall_pi(st, a.dry_run, log)
     if a.collector:                                         # only when asked: it also serves transcripts
         uninstall_collector(a.dry_run, log)
+    if a.mcp:
+        uninstall_mcp(st, a.dry_run, log)
+        uninstall_skill(st, a.dry_run, log)
     return 0
 
 
@@ -521,6 +624,7 @@ def add_parsers(sub) -> None:
         p.set_defaults(fn=fn)
         p.add_argument("--claude", action="store_true"); p.add_argument("--pi", action="store_true")
         p.add_argument("--collector", action="store_true", help="(uninstall: only removed when given)")
+        p.add_argument("--mcp", action="store_true", help="`ctx mcp` registered with Claude Code (only when given)")
         p.add_argument("--dry-run", action="store_true")
         if name == "install":
             p.add_argument("--hub", help="hub url for the config"); p.add_argument("--token", help="hub token for the config")

@@ -33,7 +33,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
-from ctxswitch.hub.store import NOT_DELIVERABLE, REPLYABLE, Store
+from ctxswitch.hub.store import NOT_DELIVERABLE, REPLYABLE, SEARCH_KINDS, Store
 
 log = logging.getLogger("ctxswitch.hub")
 MAX_BODY = 20000                                     # characters in one message
@@ -193,6 +193,15 @@ class Hub:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         return JSONResponse({"change": self.store.change, "items": self.store.attention(req.query_params.get("host") or None)})
 
+    async def search(self, req: Request) -> Response:
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        p = req.query_params
+        kinds = tuple(k for k in (p.get("kind") or ",".join(SEARCH_KINDS)).split(",") if k in SEARCH_KINDS)
+        if not kinds:
+            return JSONResponse({"error": f"kind must be one of {', '.join(SEARCH_KINDS)}"}, 400)
+        limit = max(1, min(int(p.get("limit", "30") or 30), 200))
+        return JSONResponse({"results": self.store.search(p.get("q") or "", kinds, p.get("host") or None, limit)})
+
     async def health(self, req: Request) -> Response:
         auth = self._authorized(req.headers)                 # unauthenticated callers don't learn the seat
         return JSONResponse({"ok": True, "change": self.store.change, "hosts": len(self.store.hosts()),
@@ -241,6 +250,7 @@ class Hub:
             Route("/v1/messages/{id:int}/status", self.message_status, methods=["POST"]),
             Route("/v1/outbox", self.outbox),
             Route("/v1/attention", self.attention),
+            Route("/v1/search", self.search),
             Route("/v1/health", self.health),
             WebSocketRoute("/v1/ws", self.ws),
         ])

@@ -32,9 +32,23 @@ class HubClient:
         r = self._c.get(f"/v1/sessions/{key}", params={"turns": turns})
         return r.json() if r.status_code == 200 else None
 
+    def resolve(self, q: str) -> tuple[str | None, list[dict[str, Any]]]:
+        """A full key as given, or the one session whose key or title contains ``q``; else (None, the candidates)."""
+        if q.count("/") >= 2:
+            return q, []
+        matches = [s for s in self.sessions(None)["sessions"] if q in s["key"] or q in (s.get("title") or "")]
+        return (matches[0]["key"], matches) if len(matches) == 1 else (None, matches)
+
     def attention(self, host: str | None = None) -> dict[str, Any]:
         r = self._c.get("/v1/attention", params={"host": host} if host else None); r.raise_for_status()
         return r.json()
+
+    def search(self, q: str, kinds: str | None = None, host: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        params = {"q": q, "limit": limit} | ({"kind": kinds} if kinds else {}) | ({"host": host} if host else {})
+        r = self._c.get("/v1/search", params=params)
+        if r.status_code != 200:
+            raise ValueError(_error(r))
+        return r.json()["results"]
 
     def viewed(self, key: str, at: str) -> None:
         self._c.post(f"/v1/sessions/{key}/viewed", json={"at": at}).raise_for_status()
@@ -42,7 +56,7 @@ class HubClient:
     def send(self, key: str, body: str, from_host: str | None = None, answers: str | None = None) -> int:
         r = self._c.post(f"/v1/sessions/{key}/messages", json={"body": body, "from_host": from_host, "answers": answers})
         if r.status_code != 200:
-            raise ValueError(r.json().get("error") or f"HTTP {r.status_code}")
+            raise ValueError(_error(r))
         return int(r.json()["id"])
 
     def cancel(self, msg_id: int) -> bool:
@@ -51,3 +65,11 @@ class HubClient:
     def ws_url(self) -> str:
         u = self.base.replace("http://", "ws://", 1).replace("https://", "wss://", 1) + "/v1/ws"
         return u + (f"?token={self.token}" if self.token else "")
+
+
+def _error(r: httpx.Response) -> str:
+    """The hub's {"error": ...}, or the status when the body isn't that (an older hub's 404 is plain text)."""
+    try:
+        return r.json().get("error") or f"HTTP {r.status_code}"
+    except ValueError:
+        return f"HTTP {r.status_code}"

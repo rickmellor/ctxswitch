@@ -7,6 +7,8 @@
   ctx reply <key-or-prefix> [text | -]   answer the session's open question (a message linked to it)
   ctx attention [--all]                  what needs the operator, oldest wait first
   ctx hosts                              collectors seen by the hub
+  ctx search <words> [--kind K] [--host H]   decisions, instructions, claims and your prompts, every session
+  ctx mcp                                an MCP server on stdio (read-only) for agents: sessions, ledgers, search
   ctx tui                                the board (narrow; built for a tmux side pane)
   ctx tmux [--width 18%|40]             create/attach the tmux manager: session left, ctx tui right
   ctx install / uninstall [--claude --pi --collector]   wire this host up (hooks, pi extension, collector unit)
@@ -58,15 +60,12 @@ def cmd_ls(a) -> int:
 
 def _resolve(c: HubClient, key: str) -> str | None:
     """A full key, or the one session whose key or title contains ``key``; prints the candidates otherwise."""
-    if key.count("/") >= 2:
-        return key
-    matches = [s for s in c.sessions(None)["sessions"] if key in s["key"] or key in (s.get("title") or "")]
-    if len(matches) != 1:
+    found, matches = c.resolve(key)
+    if found is None:
         print(f"{len(matches)} sessions match {key!r}:" if matches else f"no session matches {key!r}")
         for s in matches[:20]:
             print("  ", s["key"], "-", fmt.one_line(s.get("title"), 60))
-        return None
-    return matches[0]["key"]
+    return found
 
 
 def cmd_show(a) -> int:
@@ -78,67 +77,7 @@ def cmd_show(a) -> int:
     if not s:
         print("not found"); return 1
     now = datetime.now(timezone.utc)
-    print(f"{fmt.state_glyph(s)} {s['key']}   [{fmt.session_state(s)} since {fmt.age(s.get('status_since') or s.get('last_activity'), now)}]")
-    print(f"  title : {s.get('title') or '-'}")
-    print(f"  where : {s.get('cwd') or '-'}  ({fmt.repo_label(s)})   model: {s['meta'].get('model') or '-'}  perm: {s['meta'].get('permission_mode') or '-'}")
-    print(f"  turns : {s.get('turn_count')}   started {fmt.age(s.get('started_at'), now)} ago, last activity {fmt.age(s.get('last_activity'), now)} ago"
-          + (f", viewed {fmt.age(s.get('last_viewed_at'), now)} ago" if s.get('last_viewed_at') else ""))
-    new = fmt.since_viewed(s)
-    if new:
-        print(f"  since you looked ({fmt.age(s.get('last_viewed_at'), now)} ago): {fmt.since_line(new)}")
-        for r in new["rows"][-5:]:
-            print(f"        {r['kind']}: {fmt.one_line(r['text'], 100)}")
-    if s.get("purpose"):
-        print(f"  for   : {s['purpose']}")
-    if s.get("recap"):
-        print(f"  recap : {s['recap']}")
-    for line in (s.get("reentry") or "").splitlines():
-        print(f"        › {line}")
-    rules = fmt.instructions(s)
-    if rules:
-        print("  your instructions:")
-        for r in rules:
-            print(f"    • {fmt.one_line(r['text'], 100)}   (#{r['turn_idx']}, ledger id {r['id']})")
-    said = fmt.claims(s)
-    if said:
-        print("  agent says:")
-        for r in said:
-            print(f"    {fmt.CLAIM_GLYPH.get(r['extra'].get('claim'), '·')} {fmt.one_line(r['text'], 100)}   (#{r['turn_idx']})")
-    opens = [x for x in s.get("asks", []) if not x["answered"]]
-    if opens:
-        print("  OPEN ASKS:")
-        for x in opens:
-            print(f"    ◐ [{x['kind']}] {fmt.one_line(x['text'], 100)}   (waiting {fmt.age(x.get('asked_at'), now)})")
-    decided = fmt.decisions(s, a.decisions)
-    if decided:
-        print("  decisions:")
-        for _, q, ans in decided:
-            print(f"    ✓ {fmt.one_line(q, 70) + '  →  ' if q else ''}{fmt.one_line(ans, 60)}")
-    msgs = fmt.messages(s, 6)
-    if msgs:
-        print("  your messages:")
-        for m in msgs:
-            print(f"    {fmt.MSG_GLYPH.get(m['status'], '?')} [{m['id']}] {fmt.one_line(m['body'], 70)}")
-            print(f"        {fmt.one_line(fmt.message_note(s, m), 100)}")
-    sibs = s.get("siblings") or []
-    if sibs:
-        print(f"  same work elsewhere ({fmt.workstream_label(s.get('workstream'))}):")
-        for x in sibs:
-            print(f"    {x['key']}  {x.get('live_status')}  {fmt.one_line(x.get('title'), 60)}")
-            for r in x.get("instructions") or []:
-                print(f"        told it: {fmt.one_line(r, 90)}")
-    print("  exchanges:")
-    for t in s.get("turns", [])[-a.turns:]:
-        flag = "" if t.get("complete") else " (in progress)"
-        print(f"    #{t['idx']} {fmt.age(t.get('started_at'), now):>5} ago [{t.get('user_origin')}]{flag}")
-        print(f"       you  : {fmt.one_line(t.get('user_text'), 110)}")
-        if t.get("assistant_text"):
-            print(f"       agent: {fmt.one_line(t.get('assistant_text'), 110)}")
-        tally = t.get("tally") or {}
-        ev = t.get("events") or []
-        extras = ", ".join(f"{v} {k}" for k, v in tally.items() if v) + ("; " + ", ".join(ev) if ev else "")
-        if extras:
-            print(f"       tools: {extras}")
+    print("\n".join(fmt.show_lines(s, a.turns, a.decisions, now)))
     if not a.no_mark:
         c.viewed(key, now.isoformat().replace("+00:00", "Z"))
     return 0
@@ -221,6 +160,17 @@ def cmd_attention(a) -> int:
     return 0
 
 
+def cmd_search(a) -> int:
+    from ctxswitch.client.mcp_server import Server
+    print(Server(_client()).search(" ".join(a.words), a.kind, a.host, a.limit))
+    return 0
+
+
+def cmd_mcp(a) -> int:
+    from ctxswitch.client.mcp_server import main as mcp_main
+    return mcp_main()
+
+
 def cmd_hosts(a) -> int:
     for h in _client().hosts():
         print(f"{h['host_id']:<16} last seen {fmt.age(datetime.fromtimestamp(h['last_seen'], tz=timezone.utc).isoformat())} ago")
@@ -272,6 +222,10 @@ def main(argv=None) -> None:
     p = sub.add_parser("reply"); p.set_defaults(fn=cmd_reply)
     p.add_argument("key"); p.add_argument("text", nargs="*")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)
+    p = sub.add_parser("search"); p.set_defaults(fn=cmd_search)
+    p.add_argument("words", nargs="+"); p.add_argument("--kind", help="decision,instruction,claim,prompt (default all)")
+    p.add_argument("--host"); p.add_argument("--limit", type=int, default=30)
+    sub.add_parser("mcp").set_defaults(fn=cmd_mcp)
     p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="18%", help="TUI pane width: columns or percent (default 18%%)")
     p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)
     p.add_argument("--rc", type=int, default=0); p.add_argument("--started", type=float)

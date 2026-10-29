@@ -182,3 +182,72 @@ def workstream_label(ws: str | None) -> str:
     repo, _, br = ws.rpartition("@")
     name = repo.rstrip("/").rsplit("/", 1)[-1]
     return f"{name}@{br}" if br else name
+
+
+def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | None = None) -> list[str]:
+    """`ctx show` (and the MCP get_session): meta, what it's for, your instructions, open asks, decisions, messages,
+    the same work elsewhere, then the last ``turns`` exchanges."""
+    now = now or datetime.now(timezone.utc)
+    out: list[str] = []
+    out.append(f"{state_glyph(s)} {s['key']}   [{session_state(s)} since {age(s.get('status_since') or s.get('last_activity'), now)}]")
+    out.append(f"  title : {s.get('title') or '-'}")
+    out.append(f"  where : {s.get('cwd') or '-'}  ({repo_label(s)})   model: {s['meta'].get('model') or '-'}  perm: {s['meta'].get('permission_mode') or '-'}")
+    out.append(f"  turns : {s.get('turn_count')}   started {age(s.get('started_at'), now)} ago, last activity {age(s.get('last_activity'), now)} ago"
+          + (f", viewed {age(s.get('last_viewed_at'), now)} ago" if s.get('last_viewed_at') else ""))
+    new = since_viewed(s)
+    if new:
+        out.append(f"  since you looked ({age(s.get('last_viewed_at'), now)} ago): {since_line(new)}")
+        for r in new["rows"][-5:]:
+            out.append(f"        {r['kind']}: {one_line(r['text'], 100)}")
+    if s.get("purpose"):
+        out.append(f"  for   : {s['purpose']}")
+    if s.get("recap"):
+        out.append(f"  recap : {s['recap']}")
+    for line in (s.get("reentry") or "").splitlines():
+        out.append(f"        › {line}")
+    rules = instructions(s)
+    if rules:
+        out.append("  your instructions:")
+        for r in rules:
+            out.append(f"    • {one_line(r['text'], 100)}   (#{r['turn_idx']}, ledger id {r['id']})")
+    said = claims(s)
+    if said:
+        out.append("  agent says:")
+        for r in said:
+            out.append(f"    {CLAIM_GLYPH.get(r['extra'].get('claim'), '·')} {one_line(r['text'], 100)}   (#{r['turn_idx']})")
+    opens = [x for x in s.get("asks", []) if not x["answered"]]
+    if opens:
+        out.append("  OPEN ASKS:")
+        for x in opens:
+            out.append(f"    ◐ [{x['kind']}] {one_line(x['text'], 100)}   (waiting {age(x.get('asked_at'), now)})")
+    decided = decisions(s, n_decisions)
+    if decided:
+        out.append("  decisions:")
+        for _, q, ans in decided:
+            out.append(f"    ✓ {one_line(q, 70) + '  →  ' if q else ''}{one_line(ans, 60)}")
+    msgs = messages(s, 6)
+    if msgs:
+        out.append("  your messages:")
+        for m in msgs:
+            out.append(f"    {MSG_GLYPH.get(m['status'], '?')} [{m['id']}] {one_line(m['body'], 70)}")
+            out.append(f"        {one_line(message_note(s, m), 100)}")
+    sibs = s.get("siblings") or []
+    if sibs:
+        out.append(f"  same work elsewhere ({workstream_label(s.get('workstream'))}):")
+        for x in sibs:
+            out.append(f"    {x['key']}  {x.get('live_status')}  {one_line(x.get('title'), 60)}")
+            for r in x.get("instructions") or []:
+                out.append(f"        told it: {one_line(r, 90)}")
+    out.append("  exchanges:")
+    for t in s.get("turns", [])[-turns:]:
+        flag = "" if t.get("complete") else " (in progress)"
+        out.append(f"    #{t['idx']} {age(t.get('started_at'), now):>5} ago [{t.get('user_origin')}]{flag}")
+        out.append(f"       you  : {one_line(t.get('user_text'), 110)}")
+        if t.get("assistant_text"):
+            out.append(f"       agent: {one_line(t.get('assistant_text'), 110)}")
+        tally = t.get("tally") or {}
+        ev = t.get("events") or []
+        extras = ", ".join(f"{v} {k}" for k, v in tally.items() if v) + ("; " + ", ".join(ev) if ev else "")
+        if extras:
+            out.append(f"       tools: {extras}")
+    return out
