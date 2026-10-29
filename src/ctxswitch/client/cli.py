@@ -5,7 +5,7 @@
   ctx attention [--all]                  what needs the operator, oldest wait first
   ctx hosts                              collectors seen by the hub
   ctx tui                                the board (narrow; built for a tmux side pane)
-  ctx tmux [--width 25%|56]             create/attach the tmux manager: session left, ctx tui right
+  ctx tmux [--width 18%|40]             create/attach the tmux manager: session left, ctx tui right
   ctx install / uninstall [--claude --pi --collector]   wire this host up (hooks, pi extension, collector unit)
   ctx doctor                             check this host's wiring, one line per check
   ctx hub / ctx collector                run the services (same as ctx-hub / ctx-collector)
@@ -173,7 +173,7 @@ def main(argv=None) -> None:
     p.add_argument("key"); p.add_argument("--turns", type=int, default=6); p.add_argument("--decisions", type=int, default=8)
     p.add_argument("--no-mark", action="store_true", help="don't record this as a view")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)
-    p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="25%", help="TUI pane width: columns or percent (default 25%%)")
+    p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="18%", help="TUI pane width: columns or percent (default 18%%)")
     p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)
     p.add_argument("--rc", type=int, default=0); p.add_argument("--started", type=float)
     from ctxswitch.client.install import add_parsers

@@ -364,10 +364,10 @@ def visible_key(ps: list[Pane] | None = None, sessions: list[dict] | None = None
     return None
 
 
-def bootstrap(width: str = "25%") -> str:
+def bootstrap(width: str = "18%") -> str:
     """`ctx tmux`: create (or join) the manager layout — viewer left, TUI right — and attach.
 
-    ``width`` is a tmux size: a column count ("56") or a percentage ("25%").
+    ``width`` is a tmux size: a column count ("56") or a percentage ("18%").
     """
     ctx_cmd = shlex.join([os.path.abspath(os.sys.argv[0]), "tui"]) if os.sys.argv else "ctx tui"
     if in_tmux():
