@@ -39,7 +39,13 @@ in one narrow side panel next to whatever you are doing.
   When an agent exits, the next one takes its place.
 - **Messages a session from anywhere.** `m` (or `ctx send`) types a message into a live Claude or pi session on
   any machine, or queues it for an ended one until it next runs. The board follows it from queued to delivered
-  to the agent's reply.
+  to the agent's reply. `a` (or `ctx reply`) answers the question a session is waiting on, and the ledger
+  records your answer as you typed it.
+- **Pops up what's new.** When a session asks you something, a one-line pop-up shows in the tmux status line.
+- **Says what changed since you last looked.** Each row shows `+N` for the exchanges you haven't seen, and the
+  detail pane lists the new ones.
+- **Links the same work across machines.** Sessions on the same repo and branch (on any host) are one
+  workstream. `w` groups the board by workstream, and each session lists the others with what you told them.
 - **Briefs you when you come back.** Resume a session you left more than 15 minutes ago (`claude --resume`,
   `pi --session`) and it prints a short card first: how long you were away, what it's for, the recap, your
   standing instructions, your last prompt, the agent's last reply and any questions still open. It's shown to you, not sent to the model.
@@ -70,7 +76,8 @@ Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is 
 LLM recaps. Phase 3 (the ledger tracker) is done. Phase 2 is done: Claude hooks and a pi extension report permission prompts and dialogs, resuming a
 session prints a briefing, Windows-native Claude sessions show up (read-only) on a WSL host, and `ctx install` /
 `ctx doctor` wire up and check a host. Cross-host resume works: Enter on another host's ended session resumes it there over ssh. Messaging works:
-send to a live session on any host, or queue for an ended one. Still to come: MCP. See the
+send to a live session on any host, or queue for an ended one. Phase 4 is done: answer a question from the board
+(`a`, `ctx reply`), tmux pop-ups, "since you looked" and workstreams across hosts. Still to come: MCP. See the
 phases in [DESIGN.md](DESIGN.md).
 
 # User guide
@@ -178,9 +185,13 @@ filter and how many sessions are live.
 - the title, state and age, number of exchanges, and when you last looked (`seen 2h`);
 - what Enter will do with it, the session key, repo, working directory, model and permission mode;
 - **for:** what the session is for (from the tracker; it changes only when your goal does);
+- **SINCE YOU LOOKED**: what's new since you last opened it (on any machine): how many exchanges, and the
+  decisions, claims and instructions they added. Not shown before you've opened it once. The list row's `+N` is
+  the same count;
 - **WAITING ON YOU**: every open question, approval or prompt, verbatim, with how long it's been waiting.
   Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
-  input), `prompt` (a pi dialog), `plain` (its reply ended in a question);
+  input), `prompt` (a pi dialog), `plain` (its reply ended in a question), `text` (the tracker read a question
+  in its reply). Underneath: `a = answer it here`, or why you have to answer in the session;
 - **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
 - **YOUR MESSAGES**: what you sent it with `m` or `ctx send` and where each one is (see Messages);
 - **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, with the exchange (`#12`) they came from;
@@ -188,7 +199,13 @@ filter and how many sessions are live.
 - **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
 - **DECISIONS**: the questions it asked and the answers you gave, verbatim, plus the choices the tracker read from
   your prompts;
+- **SAME WORK ELSEWHERE**: other sessions on the same repo and branch, on any host (live, or active in the last
+  14 days), with the instructions you gave them. They're shown for reference; nothing is copied across;
 - **EARLIER**: the few exchanges before that.
+
+A **workstream** is the repo plus the branch. The repo is the remote's `owner/name`, so clones on different
+machines match even when their remotes use different ssh aliases. A checkout with no remote matches only itself on
+that host. With `w`, the list groups sessions under one header per workstream. Select a header to list its sessions.
 
 ## 4. Keys
 | Key | Action |
@@ -198,6 +215,8 @@ filter and how many sessions are live.
 | `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's) |
 | `m` | message the selected session: type it, Enter sends (Esc cancels) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y/n |
+| `a` | answer the question it's waiting on: type the answer, Enter sends (see Answering a question) |
+| `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
 | `h` | host filter: this host → all → each other host |
 | `/` | filter by text (title, repo, key, last prompt). `Esc` clears |
 | `e` | show or hide ended sessions |
@@ -261,12 +280,28 @@ session as a new prompt, so the agent works on it like anything you type there:
 - Windows-native Claude (`cw`) sessions can't take messages. Set `[collector] accept_messages = false` on a host
   to refuse all of them there.
 
+### Answering a question
+`a` on the board, or `ctx reply <session> "text"`, answers the question the session is waiting on. It's sent as a
+message (above), linked to that question, and the ledger records it as your answer, without the wrapper. This
+works for a question asked in the agent's reply (`plain`, `text`). A dialog in the session (`question`, `plan`,
+`permission`, `elicitation`, pi `prompt`) is waiting on a keypress in its terminal, so a message can't answer it:
+`a` says so, and Enter opens the session. If the question was already answered, or an answer to it is still
+queued or sent, the hub refuses the reply (409), so two machines can't both answer it. Cancel a queued answer
+(`ctx send --cancel <id>`) to answer differently.
+
+### Pop-ups
+When something new needs you (a question, approval or dialog), the TUI shows one line in the tmux status line for
+8 s: `ctx · host · title: the question`. Only what's new since the TUI started pops up, and not for the session
+already on the left. Each TUI pops up on its own machine. Turn it off with `notify = false`. Set
+`notify_idle = true` for a pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its own toast.
+
 ## 8. Command line
 | Command | Shows |
 |---|---|
 | `ctx ls [--host H \| --all] [--live]` | one line per session (default: this host) |
-| `ctx show <key-or-title-fragment>` | one session in full: purpose, recap, your instructions, the agent's claims, open asks, decisions, recent exchanges (marks it viewed; `--no-mark` to not) |
+| `ctx show <key-or-title-fragment>` | one session in full: what's new since you looked, purpose, recap, your instructions, the agent's claims, open asks, decisions, the same work on other hosts, recent exchanges (marks it viewed; `--no-mark` to not) |
 | `ctx send <session> [text \| -] [--buffer] [--cancel ID]` | message a session (text, stdin with `-` or no text, or the tmux paste buffer); `--cancel` withdraws a queued one |
+| `ctx reply <session> [text \| -]` | answer the question it's waiting on (see Answering a question) |
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
@@ -288,6 +323,7 @@ option. The ones you'll touch:
 | `[collector] accept_messages` | deliver messages into this host's sessions (default true) |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
 | `[ssh]` | client only: `<host_id> = "<ssh destination>"` for resuming another host's sessions. Unlisted hosts use the host id itself (an `~/.ssh/config` alias); `""` = not reachable from here (e.g. a laptop that blocks inbound) |
+| `notify`, `notify_idle` | client: tmux pop-ups for new questions and dialogs (default on), and for an agent finishing its turn (default off) |
 | `[hub] ledger` | hub only: keep the ledger (instructions, decisions, claims) as well as recaps (default true) |
 | `[[seats]]` | hub only: the LLM endpoint for recaps and the ledger |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
@@ -305,6 +341,9 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | a message stays `…` queued | the session isn't live on its host, or that host's collector is down (`ctx hosts`). It goes when the session next runs |
 | a message stays `→` sent | Claude in plan or bypass mode holds it for approval in its terminal. pi: it's still busy with the run before |
 | a message to a live pi session stays `…` queued | that pi process predates the extension's message socket; restart it (`/exit`, then Enter) |
+| `a` says "answer it in the session" | it's a dialog (permission, plan, AskUserQuestion, pi prompt); Enter opens it |
+| no pop-ups | the TUI runs in tmux and `notify` is on; they're only for what's new since the TUI started. Check `tmux display-message hi` shows |
+| two sessions on one repo aren't grouped | different branches, or no remote (a remote-less checkout only matches itself). pi: the branch is read from the checkout's HEAD |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
 | no briefing on resume | it only shows after 15 min away. `ctx doctor` (claude hooks line should not say "SessionStart (briefing)" missing); pi needs a new pi process after `ctx install --pi` |

@@ -67,7 +67,8 @@ class Config:
     hub: HubConfig = field(default_factory=HubConfig)
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     seats: list[SeatConfig] = field(default_factory=lambda: [SeatConfig()])
-    notify: bool = False
+    notify: bool = True                    # tmux pop-up for each new question / dialog (client/notify.py)
+    notify_idle: bool = False              # ... and each time an agent finishes its turn
     # [ssh] <host_id> = "<ssh destination>": how this machine reaches another host's sessions to resume them.
     # Unlisted hosts use the host id itself (an ~/.ssh/config alias); "" = not reachable from here.
     ssh: dict[str, str] = field(default_factory=dict)
@@ -96,5 +97,6 @@ def load(path: Path | None = None) -> Config:
     if "seats" in raw:
         cfg.seats = [_apply(SeatConfig(), s) for s in raw["seats"]]
     cfg.notify = bool(raw.get("notify", cfg.notify))
+    cfg.notify_idle = bool(raw.get("notify_idle", cfg.notify_idle))
     cfg.ssh = {str(k): str(v) for k, v in (raw.get("ssh") or {}).items()}
     return cfg

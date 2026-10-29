@@ -131,3 +131,54 @@ def message_note(s: dict, m: dict) -> str:
     if st == "failed":
         return f"failed: {m.get('error') or '?'}"
     return st
+
+
+REPLYABLE = ("plain", "text")                       # hub/store.py: the asks a message can answer
+
+
+def reply_target(s: dict) -> tuple[dict | None, str | None]:
+    """(the open ask a quick-reply would answer, None) or (None, why there isn't one). The oldest replyable ask; a
+    dialog (permission, plan, AskUserQuestion, pi prompt) can only be answered in the session itself."""
+    why = can_message(s)
+    if why:
+        return None, why
+    opens = [a for a in s.get("asks") or s.get("open_asks") or [] if not a.get("answered")]
+    for a in opens:
+        if a["kind"] in REPLYABLE:
+            return a, None
+    if opens:
+        return None, f"it's waiting on a {opens[0]['kind']} dialog: answer it in the session (enter opens it)"
+    return None, "nothing to answer: it isn't asking you anything"
+
+
+def since_viewed(s: dict) -> dict | None:
+    """What happened after your last look, from a full session (store.session): None if you never looked or
+    nothing has. Ledger rows and asks from exchanges after ``seen_through``, plus the replies to your messages."""
+    through = s.get("seen_through")
+    if through is None or not s.get("unseen"):
+        return None
+    rows = [r for r in s.get("ledger") or [] if r["turn_idx"] > through and r["kind"] in ("decision", "claim", "instruction")]
+    asks = [a for a in s.get("asks") or [] if (a.get("turn_idx") or 0) > through]
+    replies = [m for m in s.get("messages") or [] if m["status"] == "replied" and (m.get("turn_idx") or -1) > through]
+    return {"exchanges": s["unseen"], "rows": rows, "asks": asks, "replies": replies}
+
+
+def since_line(d: dict) -> str:
+    """One line: "3 exchanges · 1 question · 2 decisions · 1 claim"."""
+    def n(k: int, word: str, plural: str = "") -> str:
+        return f"{k} {word if k == 1 else plural or word + 's'}"
+    kinds = [r["kind"] for r in d["rows"]]
+    parts = [n(d["exchanges"], "exchange")]
+    parts += [n(len(d["asks"]), "question")] if d["asks"] else []
+    parts += [n(kinds.count(k), k) for k in ("decision", "claim", "instruction") if k in kinds]
+    parts += [n(len(d["replies"]), "reply", "replies")] if d["replies"] else []
+    return " · ".join(parts)
+
+
+def workstream_label(ws: str | None) -> str:
+    """"owner/name@branch" -> "name@branch"; host:/path/x@b -> "x@b"."""
+    if not ws:
+        return "(no repo)"
+    repo, _, br = ws.rpartition("@")
+    name = repo.rstrip("/").rsplit("/", 1)[-1]
+    return f"{name}@{br}" if br else name

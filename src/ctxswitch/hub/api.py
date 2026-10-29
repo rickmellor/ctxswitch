@@ -7,7 +7,8 @@
   POST /v1/sessions/{key}/viewed   {at}
   GET  /v1/sessions/{key}/brief    {text: resume briefing or null}  (hub/brief.py)
   POST /v1/sessions/{key}/ledger/{id}/retire   operator retires a ledger row (e.g. an instruction that no longer holds)
-  POST /v1/sessions/{key}/messages   {body, from_host} -> {id}   queue a message for a session (live or not)
+  POST /v1/sessions/{key}/messages   {body, from_host, answers} -> {id}   queue a message for a session (live or not);
+                                     answers = ref of the open plain-text ask it replies to (a quick-reply)
   POST /v1/messages/{id}/cancel      a queued message only
   GET  /v1/outbox?host=&wait=25      collector long-poll: queued messages for that host's live sessions
   POST /v1/messages/{id}/status      collector report {host_id, status: sent|failed, error}
@@ -32,7 +33,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
-from ctxswitch.hub.store import NOT_DELIVERABLE, Store
+from ctxswitch.hub.store import NOT_DELIVERABLE, REPLYABLE, Store
 
 log = logging.getLogger("ctxswitch.hub")
 MAX_BODY = 20000                                     # characters in one message
@@ -140,7 +141,14 @@ class Hub:
             return JSONResponse({"error": "not found"}, 404)
         if s["harness"] in NOT_DELIVERABLE:
             return JSONResponse({"error": f"can't deliver to {s['harness']} sessions"}, 400)
-        mid = self.store.add_message(key, text, body.get("from_host"))
+        ref = body.get("answers")
+        if ref is not None:
+            ask = self.store.open_ask(key, str(ref))
+            if ask is None:
+                return JSONResponse({"error": "that question is already answered, an answer is on its way, or it isn't this session's"}, 409)
+            if ask["kind"] not in REPLYABLE:
+                return JSONResponse({"error": f"a {ask['kind']} ask is a dialog in the session: answer it there"}, 400)
+        mid = self.store.add_message(key, text, body.get("from_host"), ref)
         self._notify()
         return JSONResponse({"id": mid})
 

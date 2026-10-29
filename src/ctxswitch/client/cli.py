@@ -4,6 +4,7 @@
   ctx show <key-or-prefix>               ledger view: meta, open asks, recent exchanges
   ctx send <key-or-prefix> [text | -] [--buffer]   message a session (queued until it runs); --buffer = tmux paste buffer
   ctx send --cancel <id>                 cancel a message that is still queued
+  ctx reply <key-or-prefix> [text | -]   answer the session's open question (a message linked to it)
   ctx attention [--all]                  what needs the operator, oldest wait first
   ctx hosts                              collectors seen by the hub
   ctx tui                                the board (narrow; built for a tmux side pane)
@@ -82,6 +83,11 @@ def cmd_show(a) -> int:
     print(f"  where : {s.get('cwd') or '-'}  ({fmt.repo_label(s)})   model: {s['meta'].get('model') or '-'}  perm: {s['meta'].get('permission_mode') or '-'}")
     print(f"  turns : {s.get('turn_count')}   started {fmt.age(s.get('started_at'), now)} ago, last activity {fmt.age(s.get('last_activity'), now)} ago"
           + (f", viewed {fmt.age(s.get('last_viewed_at'), now)} ago" if s.get('last_viewed_at') else ""))
+    new = fmt.since_viewed(s)
+    if new:
+        print(f"  since you looked ({fmt.age(s.get('last_viewed_at'), now)} ago): {fmt.since_line(new)}")
+        for r in new["rows"][-5:]:
+            print(f"        {r['kind']}: {fmt.one_line(r['text'], 100)}")
     if s.get("purpose"):
         print(f"  for   : {s['purpose']}")
     if s.get("recap"):
@@ -114,6 +120,13 @@ def cmd_show(a) -> int:
         for m in msgs:
             print(f"    {fmt.MSG_GLYPH.get(m['status'], '?')} [{m['id']}] {fmt.one_line(m['body'], 70)}")
             print(f"        {fmt.one_line(fmt.message_note(s, m), 100)}")
+    sibs = s.get("siblings") or []
+    if sibs:
+        print(f"  same work elsewhere ({fmt.workstream_label(s.get('workstream'))}):")
+        for x in sibs:
+            print(f"    {x['key']}  {x.get('live_status')}  {fmt.one_line(x.get('title'), 60)}")
+            for r in x.get("instructions") or []:
+                print(f"        told it: {fmt.one_line(r, 90)}")
     print("  exchanges:")
     for t in s.get("turns", [])[-a.turns:]:
         flag = "" if t.get("complete") else " (in progress)"
@@ -145,12 +158,8 @@ def cmd_send(a) -> int:
         if r.returncode != 0:
             print(f"no tmux buffer: {r.stderr.strip() or 'tmux show-buffer failed'}"); return 1
         body = r.stdout
-    elif a.text in ([], ["-"]):
-        if sys.stdin.isatty() and not a.text:
-            print("type the message, then Ctrl-D:", file=sys.stderr)
-        body = sys.stdin.read()
     else:
-        body = " ".join(a.text)
+        body = _body(a)
     if not body.strip():
         print("empty message, nothing sent"); return 1
     key = _resolve(c, a.key)
@@ -166,6 +175,37 @@ def cmd_send(a) -> int:
         print(f"not sent: {e}"); return 1
     live = s.get("live_status") in LIVE
     print(f"message {mid} queued for {fmt.short_key(s)}: " + ("delivering now" if live else "delivered when it next runs"))
+    return 0
+
+
+def _body(a) -> str:
+    if a.text in ([], ["-"]):
+        if sys.stdin.isatty() and not a.text:
+            print("type the message, then Ctrl-D:", file=sys.stderr)
+        return sys.stdin.read()
+    return " ".join(a.text)
+
+
+def cmd_reply(a) -> int:
+    c = _client()
+    key = _resolve(c, a.key)
+    if key is None:
+        return 1
+    s = c.session(key, turns=0)
+    if s is None:
+        print("not found"); return 1
+    ask, why = fmt.reply_target(s)
+    if ask is None:
+        print(why); return 1
+    print(f"answering [{ask['kind']}] {fmt.one_line(ask['text'], 100)}", file=sys.stderr)
+    body = _body(a)
+    if not body.strip():
+        print("empty answer, nothing sent"); return 1
+    try:
+        mid = c.send(key, body, load().host_id, ask["ref"])
+    except ValueError as e:
+        print(f"not sent: {e}"); return 1
+    print(f"answer {mid} queued for {fmt.short_key(s)}: " + ("delivering now" if s.get("live_status") in LIVE else "delivered when it next runs"))
     return 0
 
 
@@ -229,6 +269,8 @@ def main(argv=None) -> None:
     p.add_argument("key", nargs="?"); p.add_argument("text", nargs="*")
     p.add_argument("--buffer", action="store_true", help="send the tmux paste buffer (e.g. a copy-mode selection)")
     p.add_argument("--cancel", type=int, metavar="ID", help="cancel a queued message")
+    p = sub.add_parser("reply"); p.set_defaults(fn=cmd_reply)
+    p.add_argument("key"); p.add_argument("text", nargs="*")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)
     p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="18%", help="TUI pane width: columns or percent (default 18%%)")
     p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)

@@ -10,7 +10,9 @@ Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent ses
   └──────────────────────────────────────────────┘
 Keys: h host filter · e toggle ended · v mark viewed · enter show/resume · c/p new claude/pi session (asks for a
 directory, default = selected session's) · m message the selected session · M send it the tmux paste buffer (after
-a y/n) · r refresh · / filter · q quit
+a y/n) · a answer its open question (a quick-reply message) · w group by workstream · r refresh · / filter · q quit
+Opening a session (enter) marks it viewed; the detail shows what changed since you last looked. New questions pop
+up on the tmux status line (client/notify.py; config notify / notify_idle).
 Inside tmux, enter swaps the session's pane into pane 0 of this window (see client/tmux.py); `ctx tmux` builds
 the layout. Outside tmux it opens a Windows Terminal tab.
 Live: WebSocket change notices from the hub; falls back to polling every 10 s.
@@ -34,6 +36,7 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
+from ctxswitch.client.notify import Notifier, text as popup_text, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
@@ -58,10 +61,10 @@ class CtxApp(App):
     # one footer line in a ~40-column side pane: most-used first, short labels; the rest fall off the right edge
     BINDINGS = [
         Binding("enter", "resume", "open", show=True), Binding("c", "new_claude", "claude"), Binding("p", "new_pi", "pi"),
-        Binding("m", "message", "msg"), Binding("M", "message_buffer", show=False),
+        Binding("m", "message", "msg"), Binding("a", "reply", "answer"), Binding("M", "message_buffer", show=False),
         Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
-        Binding("v", "mark_viewed", "viewed"), Binding("r", "refresh", "refresh"),
+        Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
         Binding("escape", "clear_filter", show=False),
     ]
 
@@ -81,6 +84,9 @@ class CtxApp(App):
         self.reach: dict[str, str] = {}             # key -> tmux.REACH_GLYPH key (how Enter can open it)
         self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:<harness>" | "msg:<key>" | "confirm:…"
         self.pending_body = ""                       # the tmux buffer waiting on a y/n
+        self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
+        self.group_ws = False                        # w: rows grouped under workstream headers
+        self.notifier = Notifier(cfg.notify_idle) if cfg.notify else None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="attention")
@@ -134,6 +140,7 @@ class CtxApp(App):
         self.sub_title = f"{self.host_filter or 'all'} · {live} live"
         self.query_one("#attention", Static).border_title = f"ctx · {self.host_filter or 'all'} · {live} live"
         self.render_attention(attention)
+        self.popup(attention)
         self.render_table()
         self.render_detail()
 
@@ -173,6 +180,16 @@ class CtxApp(App):
         t.rstrip()
         w.update(t)
 
+    def popup(self, attention: list[dict]) -> None:
+        if self.notifier is None:
+            return
+        new = self.notifier.fresh(attention, skip=self.visible_key)
+        if not new:
+            return
+        msg = popup_text(new)
+        if not (tmux.in_tmux() and tmux_popup(msg)):
+            self.notify(msg, timeout=8)                 # outside tmux: the TUI's own toast
+
     def _visible(self) -> list[dict]:
         out = []
         for s in self.sessions:
@@ -195,6 +212,19 @@ class CtxApp(App):
         width = self._label_width()
         t.clear()
         visible = self._visible()
+        rows = 0
+        if self.group_ws:                              # groups in the order of their most urgent member
+            order: dict = {}
+            for s in visible:
+                order.setdefault(s.get("workstream"), []).append(s)
+            visible = []
+            for ws, members in order.items():
+                hosts = sorted({m.get("host_id", "?") for m in members})
+                head = Text(f"{fmt.one_line(fmt.workstream_label(ws), width - 8)} · {len(members)}", style="bold")
+                if len(hosts) > 1:
+                    head.append(f" · {' '.join(hosts)}", style="dim")
+                t.add_row(Text("▾", style="dim"), Text(""), head, key=f"ws:{ws}"); rows += 1
+                visible += members
         for s in visible:
             st = fmt.session_state(s)
             last = s.get("last_turn") or {}
@@ -220,9 +250,12 @@ class CtxApp(App):
             label.append(fmt.one_line(fmt.display_title(s) or "(no prompt yet)", max(8, rest)), style=style)
             if asks:
                 label.append(f" ◐{fmt.age(asks[0].get('asked_at'), now)}", style="bold yellow")
+            if s.get("unseen"):                        # exchanges since you last looked
+                label.append(f" +{s['unseen']}", style="bold cyan")
             t.add_row(Text(fmt.state_glyph(s), style=style), Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"])
-        t.styles.height = max(1, len(visible))        # grow with the list, up to the max-height cap
-        if prev and prev in [s["key"] for s in visible]:
+            rows += 1
+        t.styles.height = max(1, rows)                # grow with the list, up to the max-height cap
+        if prev and (prev in [s["key"] for s in visible] or prev.startswith("ws:")):
             try:
                 t.move_cursor(row=t.get_row_index(prev))
             except Exception:                           # noqa: BLE001
@@ -249,6 +282,8 @@ class CtxApp(App):
         key = self.selected
         if not key:
             return
+        if key.startswith("ws:"):
+            self.call_from_thread(self.render_group, key[3:]); return
         try:
             s = self.client.session(key, turns=8)
         except Exception:                               # noqa: BLE001
@@ -256,12 +291,26 @@ class CtxApp(App):
         if s:
             self.call_from_thread(self.render_detail, s)
 
+    def render_group(self, ws: str) -> None:
+        now = datetime.now(timezone.utc)
+        members = [s for s in self._visible() if str(s.get("workstream")) == ws]
+        t = Text(f"{fmt.workstream_label(None if ws == 'None' else ws)}\n", style="bold")
+        t.append(f"{ws}\n\n", style="dim")
+        for s in members:
+            st = fmt.session_state(s)
+            t.append(f"{fmt.state_glyph(s)} {s.get('host_id')}/{fmt.HARNESS.get(s.get('harness', ''), '')} ", style=STATE_STYLE.get(st, ""))
+            t.append(f"{fmt.one_line(fmt.display_title(s), 60)}", style=STATE_STYLE.get(st, ""))
+            t.append(f"  {fmt.age(s.get('status_since') or s.get('last_activity'), now)}\n", style="dim")
+        self.query_one("#detail_text", Static).update(t)
+
     def render_detail(self, s: dict | None = None) -> None:
         w = self.query_one("#detail_text", Static)
         if s is None:
             if not self.selected:
                 w.update(Text("select a session", style="dim")); return
             self.load_detail(); return
+        if s.get("key") != self.selected:               # a slow load for a row you've moved off
+            return
         now = datetime.now(timezone.utc)
         st = fmt.session_state(s)
         t = Text()
@@ -285,18 +334,34 @@ class CtxApp(App):
             t.append("for: ", style="bold")
             t.append(s["purpose"] + "\n")
         t.append("\n")
+        new = fmt.since_viewed(s)
+        if new:
+            t.append(f"SINCE YOU LOOKED ({fmt.age(s.get('last_viewed_at'), now)} ago)\n", style="bold cyan")
+            t.append(fmt.since_line(new) + "\n", style="cyan")
+            for r in new["rows"][-5:]:
+                t.append(f"  {r['kind']}: ", style="dim")
+                t.append(f"{fmt.one_line(r['text'], 140)}\n")
+            for m in new["replies"][-2:]:
+                t.append("  reply: ", style="dim")
+                t.append(f"{fmt.one_line(m.get('reply'), 140)}\n")
+            t.append("\n")
         opens = [x for x in s.get("asks", []) if not x["answered"]]
         if opens:
             t.append("WAITING ON YOU\n", style="bold yellow")
             for x in opens:
                 t.append(f"◐ {fmt.age(x.get('asked_at'), now)} [{x['kind']}] ", style="yellow")
                 t.append(x['text'] + "\n")
+            ask, why = fmt.reply_target(s)
+            t.append("  a = answer it here\n" if ask else f"  {why}\n", style="dim")
             t.append("\n")
         msgs = fmt.messages(s)
         if msgs:
             t.append("YOUR MESSAGES\n", style="bold")
+            asked = {a["ref"]: a for a in s.get("asks") or []}
             for m in msgs:
                 t.append(f"{fmt.MSG_GLYPH.get(m['status'], '?')} ", style=MSG_STYLE.get(m["status"], "dim"))
+                if m.get("ask_ref") in asked:
+                    t.append(f"re \"{fmt.one_line(asked[m['ask_ref']]['text'], 60)}\": ", style="dim")
                 t.append(fmt.one_line(m["body"], 160) + "\n")
                 t.append(f"  {fmt.one_line(fmt.message_note(s, m), 300)}\n", style="dim" if m["status"] != "failed" else "red")
             t.append("\n")
@@ -351,6 +416,17 @@ class CtxApp(App):
                     t.append(f"✓ {fmt.one_line(q, 120)}\n", style="dim")
                 t.append(f"  → {fmt.one_line(a, 160)}\n")
             t.append("\n")
+        sibs = s.get("siblings") or []
+        if sibs:
+            t.append(f"SAME WORK ELSEWHERE ({fmt.workstream_label(s.get('workstream'))})\n", style="bold")
+            for x in sibs:
+                st = "ended" if x.get("ended") and x.get("live_status") not in LIVE else x.get("live_status") or "unknown"
+                t.append(f"{fmt.GLYPH.get(st, '?')} {x['host_id']}/{fmt.HARNESS.get(x['harness'], x['harness'])} ", style=STATE_STYLE.get(st, ""))
+                t.append(f"{fmt.one_line(x.get('title'), 60)}")
+                t.append(f"  {fmt.age(x.get('status_since') if st in LIVE else x.get('last_activity'), now)}\n", style="dim")
+                for r in x.get("instructions") or []:      # its instructions, for context: not this session's
+                    t.append(f"    told it: {fmt.one_line(r, 120)}\n", style="dim")
+            t.append("\n")
         if len(turns) > 1:
             t.append("EARLIER\n", style="bold")
             for tr in turns[-7:-1][::-1]:
@@ -372,6 +448,12 @@ class CtxApp(App):
         self.host_filter = opts[(i + 1) % len(opts)]
         self.refresh_data()
 
+    def action_toggle_ws(self) -> None:
+        self.group_ws = not self.group_ws
+        if not self.group_ws and self.selected and self.selected.startswith("ws:"):
+            self.selected = None
+        self.render_table()
+
     def action_toggle_ended(self) -> None:
         self.show_ended = not self.show_ended; self.render_table()
 
@@ -379,7 +461,7 @@ class CtxApp(App):
         self.refresh_data()
 
     def action_mark_viewed(self) -> None:
-        if self.selected:
+        if self._selected_session():
             self.client.viewed(self.selected, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
             self.notify("marked viewed"); self.load_detail()
 
@@ -387,10 +469,18 @@ class CtxApp(App):
         s = next((x for x in self.sessions if x["key"] == self.selected), None)
         if not s:
             return
+        self.mark_opened(s["key"])                     # opening it is looking at it
         if tmux.in_tmux():
             self.show_in_tmux(s)
         else:
             self.notify(open_tab(s, self.this_host, self.cfg.ssh), timeout=8)
+
+    @work(group="viewed", thread=True)
+    def mark_opened(self, key: str) -> None:
+        try:
+            self.client.viewed(key, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        except Exception:                               # noqa: BLE001 - opening must not depend on the hub
+            pass
 
     @work(exclusive=True, group="tmux", thread=True)
     def show_in_tmux(self, s: dict) -> None:
@@ -444,6 +534,16 @@ class CtxApp(App):
         when = "now" if s.get("live_status") in LIVE else "when it next runs"
         self._show_input(f"msg:{s['key']}", f"message to {fmt.one_line(fmt.display_title(s), 30)} ({when}), enter to send")
 
+    def action_reply(self) -> None:
+        s = self._selected_session()
+        if not s:
+            return
+        ask, why = fmt.reply_target(s)
+        if ask is None:
+            self.notify(why, severity="warning", timeout=6); return
+        self.pending_reply = (s["key"], ask["ref"])
+        self._show_input("reply", f"answer \"{fmt.one_line(ask['text'], 50)}\", enter to send")
+
     def action_message_buffer(self) -> None:
         s = self._selected_session()
         if not s:
@@ -460,10 +560,10 @@ class CtxApp(App):
         self._show_input(f"confirm:buffer:{s['key']}", f"send {lines} line(s) \"{fmt.one_line(r.stdout, 30)}\" to it? y/n")
 
     @work(group="send", thread=True)
-    def send_message(self, key: str, body: str) -> None:
+    def send_message(self, key: str, body: str, answers: str | None = None) -> None:
         try:
-            mid = self.client.send(key, body, self.this_host)
-            msg, sev = f"message {mid} queued", "information"
+            mid = self.client.send(key, body, self.this_host, answers)
+            msg, sev = f"{'answer' if answers else 'message'} {mid} queued", "information"
         except Exception as e:                          # noqa: BLE001
             msg, sev = f"not sent: {e}", "error"
         self.call_from_thread(self.notify, msg, severity=sev, timeout=6)
@@ -479,6 +579,9 @@ class CtxApp(App):
     def action_clear_filter(self) -> None:
         if self.input_mode == "filter":
             self.text_filter = ""; self.query_one("#filter", Input).value = ""; self.render_table()
+        else:                                           # Esc out of a message/answer/confirm: nothing is sent
+            self.input_mode, self.pending_reply, self.pending_body = "filter", None, ""
+            self.query_one("#filter", Input).value = ""
         self._hide_input()
 
     def on_input_changed(self, ev: Input.Changed) -> None:
@@ -517,6 +620,12 @@ class CtxApp(App):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             if value.strip().lower() in ("y", "yes"):
                 self.send_message(mode.split(":", 2)[2], body)
+            return
+        if mode == "reply":
+            target, self.pending_reply = self.pending_reply, None
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            if target and value.strip():
+                self.send_message(target[0], value, target[1])
             return
         if mode.startswith("msg:"):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""

@@ -1,4 +1,5 @@
-"""Resolve a session's cwd to (repo_root, origin remote) without shelling out; cached per directory."""
+"""Resolve a session's cwd to (repo_root, origin remote) without shelling out; cached per directory. The checked-out
+branch is read fresh (it changes)."""
 from __future__ import annotations
 
 import configparser
@@ -30,6 +31,19 @@ def repo_info(cwd: str) -> tuple[str, str]:
                 common = (common / cf.read_text().strip()).resolve()
             return str(d), _origin(common / "config")
     return "", ""
+
+
+def branch(root: str) -> str:
+    """The branch checked out in the work tree at ``root`` (from repo_info), "" when detached or unreadable."""
+    g = Path(root) / ".git"
+    try:
+        if g.is_file():                                     # linked worktree: its own HEAD lives in its gitdir
+            gd = Path(g.read_text().strip().split(":", 1)[1].strip())
+            g = gd if gd.is_absolute() else (Path(root) / gd).resolve()
+        head = (g / "HEAD").read_text().strip()
+    except (OSError, IndexError):
+        return ""
+    return head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else ""
 
 
 def _origin(config_path: Path) -> str:

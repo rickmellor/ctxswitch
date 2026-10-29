@@ -6,7 +6,11 @@ notified cheaply.
 
 Messages (operator -> session) go queued -> sent (the collector wrote it to the session's socket) -> delivered (a
 turn whose prompt contains the body arrived) -> replied (that turn completed), or failed / cancelled. A delivered
-message's turn is recorded as yours (origin human, prompt = what you wrote), whatever the harness wrapped it in.
+message's turn is recorded as yours (origin human, prompt = what you wrote), whatever the harness wrapped it in, and
+so is the answer it gave to an open plain-text ask. A quick-reply is a message naming the ask it answers (``ask_ref``,
+checked when sent, shown with it); delivering it answers that ask the way any prompt does.
+
+Workstreams: sessions on the same repo (by remote, so clones on other hosts match) and branch; see workstream_of.
 """
 from __future__ import annotations
 
@@ -49,7 +53,8 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE INDEX IF NOT EXISTS ledger_key ON ledger(key, kind, active);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL,
-    from_host TEXT, created REAL NOT NULL, sent_at REAL, delivered_at REAL, turn_idx INTEGER, reply TEXT, error TEXT
+    from_host TEXT, created REAL NOT NULL, sent_at REAL, delivered_at REAL, turn_idx INTEGER, reply TEXT, error TEXT,
+    ask_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_key ON messages(key, status);
 CREATE TABLE IF NOT EXISTS tracker (
@@ -64,6 +69,9 @@ REPLY_CHARS = 2000
 MATCH_CHARS = 200                                   # a turn is the message's when its prompt contains this much of the body
 MSG_OPEN = ("queued", "sent")
 NOT_DELIVERABLE = ("claude-win",)                   # Windows-native Claude: no socket reachable from WSL
+REPLYABLE = ("plain", "text")                       # asks a message can answer; the rest are dialogs in the session
+SIBLINGS = 6                                        # other sessions shown for a workstream
+SIBLING_DAYS = 14                                   # ... live, or active within this many days
 
 
 class Store:
@@ -78,6 +86,8 @@ class Store:
         for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL"), ("live_name", "TEXT"), ("reentry", "TEXT")):   # older databases
             if col not in cols:
                 self.db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
+        if "ask_ref" not in {r[1] for r in self.db.execute("PRAGMA table_info(messages)")}:
+            self.db.execute("ALTER TABLE messages ADD COLUMN ask_ref TEXT")
         self._lock = threading.Lock()
         self.change = int(self._get("change", "0"))
 
@@ -127,10 +137,14 @@ class Store:
                     self.db.execute(
                         "INSERT INTO asks(key,ref,kind,text,turn_idx,asked_at,answered,answer,answered_at) VALUES(?,?,?,?,?,?,?,?,?) "
                         "ON CONFLICT(key,ref) DO UPDATE SET text=excluded.text, answered=MAX(asks.answered, excluded.answered), "
-                        "answer=CASE WHEN excluded.answered=1 THEN excluded.answer ELSE asks.answer END, "
+                        "answer=CASE WHEN asks.answered=1 AND excluded.answered_at IS asks.answered_at THEN asks.answer "
+                        "WHEN excluded.answered=1 THEN excluded.answer ELSE asks.answer END, "
                         "answered_at=CASE WHEN excluded.answered=1 THEN excluded.answered_at ELSE asks.answered_at END",
                         (key, a["ref"], a["kind"], a["text"], t["idx"], t.get("ended_at") or t.get("started_at"), int(a["answered"]), a.get("answer"), a.get("answered_at")))
             for t in [*turns, *([open_turn] if open_turn else [])]:
+                if t.get("via") == "ctx":                # the harness's wrapped text answered it: say what you wrote
+                    self.db.execute("UPDATE asks SET answer=? WHERE key=? AND kind='plain' AND answered=1 AND answered_at=?",
+                                    (_clip(t["user_text"], ANSWER_CHARS), key, t.get("started_at")))
                 if typed(t):                            # your next prompt answers a plain-text ask
                     self._close_llm_asks(key, t)
             if turns or open_turn:
@@ -172,10 +186,10 @@ class Store:
             self._bump()
 
     # -- messages ---------------------------------------------------------------------------------------------------
-    def add_message(self, key: str, body: str, from_host: str | None = None) -> int:
+    def add_message(self, key: str, body: str, from_host: str | None = None, ask_ref: str | None = None) -> int:
         with self._lock:
-            cur = self.db.execute("INSERT INTO messages(key,body,status,from_host,created) VALUES(?,?,?,?,?)",
-                                  (key, body, "queued", from_host, time.time()))
+            cur = self.db.execute("INSERT INTO messages(key,body,status,from_host,created,ask_ref) VALUES(?,?,?,?,?,?)",
+                                  (key, body, "queued", from_host, time.time(), ask_ref))
             self._bump()
             return int(cur.lastrowid)
 
@@ -322,6 +336,12 @@ class Store:
                 self._bump()
             return ok
 
+    def open_ask(self, key: str, ref: str) -> dict[str, Any] | None:
+        """The ask, if it's still open and no answer to it is on its way (queued or sent, not yet in the transcript)."""
+        r = self.db.execute("SELECT * FROM asks WHERE key=? AND ref=? AND answered=0 AND NOT EXISTS (SELECT 1 FROM messages m "
+                            "WHERE m.key=asks.key AND m.ask_ref=asks.ref AND m.status IN ('queued','sent'))", (key, ref)).fetchone()
+        return dict(r) if r else None
+
     def mark_viewed(self, key: str, when: str) -> None:
         with self._lock:
             self.db.execute("UPDATE sessions SET last_viewed_at=? WHERE key=?", (when, key)); self._bump()
@@ -362,6 +382,14 @@ class Store:
         d["last_turn"] = json.loads(last[0]) if last else None
         d["turn_count"] = self.db.execute("SELECT COUNT(*) FROM turns WHERE key=?", (d["key"],)).fetchone()[0]
         d["open_asks"] = [dict(a) for a in self.db.execute("SELECT * FROM asks WHERE key=? AND answered=0 ORDER BY asked_at", (d["key"],))]
+        d["workstream"] = workstream_of(d)
+        # since you last looked: exchanges that ended after your last view (None = never viewed, so no baseline)
+        d["unseen"], d["seen_through"] = None, None
+        if d.get("last_viewed_at"):
+            r2 = self.db.execute("SELECT COUNT(*), MIN(idx) FROM turns WHERE key=? AND julianday(COALESCE(ended_at, started_at)) > julianday(?)",
+                                 (d["key"], d["last_viewed_at"])).fetchone()
+            d["unseen"] = r2[0]
+            d["seen_through"] = (r2[1] - 1) if r2[1] is not None else (d["last_turn"] or {}).get("idx", -1)
         return d
 
     def session(self, key: str, turns: int = 50) -> dict[str, Any] | None:
@@ -375,7 +403,32 @@ class Store:
         d["messages"] = self.messages(key)
         st = self.tracker_state(key)
         d["purpose"], d["purpose_history"], d["tracked_through"] = st["purpose"], st["purpose_history"], st["through_idx"]
+        d["siblings"] = self.siblings(d)
         return d
+
+    def siblings(self, s: dict[str, Any]) -> list[dict[str, Any]]:
+        """Other sessions in the same workstream (any host), live first then most recent, each with its standing
+        instructions: shown as context, labelled with where they came from, never applied to this session."""
+        ws = s.get("workstream")
+        if not ws:
+            return []
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - SIBLING_DAYS * 86400))
+        rows = self.db.execute(
+            f"SELECT * FROM sessions WHERE key!=? AND git_branch=? AND (live_status IN ({_LIVE_SQL}) OR last_activity>=?) "
+            f"AND EXISTS (SELECT 1 FROM turns t WHERE t.key=sessions.key) "
+            f"ORDER BY CASE WHEN live_status IN ({_LIVE_SQL}) THEN 0 ELSE 1 END, last_activity DESC",
+            (s["key"], s.get("git_branch") or "", cutoff)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if workstream_of(d) != ws:
+                continue
+            out.append({k: d.get(k) for k in ("key", "host_id", "harness", "session_id", "live_status", "status_since", "last_activity", "ended")}
+                       | {"title": d.get("live_name") or d.get("title"), "ended": bool(d["ended"]),
+                          "instructions": [x["text"] for x in self.ledger(d["key"], active_only=True) if x["kind"] == "instruction"][-3:]})
+            if len(out) >= SIBLINGS:
+                break
+        return out
 
     def attention(self, host: str | None = None) -> list[dict[str, Any]]:
         """Open asks on sessions that are not ended, plus idle live sessions, oldest wait first."""
@@ -398,6 +451,21 @@ class Store:
 
     def close(self) -> None:
         self.db.close()
+
+
+def workstream_of(s: dict[str, Any]) -> str | None:
+    """Repo + branch. The repo is its remote's last two path parts (owner/name): the host part differs between
+    clones (https vs ssh, per-host ssh aliases like github-personal:). No remote: its root on that host, one
+    checkout. None outside a repo."""
+    remote, root = (s.get("repo_remote") or "").strip(), (s.get("repo_root") or "").rstrip("/")
+    if remote:
+        r = remote.rstrip("/").removesuffix(".git").split("://", 1)[-1].replace(":", "/")
+        repo = "/".join([p for p in r.split("/") if p][-2:]).lower()
+    elif root:
+        repo = f"{s.get('host_id')}:{root}"
+    else:
+        return None
+    return f"{repo}@{s.get('git_branch') or ''}"
 
 
 def typed(turn: dict[str, Any]) -> bool:

@@ -34,4 +34,5 @@ disable_thinking = true
 # devbox = "me@devbox.lan"
 # laptop = ""                          # inbound blocked: show the command to run there instead
 
-notify = true                         # desktop toasts on this machine (Phase 4)
+notify = true                         # tmux pop-up on this machine for each new question or dialog
+notify_idle = false                   # ... and when an agent finishes its turn

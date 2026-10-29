@@ -39,8 +39,8 @@ class HubClient:
     def viewed(self, key: str, at: str) -> None:
         self._c.post(f"/v1/sessions/{key}/viewed", json={"at": at}).raise_for_status()
 
-    def send(self, key: str, body: str, from_host: str | None = None) -> int:
-        r = self._c.post(f"/v1/sessions/{key}/messages", json={"body": body, "from_host": from_host})
+    def send(self, key: str, body: str, from_host: str | None = None, answers: str | None = None) -> int:
+        r = self._c.post(f"/v1/sessions/{key}/messages", json={"body": body, "from_host": from_host, "answers": answers})
         if r.status_code != 200:
             raise ValueError(r.json().get("error") or f"HTTP {r.status_code}")
         return int(r.json()["id"])

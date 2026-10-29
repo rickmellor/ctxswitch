@@ -71,8 +71,29 @@ Greenfield repo: `~/repos/ctxswitch`.
   200 normalised characters of the body; the hub then rewrites that turn as yours (`user_origin=human`,
   `via=ctx`, the body without the wrapper), so the tracker reads it and the board shows `you`. `replied` when
   that turn completes. pi turns now complete on `stopReason: stop` (they used to wait for the next prompt, so
-  the latest pi exchange never completed). Not done: quick-reply to an ask, workstream messages, delivery via
-  SessionStart `additionalContext`, Windows-native Claude.
+  the latest pi exchange never completed). Not done: workstream messages, delivery via SessionStart
+  `additionalContext`, Windows-native Claude.
+- 2026-10-29 (Phase 5, quick-reply): `a` / `ctx reply` is a message with `answers=<ask ref>`. The hub checks it
+  when sent: the ask must be this session's, open, and have no answer queued or sent (else 409, so two TUIs can't both answer), and replyable,
+  i.e. `plain` or `text` (a 400 otherwise: a dialog waits on a keypress in its terminal, and Claude won't take a
+  peer message as approval anyway). No new closing path: the collector already closes plain asks with the next
+  prompt, and the tracker closes `text` asks with the next typed one (which a delivered message now is). The fix
+  is the answer text: on Claude the collector records the wrapped peer message, so when a turn is rewritten as
+  `via=ctx` the plain asks it answered (same `answered_at`) get your body instead, and a replayed batch keeps it
+  (the upsert keeps the hub's answer for the same answering event). The message row keeps `ask_ref`, so the
+  thread shows `re "<question>"`.
+- 2026-10-29 (Phase 4): pop-ups are client-side and tmux-only for now (`tmux display-message -d 8000`, `#`
+  doubled): each TUI diffs the hub's attention list against what it has seen, primes on the first list (what was
+  already waiting isn't news), skips the session on the left, and forgets items that leave so a session can pop
+  up again. Asks and dialogs by default; an agent that only finished its turn with `notify_idle`. No desktop
+  toasts (Windows) and no hub `attention.new` event: the client diff is enough while the TUI is open. "Since you
+  last looked" compares against `last_viewed_at` (set by opening a session or `v`, on any machine): a turn counts
+  as new if it ended (or, still running, started) after it; rows shown are those from turns after the last fully
+  seen one. A workstream is `owner/name@branch` from the remote's last two path parts, lowercased, because hosts
+  reach the same remote through different ssh aliases; no remote → `host:root@branch`. Computed at read time
+  (no table). pi records no branch, so the collector reads the checkout's HEAD (linked worktrees too). Siblings
+  are live or active in the last 14 days, at most 6, live first, with their 3 latest active instructions, shown
+  labelled, never applied.
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles
@@ -212,9 +233,13 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    (`POST /v1/sessions/<key>/ledger/<id>/retire`), shown in the TUI, `ctx show` and the resume briefing.
    Not done: a TUI key to retire a row (`e` is taken by "show ended"); confidence scores.
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
+   **Done** (2026-10-29): tmux pop-ups per TUI (no desktop toasts yet), `+N` unseen and SINCE YOU LOOKED,
+   workstreams across hosts (`w` groups the board; SAME WORK ELSEWHERE lists siblings and their instructions).
+   Not done: workstream messages, the hub `attention.new` event, Windows toasts.
 5. Messaging: pi inject + reply; Claude inject (per spike); queued delivery; quick-reply; cross-host resume.
    Cross-host resume **done** (2026-10-29, ssh from the client, `[ssh]` config). Messaging **done** (2026-10-29):
-   pi + Claude inject, queued delivery for ended sessions, `m`/`M` keys, `ctx send`. Not done: quick-reply.
+   pi + Claude inject, queued delivery for ended sessions, `m`/`M` keys, `ctx send`. Quick-reply **done**
+   (2026-10-29): `a`, `ctx reply`, for plain-text and tracker asks; dialogs are answered in the session.
 6. MCP + skill.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.

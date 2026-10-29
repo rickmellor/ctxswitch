@@ -16,7 +16,7 @@ from typing import Any, Callable
 from ctxswitch.collector.adapters import parse_json_line
 from ctxswitch.collector.adapters.claude import ClaudeParser
 from ctxswitch.collector.adapters.pi import PiParser
-from ctxswitch.collector.gitinfo import repo_info
+from ctxswitch.collector.gitinfo import branch, repo_info
 from ctxswitch.common.wsl import wsl_path
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import CollectorConfig
@@ -164,7 +164,8 @@ class Indexer:
         title = pm.get("title") or pm.get("first_prompt") or ""
         m = SessionMeta(host_id=self.host_id, harness=harness, session_id=key.rsplit("/", 1)[1],
                         transcript_path=str(path), cwd=cwd, repo_root=root, repo_remote=remote,
-                        git_branch=pm.get("git_branch", ""), title=title, name=pm.get("name", ""),
+                        # pi records no branch: read the checkout's HEAD
+                        git_branch=pm.get("git_branch") or (branch(root) if root else ""), title=title, name=pm.get("name", ""),
                         harness_version=pm.get("harness_version", ""), started_at=pm.get("started_at") or _iso(st.st_ctime),
                         last_activity=pm.get("last_activity") or _iso(st.st_mtime), model=pm.get("model", ""),
                         permission_mode=pm.get("permission_mode", ""))
