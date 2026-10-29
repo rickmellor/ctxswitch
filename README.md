@@ -58,58 +58,166 @@ Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is 
 LLM recaps. Hooks, a pi extension, messaging live sessions, cross-host resume and MCP are still to come. See
 the phases in [DESIGN.md](DESIGN.md).
 
-## Quick start (one machine)
-Needs Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
+# User guide
+
+## 1. Install
+
+### One machine (try it out)
+Needs Python ≥ 3.12, [uv](https://docs.astral.sh/uv/) and, for the manager, tmux.
 ```sh
+git clone https://github.com/rickmellor/ctxswitch.git ~/repos/ctxswitch && cd ~/repos/ctxswitch
 uv sync --extra test
-.venv/bin/ctx-hub &                       # http://127.0.0.1:7433, db in ~/.local/share/ctxswitch/hub.db
-.venv/bin/ctx-collector --once            # index ~/.claude/projects + ~/.pi/agent/sessions, push, exit
-.venv/bin/ctx ls                          # one line per session on this host
-.venv/bin/ctx show <key-or-title-prefix>  # one session's ledger: recap, open asks, decisions, exchanges
-.venv/bin/ctx attention                   # what needs you
-.venv/bin/ctx tmux                        # the manager (below)
+.venv/bin/ctx-hub &                 # hub on http://127.0.0.1:7433, db in ~/.local/share/ctxswitch/hub.db
+.venv/bin/ctx-collector --once      # index your transcripts, push them, exit
+.venv/bin/ctx ls                    # you should see your recent sessions
 ```
-Run `ctx-collector` without `--once` to keep watching. Copy `config.example.toml` to
-`~/.config/ctxswitch/config.toml` to point at a remote hub, name the host and configure the LLM seat.
+Put `.venv/bin` on your `PATH` (or symlink `ctx` into `~/.local/bin`) so plain `ctx` works.
 
-## tmux manager (recommended)
+### Several machines
+1. **Pick a hub host.** It must be reachable from every other machine. Docker is the easy route:
+   ```sh
+   cat > deploy/.env <<'ENV'                      # untracked; stays on this host
+   CTXSWITCH_HUB_TOKEN=<a long random string>
+   CTXSWITCH_SEAT_URL=http://<llm-host>:4000/v1   # optional: OpenAI-compatible endpoint for recaps
+   ENV
+   docker compose -f deploy/compose.yml up -d --build
+   ```
+   The SQLite db lives in the `ctxswitch-data` volume and survives rebuilds.
+2. **On every machine with agent sessions**, clone the repo to `~/repos/ctxswitch` and run
+   `deploy/install-collector.sh`. It installs uv if needed, builds the venv, writes
+   `~/.config/ctxswitch/config.toml` and starts a `systemd --user` unit. Edit the config: set `[hub] url` and
+   `token`, and give the host a short `host_id`. Then `systemctl --user restart ctx-collector`.
+   Run `loginctl enable-linger $USER` so the collector keeps running when you log out.
+3. **Check:** `ctx hosts` lists every collector the hub has heard from and when it last checked in.
+
+Collectors only make outbound connections, so a machine behind a firewall that drops inbound traffic works
+fine. If the hub goes away, collectors queue locally and catch up when it comes back.
+
+## 2. Daily use: the tmux manager
 ```sh
-ctx tmux            # tmux session "ctx": agent pane on the left, `ctx tui` (25% width) on the right; attaches
-ctx tmux --width 40 # or a fixed column count
+ctx tmux             # create or re-attach the "ctx" tmux session
+ctx tmux --width 40  # TUI width as columns (default 25%)
 ```
-Every agent session lives in its own tmux window, so it outlives your terminal client. In the TUI, **Enter** on a
-session swaps its pane into the left pane (`tmux swap-pane`). The previous occupant moves back out to its own
-window; nothing is killed. Sessions you start by hand inside tmux are found automatically (agent pid → pane).
-Ended sessions are first resumed in a new window. **c** / **p** start a new Claude / pi session (asks for a
-directory, default = the selected session's) and bring it to the left. When an agent that ctx started or resumed
-exits, its window closes and the most recently active other agent takes the left pane (a plain shell if none is
-left). A failed run, or one shorter than 5 s, waits for Enter first so the error stays readable. Prefix+arrow
-moves focus back to the TUI.
+You get one tmux window with two panes: **the session you're working in on the left**, the **board on the
+right**. Every agent session lives in its own tmux window behind the scenes, and the board swaps whichever one
+you pick into the left pane. Nothing is killed when you switch, and everything keeps running if your terminal
+closes. `ctx tmux` brings it all back.
 
-**q** detaches: your terminal closes, but the TUI and every agent keep running, and `ctx tmux` brings it all
-back. **Q** ends the whole tmux session, every agent in it included, after a y/n prompt. Their transcripts stay,
-so they come back as `↻`.
+Move focus between the panes with tmux's prefix + arrow (or the mouse, if tmux mouse mode is on).
 
-The column before each session says what Enter can do with it:
+## 3. Reading the board
+From top to bottom:
 
-| | |
+**Attention strip.** Up to four things that need you, oldest first: questions the agent asked, plan approvals
+and sessions sitting idle at a prompt. "nothing needs you" when it's empty. The border shows the current host
+filter and how many sessions are live.
+
+**Session list.** One row per session, live ones first:
+```
+●  3m ◆ cc·laptop zephyr-sdk@feat/x  P2 carve: interface review ◐4m
+│  │  │ │        │                   │                          └ an open question, and how long it has waited
+│  │  │ │        │                   └ title (or your last prompt)
+│  │  │ │        └ repo@branch (hidden when the pane is very narrow)
+│  │  │ └ harness·host (cc = Claude Code, pi = pi, cw = Windows Claude; host is dropped when filtered to one)
+│  │  └ what Enter can do (below)
+│  └ time in the current state (live) or since last activity (ended)
+└ state
+```
+
+| State | Meaning |
 |---|---|
-| `▶` | on the left now |
-| `◆` | in ctx's tmux. Enter brings it to the left pane |
-| `↻` | not running. Enter resumes it in a new window |
-| `⊘` | running in a terminal outside tmux and can't be adopted. Quit it there, then Enter resumes it here |
-| `⇢` | on another host. Open it there |
+| `●` green | busy: the agent is working |
+| `◐` yellow | waiting on you: an open question or plan approval |
+| `○` cyan | idle: at the prompt, your turn |
+| `$` | Claude Code reports a shell state |
+| `◌` | live status unknown |
+| `–` dim | ended (hidden until you press `e`) |
 
-Other keys: `h` cycles the host filter, `/` filters, `e` shows ended sessions, `v` marks a session viewed, `r` refreshes.
-Set `CTXSWITCH_TMUX_SESSION` to use another tmux session name.
+| Reach | Enter… |
+|---|---|
+| `▶` | it's already on the left |
+| `◆` | brings it to the left pane (it's in ctx's tmux) |
+| `↻` | resumes it (`claude --resume` / `pi --session`) in a new window, then brings it left |
+| `⊘` | can't: it's running in a terminal outside tmux. Quit it there, then Enter resumes it here |
+| `⇢` | can't: it's on another host. The detail pane says which. Open it there |
 
-## Multi-machine
-- **Hub:** `docker compose -f deploy/compose.yml up -d --build` from the repo root on the hub host (port 7433,
-  SQLite in a named volume). Set `CTXSWITCH_HUB_TOKEN` to require a bearer token and `CTXSWITCH_SEAT_URL` to the LLM seat for recaps
-  (both can live in an untracked `deploy/.env`).
-- **Collectors:** `deploy/install-collector.sh` on each host. It installs uv if needed, syncs the venv, writes a
-  config stub and enables a `systemd --user` unit. Run `loginctl enable-linger $USER` so the collector survives
-  logout. `ctx hosts` lists the collectors the hub has heard from.
+**Detail pane** for the selected session:
+- the title, state and age, number of exchanges, and when you last looked (`seen 2h`);
+- what Enter will do with it, the session key, repo, working directory, model and permission mode;
+- **WAITING ON YOU**: every open question or approval, verbatim, with how long it's been waiting;
+- **RECAP**: one line on where it stands and what it needs from you (see below);
+- **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
+- **DECISIONS**: the questions it asked and the answers you gave, verbatim;
+- **EARLIER**: the few exchanges before that.
+
+## 4. Keys
+| Key | Action |
+|---|---|
+| `↑` `↓` | select a session (the detail pane follows) |
+| `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
+| `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's) |
+| `h` | host filter: this host → all → each other host |
+| `/` | filter by text (title, repo, key, last prompt). `Esc` clears |
+| `e` | show or hide ended sessions |
+| `v` | mark the selected session viewed (it's also marked whenever you open it, on any machine) |
+| `r` | refresh now (the board also updates live over a WebSocket) |
+| `q` | detach: close your terminal, keep everything running |
+| `Q` | quit all: end the tmux session and every agent in it, after a y/n |
+
+The footer shows as many keys as fit; the rest still work.
+
+## 5. Opening and closing sessions
+- **Sessions started by hand inside the ctx tmux session** are found automatically (by matching the agent's pid
+  to its pane) and marked `◆`.
+- **Sessions in other terminals** (`⊘`) can't be adopted, because their terminal owns the process. Quit them
+  there and press Enter here to resume them inside tmux.
+- **When an agent exits** (`/exit`, `quit`, Ctrl-D), its window closes and the most recently active other agent
+  takes the left pane, or a plain shell if none is left. If the agent failed or exited within 5 s, the window
+  waits for Enter first so you can read the error.
+- **Outside tmux** (`ctx tui` on its own), Enter opens the session in a new Windows Terminal tab under WSL, or
+  shows the command to run.
+- **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
+
+## 6. Recaps
+The hub writes a one-line recap per session with a **local** LLM (any OpenAI-compatible endpoint that supports
+`response_format` json_schema; set it as `[[seats]]` in the hub's config or `CTXSWITCH_SEAT_URL`). A recap is
+regenerated a few seconds after a session's latest exchange settles. It's shown as `(updating…)` until then.
+Only sessions that are live or were active in the last 7 days get one. If the endpoint is down, the board works
+as normal without recaps. Turn them off with `ctx-hub --no-recap`.
+
+## 7. Command line
+| Command | Shows |
+|---|---|
+| `ctx ls [--host H \| --all] [--live]` | one line per session (default: this host) |
+| `ctx show <key-or-title-fragment>` | one session in full: recap, open asks, decisions, recent exchanges (marks it viewed; `--no-mark` to not) |
+| `ctx attention [--all]` | what needs you, oldest wait first |
+| `ctx hosts` | collectors the hub knows, and when each last checked in |
+| `ctx tui [--host H \| --all]` | the board without tmux |
+| `ctx tmux [--width N\|N%]` | the manager |
+
+## 8. Configuration
+`~/.config/ctxswitch/config.toml` (or `$CTXSWITCH_CONFIG`). [config.example.toml](config.example.toml) has every
+option. The ones you'll touch:
+
+| Setting | |
+|---|---|
+| `[hub] url`, `token` | where collectors push and clients read; must match the hub's token |
+| `[collector] host_id` | short stable name for this machine (default: hostname) |
+| `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
+| `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only) |
+| `[collector] backfill_days` | how far back to index on first run (default 30) |
+| `[[seats]]` | hub only: the LLM endpoint for recaps |
+| `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
+
+## 9. Troubleshooting
+| Symptom | Check |
+|---|---|
+| `hub unreachable` | `[hub] url` in your config, and that the hub is up (`curl <url>/v1/health`) |
+| a host is missing | `ctx hosts`; on that host, `systemctl --user status ctx-collector` and `~/.local/state/ctxswitch/collector.log` |
+| a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
+| exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
+| no recaps | the hub log (`docker logs ctxswitch-hub`) shows `recap … failed` lines if the seat is unreachable |
+| a TUI change didn't show up | restart it: `q`, then `ctx tmux` |
 
 ## Tests
 ```sh
