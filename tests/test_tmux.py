@@ -222,3 +222,22 @@ def test_reach_classifies_every_way_enter_can_open_a_session(server, monkeypatch
     monkeypatch.delenv("TMUX")
     r = tmux.reach_all(sessions, "laptop")
     assert r["laptop/claude/inpane"] == "foreign" and r["laptop/claude/ended"] == "resume"
+
+
+def test_kill_all_counts_live_agents_and_ends_only_this_session(server, monkeypatch, tmp_path):
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    tmux.set_role(tui.id, "tui")
+    (tmp_path / "pi").write_text("#!/bin/sh\nsleep 60\n"); (tmp_path / "pi").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    a = tmux._agent_window("ctx", str(tmp_path), "a1", ["pi"])
+    b = tmux._agent_window("ctx", str(tmp_path), "a2", ["pi"])
+    tm("new-session", "-d", "-s", "other")                       # someone else's tmux session on the same server
+    for _ in range(30):
+        if {p.cmd for p in tmux.panes() if p.id in (a, b)} == {"sleep"}: break
+        time.sleep(0.1)
+    assert {p.id for p in tmux.agent_panes()} == {a, b}          # the TUI and the plain viewer shell don't count
+    assert tmux.my_session() == "ctx"
+    tmux.kill_all()
+    assert {p.session for p in tmux.panes()} == {"other"}

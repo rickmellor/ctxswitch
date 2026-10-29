@@ -308,6 +308,30 @@ def reach_all(sessions: list[dict], this_host: str | None = None) -> dict[str, s
     return {s["key"]: _reach(s, ps, this_host)[0] for s in sessions}
 
 
+def my_session(ps: list[Pane] | None = None) -> str | None:
+    ps = ps if ps is not None else panes()
+    return next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), None)
+
+
+def detach() -> None:
+    """Detach this terminal; the TUI and every agent keep running (``ctx tmux`` re-attaches)."""
+    _run("detach-client")
+
+
+def agent_panes(ps: list[Pane] | None = None) -> list[Pane]:
+    """Panes in this tmux session with an agent still running in them."""
+    ps = ps if ps is not None else panes()
+    me = my_session(ps)
+    return [p for p in ps if p.session == me and p.role != "tui" and (p.role == "agent" or p.key) and p.cmd not in SHELLS]
+
+
+def kill_all() -> None:
+    """End this tmux session: every agent in it gets SIGHUP (transcripts stay; they show as resumable)."""
+    me = my_session()
+    if me:
+        _run("kill-session", "-t", me)
+
+
 def _this_host() -> str:
     try:
         from ctxswitch.common.config import load

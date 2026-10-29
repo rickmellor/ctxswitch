@@ -55,7 +55,8 @@ class CtxApp(App):
         Binding("h", "cycle_host", "host"), Binding("e", "toggle_ended", "ended"), Binding("v", "mark_viewed", "viewed"),
         Binding("enter", "resume", "resume", show=True), Binding("r", "refresh", "refresh"),
         Binding("c", "new_claude", "new claude"), Binding("p", "new_pi", "new pi"),
-        Binding("slash", "filter", "/ filter"), Binding("escape", "clear_filter", show=False), Binding("q", "quit", "quit"),
+        Binding("slash", "filter", "/ filter"), Binding("escape", "clear_filter", show=False), Binding("q", "detach", "detach"),
+        Binding("Q", "kill_all", "quit all", show=False),
     ]
 
     def __init__(self, cfg: Config, host: str | None):
@@ -410,9 +411,33 @@ class CtxApp(App):
         if self.input_mode == "filter":
             self.text_filter = ev.value; self.render_table()
 
+    def action_detach(self) -> None:
+        """Inside tmux, q detaches (sessions keep running, `ctx tmux` brings them back); outside it just quits."""
+        if tmux.in_tmux():
+            try:
+                tmux.detach(); return
+            except Exception as e:                      # noqa: BLE001
+                self.notify(f"tmux: {e}", timeout=6); return
+        self.exit()
+
+    def action_kill_all(self) -> None:
+        if not tmux.in_tmux():
+            self.exit(); return
+        ps = tmux.panes()
+        agents = tmux.agent_panes(ps)
+        keys = {p.key for p in agents}
+        busy = sum(1 for x in self.sessions if x["key"] in keys and x.get("live_status") == "busy")
+        self._show_input("confirm:kill", f"end tmux session '{tmux.my_session(ps)}' and its {len(agents)} agents"
+                         + (f" ({busy} busy)" if busy else "") + "? y to confirm")
+
     def on_input_submitted(self, ev: Input.Submitted) -> None:
         mode, value = self.input_mode, ev.value
         self._hide_input()
+        if mode == "confirm:kill":
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            if value.strip().lower() in ("y", "yes"):
+                tmux.kill_all()
+            return
         if mode.startswith("new:"):
             self.start_agent(mode.split(":", 1)[1], value)
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""

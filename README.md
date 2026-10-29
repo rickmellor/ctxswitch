@@ -35,6 +35,10 @@ exits, its window closes and the most recently active other agent takes the left
 left); a failed or <5 s run waits for Enter first so the error stays readable. `▶` marks the session currently on the left. Prefix+arrow moves
 focus back to the TUI.
 
+**q** detaches: your terminal closes but the TUI and every agent keep running, and `ctx tmux` brings it all
+back. **Q** ends the whole tmux session, every agent in it included, after a y/n prompt showing how many agents
+(and how many busy) it will stop. Their transcripts stay, so they come back as `↻`.
+
 The column before each session says what Enter can do with it:
 
 | | |
