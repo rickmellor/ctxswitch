@@ -105,7 +105,8 @@ Set `CTXSWITCH_TMUX_SESSION` to use another tmux session name.
 
 ## Multi-machine
 - **Hub:** `docker compose -f deploy/compose.yml up -d --build` from the repo root on the hub host (port 7433,
-  SQLite in a named volume). Set `CTXSWITCH_HUB_TOKEN` to require a bearer token.
+  SQLite in a named volume). Set `CTXSWITCH_HUB_TOKEN` to require a bearer token and `CTXSWITCH_SEAT_URL` to the LLM seat for recaps
+  (both can live in an untracked `deploy/.env`).
 - **Collectors:** `deploy/install-collector.sh` on each host. It installs uv if needed, syncs the venv, writes a
   config stub and enables a `systemd --user` unit. Run `loginctl enable-linger $USER` so the collector survives
   logout. `ctx hosts` lists the collectors the hub has heard from.

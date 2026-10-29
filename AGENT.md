@@ -87,7 +87,8 @@ uv sync --extra test
 
 ## Deploying
 - **Hub:** copy the tree to the hub host (exclude `.venv .git spikes/out __pycache__`), then run
-  `docker compose -f deploy/compose.yml up -d --build`. The SQLite db lives in the `ctxswitch-data` volume and
+  `docker compose -f deploy/compose.yml up -d --build`. Hub secrets and the seat URL live in an untracked
+  `deploy/.env` on the hub host (`CTXSWITCH_HUB_TOKEN`, `CTXSWITCH_SEAT_URL`). The SQLite db lives in the `ctxswitch-data` volume and
   survives rebuilds.
 - **Collectors:** `git pull && deploy/install-collector.sh`, then `systemctl --user restart ctx-collector`. Logs
   are in `~/.local/state/ctxswitch/collector.log`.

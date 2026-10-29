@@ -2,7 +2,7 @@
 
 Entries form a tree via parentId. Phase 1 reads the file linearly and flags a branch switch (an entry whose
 parentId is not the previous entry) as an event; abandoned branches still count toward the tally. Surveyed on
-pi 1.2.0 (laptop, devbox) and 1.4.0 (gpu-host): 1.4.0 adds ``compaction``, ``custom`` and ``context_edit`` entries.
+pi 1.2.0 and 1.4.0: 1.4.0 adds ``compaction``, ``custom`` and ``context_edit`` entries.
 
   session                 header: id, cwd, timestamp, version
   message/user            content: [{type:text}] (or str)

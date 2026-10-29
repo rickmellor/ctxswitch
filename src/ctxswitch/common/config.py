@@ -50,7 +50,8 @@ class CollectorConfig:
 @dataclass
 class SeatConfig:
     name: str = "text"
-    url: str = "http://llm.local:4000/v1"
+    # no config file (the hub container): $CTXSWITCH_SEAT_URL, else a seat on this machine
+    url: str = field(default_factory=lambda: os.environ.get("CTXSWITCH_SEAT_URL", "http://127.0.0.1:4000/v1"))
     api_key: str = "local"
     model: str = "saint-local-text"
     concurrency: int = 1
