@@ -83,6 +83,8 @@ class Recapper:
         self.transport = transport
         self._pending: dict[str, tuple[str, float]] = {}       # key -> (anchor, first seen)
         self._backoff_until = 0.0
+        # shown by /v1/health (and so `ctx doctor`): the seat, and when it last answered or failed
+        self.status: dict[str, Any] = {"seat": seat.url, "model": seat.model, "last_ok": None, "last_error": None, "error_at": None}
 
     def due(self, now: float | None = None) -> list[str]:
         """Keys whose anchor moved and has held still for ``debounce`` seconds, in priority order."""
@@ -133,6 +135,7 @@ class Recapper:
         if not text.strip():
             return False
         self.store.set_recap(key, text, a)
+        self.status["last_ok"] = time.time()
         self._pending.pop(key, None)
         self.notify()
         return True
@@ -146,6 +149,7 @@ class Recapper:
                 n += await self.recap_one(key)
             except Exception as e:                          # noqa: BLE001 - seat down / bad output: keep old recap
                 log.warning("recap %s failed: %s", key, e)
+                self.status.update(last_error=f"{e.__class__.__name__}: {e}"[:200], error_at=time.time())
                 self._backoff_until = time.time() + 30
                 break
         return n

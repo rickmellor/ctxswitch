@@ -20,7 +20,8 @@ import httpx
 from watchfiles import Change, awatch
 
 from ctxswitch.collector.indexer import Indexer
-from ctxswitch.collector.liveness import read_claude_registry, read_pi_registry
+from ctxswitch.collector import spool
+from ctxswitch.collector.liveness import read_claude_registry, read_pi_registry, runtime_dir
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import Config, data_dir, load
 
@@ -35,6 +36,7 @@ class Collector:
         self.ix = Indexer(cfg.collector, self.host_id, self.state, self._emit)
         self._dirty = asyncio.Event()
         self._last_liveness: str | None = None
+        self.spool = spool.spool_dir(cfg.collector.spool_dir)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         self.state.enqueue(kind, payload)
@@ -43,13 +45,19 @@ class Collector:
     # -- liveness -------------------------------------------------------------------------------------------------
     def poll_liveness(self) -> None:
         live = read_claude_registry(Path(os.path.expanduser(self.cfg.collector.claude_sessions_dir)), self.host_id)
-        live |= read_pi_registry(Path(os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000")), self.host_id)
+        live |= read_pi_registry(runtime_dir(), self.host_id)
         self.ix.live_keys = set(live)
         snap = {"host_id": self.host_id, "sessions": [l.to_dict() for l in live.values()]}
         fp = json.dumps(snap, sort_keys=True)
         if fp != self._last_liveness:
             self._last_liveness = fp
             self._emit("liveness", snap)
+
+    def drain_spool(self) -> int:
+        n = spool.drain(self.spool, self._emit)
+        if n:
+            self.poll_liveness()                       # a hook event usually means a status change too
+        return n
 
     # -- pusher ---------------------------------------------------------------------------------------------------
     async def push_loop(self) -> None:
@@ -100,10 +108,23 @@ class Collector:
                 except Exception:                      # noqa: BLE001
                     log.exception("processing %s", path)
 
+    async def spool_loop(self) -> None:
+        """Hook events matter most when they are fresh (a permission prompt is waiting), so watch the spool."""
+        self.spool.mkdir(parents=True, exist_ok=True)
+        async for _ in awatch(str(self.spool), step=100, recursive=False):
+            try:
+                self.drain_spool()
+            except Exception:                          # noqa: BLE001
+                log.exception("spool drain")
+
     async def liveness_loop(self) -> None:
+        beat = time.time()
         while True:
             try:
+                if time.time() - beat >= 60:          # heartbeat: an unchanged snapshot still refreshes last_seen
+                    beat, self._last_liveness = time.time(), None
                 self.poll_liveness()
+                self.drain_spool()                     # backstop for a missed watch event
             except Exception:                          # noqa: BLE001
                 log.exception("liveness poll")
             await asyncio.sleep(5)
@@ -121,11 +142,13 @@ class Collector:
         t0 = time.time()
         self.poll_liveness()
         n = self.ix.scan_all()
+        self.drain_spool()
         log.info("initial scan: %d transcripts in %.1fs, %d events queued, %d live", n, time.time() - t0,
                  self.state.pending_count(), len(self.ix.live_keys))
         if self.once:
             await self.push_loop(); return
-        await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop())
+        await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop(),
+                             self.spool_loop())
 
 
 def main() -> None:

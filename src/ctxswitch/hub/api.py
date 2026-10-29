@@ -24,6 +24,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ctxswitch.hub.hooks import HookApplier
 from ctxswitch.hub.store import Store
 
 log = logging.getLogger("ctxswitch.hub")
@@ -32,6 +33,8 @@ log = logging.getLogger("ctxswitch.hub")
 class Hub:
     def __init__(self, store: Store, token: str = ""):
         self.store, self.token = store, token
+        self.hooks = HookApplier(store)
+        self.recap_status: dict[str, Any] | None = None      # set by the Recapper: {seat, last_ok, last_error, error_at}
         self.subscribers: set[asyncio.Queue] = set()
         self.background: list = []                       # coroutine factories started with the app (e.g. the recap tracker)
         self._tasks: list[asyncio.Task] = []
@@ -73,6 +76,8 @@ class Hub:
             self.store.upsert_session(payload)
         elif kind == "turns":
             self.store.upsert_turns(payload["key"], payload.get("turns", []), payload.get("open"), payload.get("ended", False))
+        elif kind == "hook":
+            self.hooks.apply(host, payload)
         elif kind == "liveness":
             self.store.set_liveness(payload.get("host_id", host), payload.get("sessions", []))
         else:
@@ -105,7 +110,8 @@ class Hub:
         return JSONResponse({"change": self.store.change, "items": self.store.attention(req.query_params.get("host") or None)})
 
     async def health(self, req: Request) -> Response:
-        return JSONResponse({"ok": True, "change": self.store.change, "hosts": len(self.store.hosts())})
+        return JSONResponse({"ok": True, "change": self.store.change, "hosts": len(self.store.hosts()),
+                             "auth": self._authorized(req.headers), "recap": self.recap_status})
 
     async def ws(self, ws: WebSocket) -> None:
         if not self._authorized(ws.headers) and ws.query_params.get("token") != self.token:

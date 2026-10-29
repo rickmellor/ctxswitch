@@ -20,6 +20,7 @@ test = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-timeout>=2.3"]
 ctx = "ctxswitch.client.cli:main"
 ctx-collector = "ctxswitch.collector.main:main"
 ctx-hub = "ctxswitch.hub.main:main"
+ctx-hook = "ctxswitch.hook:main"
 
 [build-system]
 requires = ["hatchling"]

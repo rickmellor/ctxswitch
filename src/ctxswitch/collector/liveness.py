@@ -58,8 +58,19 @@ def read_claude_registry(sessions_dir: Path, host_id: str, proc: str = "/proc") 
     return out
 
 
+def runtime_dir() -> Path:
+    """Where the pi extension registers (same order as pi_ext/ctxswitch.ts)."""
+    if os.environ.get("CTXSWITCH_RUNTIME"):
+        return Path(os.environ["CTXSWITCH_RUNTIME"])
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        return Path(os.environ["XDG_RUNTIME_DIR"])
+    run = Path(f"/run/user/{os.getuid()}")
+    return run if run.exists() else Path.home() / ".local" / "state" / "ctxswitch" / "run"
+
+
 def read_pi_registry(runtime_dir: Path, host_id: str, proc: str = "/proc") -> dict[str, Liveness]:
-    """pi sessions register through the ctxswitch extension as <runtime>/ctxswitch/pi-<pid>.json (Phase 2)."""
+    """pi sessions register through the ctxswitch extension as <runtime>/ctxswitch/pi-<pid>.json. A crashed pi
+    leaves its file behind: live only if the pid exists and, when the extension recorded it, its start matches."""
     out: dict[str, Liveness] = {}
     d = runtime_dir / "ctxswitch"
     if not d.is_dir():
@@ -73,7 +84,9 @@ def read_pi_registry(runtime_dir: Path, host_id: str, proc: str = "/proc") -> di
         pid, sid = e.get("pid"), e.get("sessionId")
         if not isinstance(pid, int) or not isinstance(sid, str) or not os.path.exists(f"{proc}/{pid}"):
             continue
+        if e.get("procStart") is not None and proc_start(pid, proc) != str(e["procStart"]):
+            continue
         k = session_key(host_id, "pi", sid)
-        out[k] = Liveness(key=k, status=e.get("status", "unknown"), status_since=e.get("statusSince"), pid=pid,
+        out[k] = Liveness(key=k, status=e.get("status") if e.get("status") in ("busy", "idle") else "unknown", status_since=e.get("statusSince"), pid=pid,
                           socket=e.get("socket"))
     return out

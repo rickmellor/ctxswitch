@@ -25,7 +25,9 @@ def main() -> None:
     if cfg.hub.recap and not a.no_recap and cfg.seats:
         from ctxswitch.hub.tracker.recap import Recapper
         seat = sorted(cfg.seats, key=lambda x: x.priority)[0]
-        hub.background.append(Recapper(hub.store, seat, notify=hub._notify, days=cfg.hub.recap_days).run)
+        recapper = Recapper(hub.store, seat, notify=hub._notify, days=cfg.hub.recap_days)
+        hub.recap_status = recapper.status
+        hub.background.append(recapper.run)
     logging.getLogger("ctxswitch.hub").info("db=%s bind=%s:%s auth=%s", db, a.bind or cfg.hub.bind, a.port or cfg.hub.port, bool(hub.token))
     uvicorn.run(hub.app(), host=a.bind or cfg.hub.bind, port=a.port or cfg.hub.port, log_level="warning")
 

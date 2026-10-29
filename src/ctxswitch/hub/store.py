@@ -118,16 +118,15 @@ class Store:
                     h, harness, sid = i["key"].split("/", 2)
                     self.db.execute("INSERT OR IGNORE INTO sessions(key,host_id,harness,session_id,meta,live_status,status_since,pid,socket,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
                                     (i["key"], h, harness, sid, "{}", i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), now))
-            # The Claude registry is authoritative on its host: any Claude session not in the snapshot has exited.
-            # pi has no registry until its extension is installed (Phase 2), so a vanished pi session is unknown.
+            # Both registries are authoritative on their host: a session that was live and is not in the snapshot
+            # has exited. Claude rows in any other state end too (the registry covers every Claude session); a pi
+            # row that never registered (extension not installed) only ages out via its transcript.
             rows = self.db.execute("SELECT key, harness, live_status FROM sessions WHERE host_id=? AND live_status!='ended'", (host_id,)).fetchall()
             for r in rows:
                 if r["key"] in live_keys:
                     continue
-                if r["harness"] == "claude":
+                if r["harness"] == "claude" or r["live_status"] in ("busy", "idle", "shell"):
                     self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, updated=? WHERE key=?", (now, r["key"]))
-                elif r["live_status"] in ("busy", "idle", "shell"):
-                    self.db.execute("UPDATE sessions SET live_status='unknown', pid=NULL, socket=NULL, updated=? WHERE key=?", (now, r["key"]))
             self._bump()
 
     def mark_viewed(self, key: str, when: str) -> None:

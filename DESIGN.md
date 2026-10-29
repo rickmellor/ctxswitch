@@ -135,7 +135,7 @@ sqlite3). pi extension in TS. One package, three entry points: `ctx` (client), `
 
 ## Repo layout
 ```
-ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.Dockerfile,compose.yml,ctx-collector.service}
+ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.Dockerfile,compose.yml,install-collector.sh}
   src/ctxswitch/ common/{schema.py,protocol.py,config.py}
                  collector/{main.py,indexer.py,extractor.py,liveness.py,spool.py,queue.py,deliver.py,adapters/{claude.py,pi.py,claude_win.py}}
                  hub/{main.py,api.py,store.py,ingest.py,tracker/{scheduler.py,seats.py,prompts.py},attention.py,workstreams.py,messages.py}

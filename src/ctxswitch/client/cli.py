@@ -6,6 +6,8 @@
   ctx hosts                              collectors seen by the hub
   ctx tui                                the board (narrow; built for a tmux side pane)
   ctx tmux [--width 25%|56]             create/attach the tmux manager: session left, ctx tui right
+  ctx install / uninstall [--claude --pi --collector]   wire this host up (hooks, pi extension, collector unit)
+  ctx doctor                             check this host's wiring, one line per check
   ctx hub / ctx collector                run the services (same as ctx-hub / ctx-collector)
 """
 from __future__ import annotations
@@ -159,6 +161,8 @@ def main(argv=None) -> None:
     p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="25%", help="TUI pane width: columns or percent (default 25%%)")
     p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)
     p.add_argument("--rc", type=int, default=0); p.add_argument("--started", type=float)
+    from ctxswitch.client.install import add_parsers
+    add_parsers(sub)
     p = sub.add_parser("hub"); p.set_defaults(fn=lambda a: __import__("ctxswitch.hub.main", fromlist=["main"]).main())
     p = sub.add_parser("collector"); p.set_defaults(fn=lambda a: __import__("ctxswitch.collector.main", fromlist=["main"]).main())
     a, rest = ap.parse_known_args(argv)

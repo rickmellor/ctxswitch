@@ -43,6 +43,7 @@ class CollectorConfig:
     pi_roots: list[str] = field(default_factory=lambda: ["~/.pi/agent/sessions"])
     claude_win_roots: list[str] = field(default_factory=list)   # e.g. /mnt/c/Users/<me>/.claude/projects
     queue_path: str = ""                   # default: <data_dir>/collector-queue.db
+    spool_dir: str = ""                    # hook/pi-extension events; default $CTXSWITCH_SPOOL or ~/.local/state/ctxswitch/spool
     backfill_days: int = 30                # how far back to index on first run (hard signals only)
     max_text_chars: int = 4000             # trim for user/assistant text shipped to the hub
 
