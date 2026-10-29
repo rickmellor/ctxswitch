@@ -251,13 +251,15 @@ def show(s: dict, focus: bool = True) -> str:
     viewer = viewer_pane(ps)
     if viewer is None:
         return "no viewer pane: split the window so the TUI has a neighbour (ctx tmux)"
-    pane = pane_for_session(s, ps)
+    r, pane = _reach(s, ps, _this_host())
     created = False
+    if r == "remote":
+        return f"on {s['host_id']}: run `ctx show {s['session_id'][:8]}` there (cross-host resume is Phase 5)"
+    if r == "foreign":
+        return f"running in another terminal (pid {s.get('pid')}): quit it there, then Enter resumes it here"
+    if r == "none":
+        return f"cannot resume a {s.get('harness')} session"
     if pane is None:
-        if s.get("live_status") in ("busy", "idle", "shell") and s.get("pid"):
-            return f"live on {s.get('host_id')} but not in a tmux pane here"
-        if s.get("host_id") and s["host_id"] != os.uname().nodename and s.get("host_id") != _this_host():
-            return f"on {s['host_id']}: run `ctx show {s['session_id'][:8]}` there (cross-host resume is Phase 5)"
         pane = new_session_window(s)
         created = True
     if pane.id == viewer.id:
@@ -271,6 +273,39 @@ def show(s: dict, focus: bool = True) -> str:
     if focus:
         _run("select-pane", "-t", pane.id, check=False)      # after the swap the session pane sits where the viewer was
     return ("resumed " if created else "showing ") + (s.get("title") or s.get("session_id", ""))[:40]
+
+
+# How Enter can reach a session, as shown in the TUI's reach column:
+#   pane     in a pane of this tmux server: Enter swaps it into the viewer
+#   resume   not running here: Enter resumes it in a new window
+#   foreign  running on this host in a terminal outside tmux: can't be adopted (quit it there, then resume)
+#   remote   on another host: open it there
+#   none     not running and no way to resume it
+REACH_GLYPH = {"pane": "◆", "resume": "↻", "foreign": "⊘", "remote": "⇢", "none": " "}
+REACH_HELP = {"pane": "in ctx's tmux: Enter brings it to the left pane",
+              "resume": "not running: Enter resumes it in a new window",
+              "foreign": "running in another terminal: can't be adopted; quit it there, then Enter resumes it here",
+              "remote": "on another host: open it there",
+              "none": "can't be resumed"}
+
+
+def _reach(s: dict, ps: list[Pane], this_host: str) -> tuple[str, Pane | None]:
+    host = s.get("host_id")
+    if host and host != this_host and host != os.uname().nodename:
+        return "remote", None
+    pane = pane_for_session(s, ps) if ps else None
+    if pane is not None:
+        return "pane", pane
+    if s.get("live_status") in ("busy", "idle", "shell") and s.get("pid"):
+        return "foreign", None
+    return ("resume" if resume_argv(s) else "none"), None
+
+
+def reach_all(sessions: list[dict], this_host: str | None = None) -> dict[str, str]:
+    """key -> reach for every session, with one tmux query."""
+    ps = panes() if in_tmux() else []
+    this_host = this_host or _this_host()
+    return {s["key"]: _reach(s, ps, this_host)[0] for s in sessions}
 
 
 def _this_host() -> str:

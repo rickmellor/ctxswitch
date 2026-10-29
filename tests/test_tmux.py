@@ -34,6 +34,7 @@ def server(monkeypatch):
             args = ["tmux", "-L", SOCK, *args[1:]]
         return real(args, **kw)
     monkeypatch.setattr(tmux.subprocess, "run", run)
+    monkeypatch.setattr(tmux, "_this_host", lambda: "laptop")     # sessions in these tests live on "laptop"
     tm("new-session", "-d", "-s", "ctx", "-n", "mgr", "-x", "160", "-y", "40")
     tm("split-window", "-h", "-l", "50", "-t", "ctx:mgr")
     yield
@@ -82,7 +83,7 @@ def test_pane_discovery_swap_and_resume(server, monkeypatch, tmp_path):
     assert sorted(p.window_name for p in ps if p.key == "laptop/claude/abc") == ["Old one"] or True  # abc moved back out
     assert any(p.key == "laptop/claude/abc" and p.window_name != "mgr" for p in ps)
     # live elsewhere (pid not in any pane) is reported, not resumed
-    assert "not in a tmux pane" in tmux.show({**s, "pid": 999999, "key": "x/claude/zzz"}, focus=False)
+    assert "running in another terminal" in tmux.show({**s, "pid": 999999, "key": "x/claude/zzz"}, focus=False)
 
 
 def test_new_agent_starts_in_viewer_and_is_found_by_pid(server, monkeypatch, tmp_path):
@@ -191,3 +192,33 @@ def test_reap_viewer_replaces_a_dead_agent_shell_but_not_a_plain_shell(server, m
     assert tmux.viewer_pane(ps).id == live
     assert viewer.id not in {p.id for p in ps}, "the dead agent's shell was not closed"
     assert tmux.reap_viewer() is None, "a running agent in the viewer must be left alone"
+
+
+def test_reach_classifies_every_way_enter_can_open_a_session(server, monkeypatch):
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    tm("new-window", "-d", "-t", "ctx:", "-n", "hand", "sleep 30")
+    time.sleep(0.3)
+    hand = next(p for p in tmux.panes() if p.window_name == "hand")
+    base = {"harness": "claude", "host_id": "laptop", "title": "t"}
+    sessions = [
+        {**base, "key": "laptop/claude/inpane", "session_id": "inpane", "pid": hand.pid, "live_status": "busy"},
+        {**base, "key": "laptop/claude/outside", "session_id": "outside", "pid": 999999, "live_status": "idle"},
+        {**base, "key": "laptop/claude/ended", "session_id": "ended", "pid": None, "live_status": "ended"},
+        {**base, "key": "devbox/claude/far", "session_id": "far", "host_id": "devbox", "pid": 5, "live_status": "busy"},
+        {**base, "key": "laptop/pi/nopath", "session_id": "nopath", "harness": "pi", "pid": None, "live_status": "ended"},
+    ]
+    assert tmux.reach_all(sessions, "laptop") == {
+        "laptop/claude/inpane": "pane", "laptop/claude/outside": "foreign", "laptop/claude/ended": "resume",
+        "devbox/claude/far": "remote", "laptop/pi/nopath": "none"}
+    # Enter follows the same classification: nothing is started for foreign/remote/none
+    n = len(tmux.panes())
+    assert "another terminal" in tmux.show(sessions[1], focus=False)
+    assert "on devbox" in tmux.show(sessions[3], focus=False)
+    assert "cannot resume" in tmux.show(sessions[4], focus=False)
+    assert len(tmux.panes()) == n
+    # outside tmux nothing is in a pane: a live local session is foreign, an ended one resumable
+    monkeypatch.delenv("TMUX")
+    r = tmux.reach_all(sessions, "laptop")
+    assert r["laptop/claude/inpane"] == "foreign" and r["laptop/claude/ended"] == "resume"

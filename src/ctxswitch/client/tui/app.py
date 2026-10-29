@@ -37,6 +37,7 @@ from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
 STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
+REACH_STYLE = {"pane": "bold", "resume": "", "foreign": "red", "remote": "blue", "none": "dim"}
 
 
 class CtxApp(App):
@@ -70,6 +71,7 @@ class CtxApp(App):
         self.selected: str | None = None
         self.change = -1
         self.visible_key: str | None = None          # session shown in the tmux viewer pane
+        self.reach: dict[str, str] = {}             # key -> tmux.REACH_GLYPH key (how Enter can open it)
         self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:claude" | "new:pi"
 
     def compose(self) -> ComposeResult:
@@ -107,8 +109,10 @@ class CtxApp(App):
         try:
             tmux.reap_viewer()                          # an agent exited to a bare shell in the viewer: move on
             self.visible_key = tmux.visible_key(sessions=data["sessions"])
+            self.reach = tmux.reach_all(data["sessions"], self.this_host)
         except Exception:                               # noqa: BLE001 - tmux is optional
             self.visible_key = None
+            self.reach = {}
         self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"])
 
     def sub_title_set(self, s: str) -> None:
@@ -193,8 +197,13 @@ class CtxApp(App):
             if self.host_filter:                       # host is implied by the filter
                 where = fmt.HARNESS.get(s.get("harness", ""), s.get("harness", ""))
             label = Text()
+            reach = self.reach.get(s["key"], "")
             if s["key"] == self.visible_key:
                 label.append("▶ ", style="bold")
+            elif reach:
+                label.append(tmux.REACH_GLYPH[reach] + " ", style=REACH_STYLE.get(reach, "dim"))
+            if reach in ("foreign", "remote"):
+                style = (style + " dim").strip()          # can't be opened from here
             label.append(f"{where} ", style="dim")
             repo_w = 18 if width >= 40 else 10 if width >= 28 else 0
             if repo_w:
@@ -254,6 +263,14 @@ class CtxApp(App):
         if s.get("last_viewed_at"):
             t.append(f" · seen {fmt.age(s['last_viewed_at'], now)}", style="dim")
         t.append("\n")
+        reach = "pane" if s["key"] == self.visible_key else self.reach.get(s["key"])
+        if reach:
+            help_ = "on the left now" if s["key"] == self.visible_key else tmux.REACH_HELP[reach]
+            if reach == "remote":
+                help_ = f"on {s.get('host_id')}: open it there"
+            elif reach == "foreign" and s.get("pid"):
+                help_ += f" (pid {s['pid']})"
+            t.append(f"{'▶' if s['key'] == self.visible_key else tmux.REACH_GLYPH[reach]} {help_}\n", style=REACH_STYLE.get(reach, "dim"))
         t.append(f"{fmt.short_key(s)} {fmt.repo_label(s)}\n", style="dim")
         t.append(f"{s.get('cwd') or '-'}\n", style="dim")
         model = (s['meta'].get('model') or '').rsplit('/', 1)[-1]

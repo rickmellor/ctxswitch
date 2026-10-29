@@ -33,7 +33,17 @@ ended sessions are resumed in a new window first. **c** / **p** start a new Clau
 directory, default = the selected session's) and bring it to the left. When an agent ctx started (or resumed)
 exits, its window closes and the most recently active other agent takes the left pane (a plain shell if none is
 left); a failed or <5 s run waits for Enter first so the error stays readable. `▶` marks the session currently on the left. Prefix+arrow moves
-focus back to the TUI. Set `CTXSWITCH_TMUX_SESSION` to use another tmux session name. Copy `config.example.toml` to `~/.config/ctxswitch/config.toml`
+focus back to the TUI.
+
+The column before each session says what Enter can do with it:
+
+| | |
+|---|---|
+| `▶` | on the left now |
+| `◆` | in ctx's tmux — Enter brings it to the left pane |
+| `↻` | not running — Enter resumes it in a new window |
+| `⊘` | running in a terminal outside tmux — can't be adopted; quit it there, then Enter resumes it here |
+| `⇢` | on another host — open it there | Set `CTXSWITCH_TMUX_SESSION` to use another tmux session name. Copy `config.example.toml` to `~/.config/ctxswitch/config.toml`
 to point at a remote hub and name this host.
 
 ## Multi-machine
