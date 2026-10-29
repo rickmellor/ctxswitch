@@ -18,6 +18,8 @@ import sys
 import time
 from dataclasses import dataclass
 
+from ctxswitch.common.schema import LIVE
+
 TMUX = os.environ.get("CTXSWITCH_TMUX", "tmux")
 SESSION = os.environ.get("CTXSWITCH_TMUX_SESSION", "ctx")
 VIEWER_WINDOW = "mgr"
@@ -296,7 +298,7 @@ def _reach(s: dict, ps: list[Pane], this_host: str) -> tuple[str, Pane | None]:
     pane = pane_for_session(s, ps) if ps else None
     if pane is not None:
         return "pane", pane
-    if s.get("live_status") in ("busy", "idle", "shell") and s.get("pid"):
+    if s.get("live_status") in LIVE and s.get("pid"):
         return "foreign", None
     return ("resume" if resume_argv(s) else "none"), None
 

@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.common.config import load
@@ -46,7 +47,7 @@ def cmd_ls(a) -> int:
         last = s.get("last_turn") or {}
         asks = s.get("open_asks") or []
         wait = f" waiting {fmt.age(asks[0].get('asked_at'), now)}" if asks else ""
-        when = s.get("status_since") if s.get("live_status") in ("busy", "idle", "shell") else s.get("last_activity")
+        when = s.get("status_since") if s.get("live_status") in LIVE else s.get("last_activity")
         print(f"{fmt.state_glyph(s)} {fmt.short_key(s):<28} {fmt.age(when, now):>6} {fmt.one_line(fmt.repo_label(s), 24):<24} "
               f"{fmt.one_line(fmt.display_title(s), 50)}{wait}")
     return 0
@@ -108,7 +109,7 @@ def cmd_attention(a) -> int:
     if not items:
         print("nothing needs you"); return 0
     for i in items:
-        label = f"[{i['kind']}] {fmt.one_line(i['text'], 80)}" if i["item"] == "ask" else "idle"
+        label = f"[{i['kind']}] {fmt.one_line(i['text'], 80)}" if i["item"] == "ask" else i["item"]
         print(f"◐ {fmt.age(i.get('asked_at'), now):>6}  {i['host_id']}/{fmt.HARNESS.get(i['harness'], i['harness'])}  {fmt.one_line(i.get('title'), 36):<36}  {label}")
     return 0
 

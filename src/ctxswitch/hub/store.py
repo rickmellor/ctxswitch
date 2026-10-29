@@ -13,6 +13,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ctxswitch.common.schema import LIVE
+
+_LIVE_SQL = ",".join(f"'{s}'" for s in LIVE)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hosts (host_id TEXT PRIMARY KEY, last_seen REAL NOT NULL, info TEXT);
 CREATE TABLE IF NOT EXISTS sessions (
@@ -118,6 +122,12 @@ class Store:
                     h, harness, sid = i["key"].split("/", 2)
                     self.db.execute("INSERT OR IGNORE INTO sessions(key,host_id,harness,session_id,meta,live_status,status_since,pid,socket,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
                                     (i["key"], h, harness, sid, "{}", i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), now))
+            # Claude shows a dialog only while "waiting": idle means any hook ask from before then was dismissed
+            # (Esc on a permission prompt fires no hook at all).
+            for i in items:
+                if i["status"] == "idle" and i.get("status_since") and i["key"].split("/", 2)[1] == "claude":
+                    self.db.execute("UPDATE asks SET answered=1, answer='closed: dismissed', answered_at=? WHERE key=? AND answered=0 "
+                                    "AND ref LIKE 'hook:%' AND julianday(asked_at) < julianday(?)", (i["status_since"], i["key"], i["status_since"]))
             # Both registries are authoritative on their host: a session that was live and is not in the snapshot
             # has exited. Claude rows in any other state end too (the registry covers every Claude session); a pi
             # row that never registered (extension not installed) only ages out via its transcript.
@@ -125,7 +135,7 @@ class Store:
             for r in rows:
                 if r["key"] in live_keys:
                     continue
-                if r["harness"] == "claude" or r["live_status"] in ("busy", "idle", "shell"):
+                if r["harness"] == "claude" or r["live_status"] in LIVE:
                     self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, updated=? WHERE key=?", (now, r["key"]))
             self._bump()
 
@@ -148,11 +158,11 @@ class Store:
         if host:
             cond.append("host_id=?"); args.append(host)
         if not include_ended:
-            cond.append("live_status IN ('busy','idle','shell')")
+            cond.append(f"live_status IN ({_LIVE_SQL})")
         # sessions that never had an exchange (e.g. opened and /exit'd) are noise unless they are live right now
-        cond.append("(live_status IN ('busy','idle','shell') OR EXISTS (SELECT 1 FROM turns t WHERE t.key=sessions.key))")
+        cond.append(f"(live_status IN ({_LIVE_SQL}) OR EXISTS (SELECT 1 FROM turns t WHERE t.key=sessions.key))")
         q += " WHERE " + " AND ".join(cond)
-        q += " ORDER BY CASE live_status WHEN 'busy' THEN 0 WHEN 'shell' THEN 1 WHEN 'idle' THEN 1 WHEN 'unknown' THEN 2 ELSE 3 END, last_activity DESC LIMIT ?"
+        q += " ORDER BY CASE live_status WHEN 'busy' THEN 0 WHEN 'waiting' THEN 0 WHEN 'shell' THEN 1 WHEN 'idle' THEN 1 WHEN 'unknown' THEN 2 ELSE 3 END, last_activity DESC LIMIT ?"
         args.append(limit)
         out = []
         for r in self.db.execute(q, args):
@@ -186,13 +196,14 @@ class Store:
             q += " AND s.host_id=?"; args.append(host)
         q += " ORDER BY a.asked_at"
         items = [dict(r) | {"item": "ask"} for r in self.db.execute(q, args)]
-        q2 = "SELECT key,host_id,harness,title,live_status,status_since FROM sessions WHERE live_status='idle'"
+        # waiting = Claude's registry says a dialog is up; shown even where no hook ask explains it (hooks not installed)
+        q2 = "SELECT key,host_id,harness,title,live_status,status_since FROM sessions WHERE live_status IN ('idle','waiting')"
         if host:
             q2 += " AND host_id=?"
         asked = {i["key"] for i in items}
         for r in self.db.execute(q2, args):
             if r["key"] not in asked:
-                items.append(dict(r) | {"item": "idle", "asked_at": r["status_since"]})
+                items.append(dict(r) | {"item": r["live_status"], "asked_at": r["status_since"]})
         return items
 
     def close(self) -> None:

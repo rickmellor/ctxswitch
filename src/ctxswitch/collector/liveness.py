@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ctxswitch.common.schema import Liveness, session_key
+from ctxswitch.common.schema import LIVE, Liveness, session_key
 
 
 def _iso_ms(ms: Any) -> str | None:
@@ -50,7 +50,7 @@ def read_claude_registry(sessions_dir: Path, host_id: str, proc: str = "/proc") 
             continue
         if proc_start(pid, proc) != str(d.get("procStart")):
             continue
-        status = d.get("status") if d.get("status") in ("busy", "idle", "shell") else "unknown"
+        status = d.get("status") if d.get("status") in LIVE else "unknown"
         out[session_key(host_id, "claude", sid)] = Liveness(
             key=session_key(host_id, "claude", sid), status=status,
             status_since=_iso_ms(d.get("statusUpdatedAt") or d.get("updatedAt")), pid=pid,

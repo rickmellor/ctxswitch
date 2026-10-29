@@ -29,6 +29,7 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static
 
+from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
@@ -160,7 +161,7 @@ class CtxApp(App):
         for i in items[:4]:
             head = f"◐{fmt.age(i.get('asked_at'), now):>5} "
             t.append(head, style="bold yellow")
-            label = f"{fmt.one_line(i.get('title'), 18)}: " + (fmt.one_line(i['text'], 200) if i["item"] == "ask" else "idle")
+            label = f"{fmt.one_line(i.get('title'), 18)}: " + (fmt.one_line(i['text'], 200) if i["item"] == "ask" else i["item"])
             t.append(fmt.one_line(label, width - len(head)) + "\n")
         if len(items) > 4:
             t.append(f"… {len(items) - 4} more", style="dim")
@@ -193,7 +194,7 @@ class CtxApp(App):
             st = fmt.session_state(s)
             last = s.get("last_turn") or {}
             asks = s.get("open_asks") or []
-            when = s.get("status_since") if s.get("live_status") in ("busy", "idle", "shell") else s.get("last_activity")
+            when = s.get("status_since") if s.get("live_status") in LIVE else s.get("last_activity")
             style = STATE_STYLE.get(st, "")
             where = f"{fmt.HARNESS.get(s.get('harness',''), s.get('harness',''))}·{s.get('host_id','?')}"
             if self.host_filter:                       # host is implied by the filter

@@ -246,3 +246,29 @@ def test_pi_extension_registers_and_spools(tmp_path):
     assert [x["event"] for x in recs] == ["session_start", "session_shutdown"]
     assert recs[0]["harness"] == "pi" and recs[0]["data"]["reason"] == "startup"
     assert list((tmp_path / "run" / "ctxswitch").glob("pi-*.json")) == []              # unregistered on quit
+
+
+def test_claude_waiting_status_is_live_and_needs_attention(tmp_path):
+    from test_liveness_gitinfo_state import _fake_proc
+    from ctxswitch.collector.liveness import read_claude_registry
+    proc = _fake_proc(tmp_path, 100, "5")
+    reg = tmp_path / "sessions"; reg.mkdir()
+    (reg / "100.json").write_text(json.dumps({"pid": 100, "sessionId": "w1", "procStart": "5", "status": "waiting",
+                                               "waitingFor": "permission prompt", "statusUpdatedAt": 1793241496121}))
+    live = read_claude_registry(reg, "laptop", proc=str(proc))
+    assert live["laptop/claude/w1"].status == "waiting"
+    store = Store(tmp_path / "h.db")
+    store.set_liveness("laptop", [live["laptop/claude/w1"].to_dict()])
+    att = store.attention()
+    assert [(a["key"], a["item"]) for a in att] == [("laptop/claude/w1", "waiting")]
+    assert [s["key"] for s in store.sessions(include_ended=False)] == ["laptop/claude/w1"]
+
+
+def test_idle_claude_closes_dismissed_hook_asks(tmp_path):
+    f = Feed(tmp_path)
+    f("PermissionRequest", 10, tool_name="Bash", tool_input={"command": "x"})
+    f.store.set_liveness("laptop", [{"key": KEY, "status": "waiting", "status_since": "2026-10-28T10:00:10.100Z"}])
+    f.store.set_liveness("laptop", [{"key": KEY, "status": "idle", "status_since": "2026-10-28T10:00:09Z"}])  # stale: older
+    assert len(f.attention()) == 1
+    f.store.set_liveness("laptop", [{"key": KEY, "status": "idle", "status_since": "2026-10-28T10:00:20Z"}])  # Esc'd
+    assert f.attention() == [] and f.asks()[0]["answer"] == "closed: dismissed"

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-GLYPH = {"busy": "●", "idle": "○", "shell": "$", "unknown": "◌", "ended": "–"}
+GLYPH = {"busy": "●", "waiting": "◐", "idle": "○", "shell": "$", "unknown": "◌", "ended": "–"}
 HARNESS = {"claude": "cc", "pi": "pi", "claude-win": "cw"}
 
 
@@ -44,7 +44,7 @@ def display_title(s: dict) -> str:
 def session_state(s: dict) -> str:
     """busy / waiting / idle / shell / unknown / ended."""
     st = s.get("live_status", "unknown")
-    if s.get("ended") and st not in ("busy", "idle"):
+    if s.get("ended") and st not in ("busy", "waiting", "idle"):
         return "ended"
     if s.get("open_asks"):
         return "waiting"

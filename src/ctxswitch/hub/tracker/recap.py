@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 import httpx
 
+from ctxswitch.common.schema import LIVE
 from ctxswitch.common.config import SeatConfig
 from ctxswitch.hub.store import Store
 
@@ -94,7 +95,7 @@ class Recapper:
         for s in self.store.sessions():
             if not s.get("last_turn"):
                 continue
-            if s.get("live_status") not in ("busy", "idle", "shell") and (s.get("last_activity") or "") < cutoff:
+            if s.get("live_status") not in LIVE and (s.get("last_activity") or "") < cutoff:
                 continue
             a = anchor_of(s)
             if a == s.get("recap_anchor"):

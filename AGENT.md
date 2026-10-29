@@ -38,10 +38,12 @@ src/ctxswitch/
     liveness.py           Claude ~/.claude/sessions/<pid>.json + pi registry → busy/idle (verifies pid start)
     state.py              local SQLite outbox + offsets (idempotent replay)
     gitinfo.py            repo/branch labels
+    spool.py              drains the hook spool into the outbox as "hook" events
   hub/
     main.py               ctx-hub entry; wires the Recapper into the Starlette lifespan
     api.py                REST /v1/{ingest,sessions,sessions/<key>[/viewed],attention,hosts,health} + /v1/ws live updates
     store.py              SQLite (WAL); schema migrations are ALTER TABLE in place
+    hooks.py              hook events → permission / elicitation / prompt asks and their resolution
     tracker/recap.py      one-line recap per session; anchor = last turn idx:complete:open_asks:live_status
   client/
     cli.py                `ctx` subcommands (ls, show, attention, hosts, tui, tmux, internal tmux-exit)
@@ -49,7 +51,10 @@ src/ctxswitch/
     tmux.py               pane discovery/tagging, swap-in, resume, agent-exit hand-off, reach classification
     tui/app.py            Textual app (the board)
     fmt.py                shared text formatting (glyphs, ages, titles)
-deploy/                   hub Dockerfile + compose, collector systemd unit + installer
+    install.py            `ctx install` / `uninstall` / `doctor`
+  hook.py                 ctx-hook: Claude hook → spool file (stdlib only, runs on every hooked event)
+  pi_ext/ctxswitch.ts     pi extension: live registry + UI-prompt events (symlinked into ~/.pi/agent/extensions)
+deploy/                   hub Dockerfile + compose, install-collector.sh (uv bootstrap, then `ctx install`)
 spikes/                   Phase 0 findings (Claude inbox socket, pi injection, seat behaviour)
 tests/                    pytest; transcript fixtures are synthetic (tests/claude_rows.py), never real content
 ```
@@ -66,6 +71,17 @@ tests/                    pytest; transcript fixtures are synthetic (tests/claud
   excludes `sh`, because `sh` is the wrapper itself. Failures are logged to `~/.local/state/ctxswitch/tmux-exit.log`.
 - **Reach** (what Enter can do): `pane` ◆, `resume` ↻, `foreign` ⊘ (live in a terminal outside tmux),
   `remote` ⇢ (other host), `none`. `tmux._reach` is the single classifier, and `show()` follows it.
+- **Hooks (Phase 2):** Claude `async` hooks run `ctx-hook claude`; the pi extension writes the same record. Each
+  event is one file in `~/.local/state/ctxswitch/spool/`, which the collector watches, queues and deletes. The hub
+  (`hub/hooks.py`) opens an ask on PermissionRequest / permission Notification / elicitation / pi `ui_prompt_start`
+  and resolves it on PostToolUse, PermissionDenied, Stop, UserPromptSubmit, SessionEnd or `ui_prompt_end`. Each
+  event applies once (`hook_seen`). Esc on a permission prompt fires **no** hook: the registry's `idle` closes it.
+  Tool events are spooled only while `spool/.pending/<sid>` exists, so ordinary tool calls cost one tiny process.
+- **Live states:** `LIVE` in `common/schema.py` (busy, waiting, idle, shell). `waiting` comes straight from
+  Claude's registry while a dialog is up. Don't hardcode the list.
+- **Install:** `ctx install` merges into `settings.json` (our entries are found by the string `ctx-hook`), keeps the
+  pre-install original, and `uninstall` restores it byte-for-byte if nothing else changed the file since.
+  Files are chowned to HOME's owner only when running as real root for someone else's HOME.
 - **Recapper:** a hub asyncio task. A session is recapped once its anchor has held still for 4 s. Only sessions
   that are live or active in the last 7 days are recapped. Seat requests use `response_format` json_schema
   (strict) and `chat_template_kwargs.enable_thinking=false` (Qwen seats otherwise spend the budget on thinking).
@@ -90,11 +106,12 @@ uv sync --extra test
   `docker compose -f deploy/compose.yml up -d --build`. Hub secrets and the seat URL live in an untracked
   `deploy/.env` on the hub host (`CTXSWITCH_HUB_TOKEN`, `CTXSWITCH_SEAT_URL`). The SQLite db lives in the `ctxswitch-data` volume and
   survives rebuilds.
-- **Collectors:** `git pull && deploy/install-collector.sh`, then `systemctl --user restart ctx-collector`. Logs
-  are in `~/.local/state/ctxswitch/collector.log`.
+- **Collectors:** `git pull && deploy/install-collector.sh` (it runs `ctx install`, which restarts the unit),
+  then `ctx doctor`. Logs are in `~/.local/state/ctxswitch/collector.log`. A new pi extension takes effect in
+  new pi sessions; new Claude sessions get the hooks (already-running ones: unverified, restart to be sure).
 - **TUI:** clients run from the repo venv. Restart `ctx tui` (q, then `ctx tmux`) to pick up changes.
 
 ## What's next
-Phase 2 in DESIGN.md: Claude hooks (Notification permission prompts aren't in transcripts), a pi extension,
-`ctx install`/`doctor`, and a Windows-native read-only adapter. After that come messaging (inject into live
-sessions), cross-host resume over ssh, and MCP.
+Left from Phase 2: the resume briefing and a Windows-native read-only adapter. Then messaging (inject into
+live sessions; idea: send a tmux copy-mode selection from one pane to another session), cross-host resume over
+ssh, and MCP. Validated harness versions are in `client/install.py` `VALIDATED`; `ctx doctor` warns on others.

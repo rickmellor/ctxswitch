@@ -13,7 +13,8 @@ Harness = Literal["claude", "pi", "claude-win"]
 AskKind = Literal["question", "plan", "permission", "elicitation", "prompt", "plain"]
 # plain = final text ending in "?" (heuristic); permission/elicitation/prompt come from hooks (hub/hooks.py)
 UserOrigin = Literal["human", "peer", "task", "meta", "unknown"]
-LiveStatus = Literal["busy", "idle", "shell", "ended", "unknown"]
+LiveStatus = Literal["busy", "waiting", "idle", "shell", "ended", "unknown"]   # waiting: Claude's dialog is up
+LIVE = ("busy", "waiting", "idle", "shell")
 
 
 def session_key(host_id: str, harness: str, session_id: str) -> str:

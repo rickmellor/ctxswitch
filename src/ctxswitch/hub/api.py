@@ -110,8 +110,9 @@ class Hub:
         return JSONResponse({"change": self.store.change, "items": self.store.attention(req.query_params.get("host") or None)})
 
     async def health(self, req: Request) -> Response:
+        auth = self._authorized(req.headers)                 # unauthenticated callers don't learn the seat
         return JSONResponse({"ok": True, "change": self.store.change, "hosts": len(self.store.hosts()),
-                             "auth": self._authorized(req.headers), "recap": self.recap_status})
+                             "auth": auth, "recap": self.recap_status if auth else None})
 
     async def ws(self, ws: WebSocket) -> None:
         if not self._authorized(ws.headers) and ws.query_params.get("token") != self.token:

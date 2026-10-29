@@ -28,7 +28,8 @@ in one narrow side panel next to whatever you are doing.
 - **Tracks the human↔agent conversation, not the code.** For each session it keeps your last prompt, the agent's
   last reply, the questions it asked and your verbatim answers, the plan approvals, a tool tally, and whether it
   is busy, idle, waiting on you or ended.
-- **Puts what needs you on top.** An attention strip lists open questions and plan approvals, oldest wait first.
+- **Puts what needs you on top.** An attention strip lists open questions, plan approvals, permission prompts
+  ("allow Bash: rm -rf build") and pi confirm dialogs, oldest wait first. Each one clears itself when you answer.
 - **Writes a one-line recap per session**, so you know what matters right now. The recap comes from a *local*
   LLM seat. Nothing leaves your network.
 - **Switches sessions for you.** Inside tmux, Enter swaps a session into the main pane, resumes an ended one, or
@@ -44,6 +45,8 @@ in one narrow side panel next to whatever you are doing.
    watches ~/.claude/projects          recap tracker ──► local LLM seat
    and ~/.pi/agent/sessions            (OpenAI-compatible endpoint)
    + live-session registries
+   + hook spool (Claude hooks,
+     pi extension)
 ```
 - **Collectors only connect outbound.** A machine that blocks inbound traffic still takes part fully. While
   the hub is unreachable, a local queue buffers events and replays them idempotently.
@@ -55,8 +58,9 @@ in one narrow side panel next to whatever you are doing.
 
 ## Status
 Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is done, plus the tmux manager and
-LLM recaps. Hooks, a pi extension, messaging live sessions, cross-host resume and MCP are still to come. See
-the phases in [DESIGN.md](DESIGN.md).
+LLM recaps. Phase 2 is mostly done: Claude hooks and a pi extension report permission prompts and dialogs, and
+`ctx install` / `ctx doctor` wire up and check a host. Still to come: a resume briefing, Windows-native
+sessions, messaging live sessions, cross-host resume and MCP. See the phases in [DESIGN.md](DESIGN.md).
 
 # User guide
 
@@ -84,11 +88,28 @@ Put `.venv/bin` on your `PATH` (or symlink `ctx` into `~/.local/bin`) so plain `
    ```
    The SQLite db lives in the `ctxswitch-data` volume and survives rebuilds.
 2. **On every machine with agent sessions**, clone the repo to `~/repos/ctxswitch` and run
-   `deploy/install-collector.sh`. It installs uv if needed, builds the venv, writes
-   `~/.config/ctxswitch/config.toml` and starts a `systemd --user` unit. Edit the config: set `[hub] url` and
-   `token`, and give the host a short `host_id`. Then `systemctl --user restart ctx-collector`.
+   ```sh
+   deploy/install-collector.sh --hub http://<hub-host>:7433 --token <the hub token>
+   ```
+   It installs uv if needed, builds the venv, then runs `ctx install` (see below). The host's short name
+   (`host_id`) defaults to its hostname; change it in `~/.config/ctxswitch/config.toml` if you like.
    Run `loginctl enable-linger $USER` so the collector keeps running when you log out.
-3. **Check:** `ctx hosts` lists every collector the hub has heard from and when it last checked in.
+3. **Check:** `ctx doctor` on each machine, and `ctx hosts` to see every collector the hub has heard from.
+
+### What `ctx install` changes
+| Part | Change | Undo |
+|---|---|---|
+| config | writes `~/.config/ctxswitch/config.toml` (mode 600, it holds the token) if `--hub`/`--token` are given or it's missing | delete it |
+| collector | writes `~/.config/systemd/user/ctx-collector.service` pointing at this venv, enables and restarts it | `ctx uninstall --collector` |
+| Claude Code | adds one `async` hook per event to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`), keeping your other hooks; backs the original up to `~/.local/state/ctxswitch/backup/` | `ctx uninstall --claude` restores the original byte-for-byte, or removes just our entries if the file changed since |
+| pi | symlinks `~/.pi/agent/extensions/ctxswitch.ts` to the extension in this repo | `ctx uninstall --pi` |
+
+Pick parts with `--claude`, `--pi`, `--collector`; `--dry-run` shows what would change. Running it again is
+safe. New pi sessions load the extension; restart running Claude sessions to be sure they have the hooks.
+
+The hooks never block or slow an agent: they run in the background, exit 0 whatever happens, and only write a
+small file to `~/.local/state/ctxswitch/spool/` (tool calls are only recorded while a permission prompt is
+open). Without hooks ctxswitch still works from transcripts alone; you just don't see permission prompts.
 
 Collectors only make outbound connections, so a machine behind a firewall that drops inbound traffic works
 fine. If the hub goes away, collectors queue locally and catch up when it comes back.
@@ -127,7 +148,7 @@ filter and how many sessions are live.
 | State | Meaning |
 |---|---|
 | `●` green | busy: the agent is working |
-| `◐` yellow | waiting on you: an open question or plan approval |
+| `◐` yellow | waiting on you: an open question, plan approval, permission prompt or dialog |
 | `○` cyan | idle: at the prompt, your turn |
 | `$` | Claude Code reports a shell state |
 | `◌` | live status unknown |
@@ -144,7 +165,9 @@ filter and how many sessions are live.
 **Detail pane** for the selected session:
 - the title, state and age, number of exchanges, and when you last looked (`seen 2h`);
 - what Enter will do with it, the session key, repo, working directory, model and permission mode;
-- **WAITING ON YOU**: every open question or approval, verbatim, with how long it's been waiting;
+- **WAITING ON YOU**: every open question, approval or prompt, verbatim, with how long it's been waiting.
+  Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
+  input), `prompt` (a pi dialog), `plain` (its reply ended in a question);
 - **RECAP**: one line on where it stands and what it needs from you (see below);
 - **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
 - **DECISIONS**: the questions it asked and the answers you gave, verbatim;
@@ -194,6 +217,9 @@ as normal without recaps. Turn them off with `ctx-hub --no-recap`.
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
 | `ctx tmux [--width N\|N%]` | the manager |
+| `ctx install [--claude --pi --collector] [--hub URL --token T] [--dry-run]` | wire this machine up (above) |
+| `ctx uninstall [--claude --pi --collector]` | undo it (the collector only when named) |
+| `ctx doctor` | check this machine: config, hub and token, collector, hooks, extension, spool, recaps. Exit 1 if broken |
 
 ## 8. Configuration
 `~/.config/ctxswitch/config.toml` (or `$CTXSWITCH_CONFIG`). [config.example.toml](config.example.toml) has every
@@ -210,8 +236,12 @@ option. The ones you'll touch:
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
 
 ## 9. Troubleshooting
+Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broken), with the fix underneath.
+
 | Symptom | Check |
 |---|---|
+| a permission prompt doesn't show | `ctx doctor` (claude hooks line); restart that Claude session after installing |
+| an answered prompt still shows | it clears on the agent's next tool call, turn end or idle; check the collector is running |
 | `hub unreachable` | `[hub] url` in your config, and that the hub is up (`curl <url>/v1/health`) |
 | a host is missing | `ctx hosts`; on that host, `systemctl --user status ctx-collector` and `~/.local/state/ctxswitch/collector.log` |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |

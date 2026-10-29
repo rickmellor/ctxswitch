@@ -20,6 +20,10 @@ Greenfield repo: `~/repos/ctxswitch`.
 
 ## Decisions log
 - 2026-10-28: hub runs as a docker container on **gpu-host**; Phase 1 built interactively; NAS move is a Phase 7 runbook.
+- 2026-10-28 (Phase 2): hooks are `async` command hooks running `ctx-hook claude` (stdlib only, always exit 0) that
+  spool one file per event; tool events are spooled only while a permission is pending. Claude's own registry
+  reports `status: "waiting"` (+ `waitingFor`) while a dialog is up, so `idle` closes hook asks that no hook
+  resolved (Esc on a permission prompt fires none). The pi registry is authoritative, so a vanished pi session ends.
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles
@@ -152,6 +156,8 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    filter + `ctx ls/show`. Run hub locally first; deploy to gpu-host at the end of the phase.
 2. Hooks + pi extension + spool; Notification-driven permission asks; resume briefing (hard-signal version);
    `install`/`doctor` on all three hosts; Windows-native read-only adapter.
+   **Done:** hooks, pi extension, spool, permission/elicitation/prompt asks, `install`/`uninstall`/`doctor`.
+   **Open:** resume briefing, Windows-native adapter.
 3. Tracker: extraction rows (instructions, decisions, claims, plain-text asks), reentry/purpose; scheduler.
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
 5. Messaging: pi inject + reply; Claude inject (per spike); queued delivery; quick-reply; cross-host resume.
