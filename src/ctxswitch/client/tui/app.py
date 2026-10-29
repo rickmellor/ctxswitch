@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
+from textual.screen import ModalScreen
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static
@@ -45,6 +46,87 @@ STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "
 CLAIM_STYLE = {"done": "green", "tests_pass": "green", "tests_fail": "red", "blocked": "yellow"}
 MSG_STYLE = {"queued": "yellow", "sent": "yellow", "delivered": "green", "replied": "green", "failed": "red"}
 REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "foreign": "red", "remote": "blue", "none": "dim"}
+STATE_HELP = {"busy": "busy: the agent is working", "waiting": "waiting on you: a question, plan, permission prompt or dialog",
+              "idle": "idle: at the prompt, your turn", "shell": "Claude Code reports a shell state",
+              "unknown": "live status unknown", "ended": "ended (shown with e)"}
+HARNESS_NAME = {"claude": "Claude Code", "pi": "pi", "claude-win": "Windows-native Claude Code"}
+MSG_HELP = {"queued": "queued: waiting for its host to pick it up", "sent": "sent: written into the session",
+            "delivered": "delivered: the agent is working on it", "replied": "replied: that exchange finished",
+            "failed": "failed: the reason is shown; send it again", "cancelled": "cancelled"}
+CLAIM_HELP = {"done": "the agent says it's done", "tests_pass": "it says tests pass", "tests_fail": "it says tests fail",
+              "blocked": "it says it's blocked"}
+ATTENTION_TIP = ("What's waiting on you, oldest first. ◐3m = how long it has waited. A question shows its text; "
+                 "\"waiting\" = a dialog is open in it (permission, plan, …); \"idle\" = it finished its turn, your move.")
+
+
+def legend() -> Text:
+    """Every glyph on the board, from the same tables the board draws with."""
+    t = Text()
+
+    def section(title: str, rows: list[tuple[str, str, str]]) -> None:
+        t.append(title + "\n", style="bold")
+        for glyph, style, words in rows:
+            t.append(f"  {glyph:<8}", style=style); t.append(words + "\n")
+        t.append("\n")
+    section("SESSION STATE (first column)", [(g, STATE_STYLE[st], STATE_HELP[st]) for st, g in fmt.GLYPH.items()])
+    section("ENTER (before the host)", [("▶", "bold", "it's on the left now")] +
+            [(g, REACH_STYLE.get(r, ""), tmux.REACH_HELP[r]) for r, g in tmux.REACH_GLYPH.items() if r != "none"])
+    section("ROW", [("3m", "dim", "second column: time in this state (live), or since it was last active (ended)")] +
+            [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
+            [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
+             ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work")])
+    section("WAITING ON YOU (top box)", [("◐3m", "bold yellow", "how long it has waited"),
+                                         ("idle", "", "it finished its turn: your move"),
+                                         ("waiting", "", "a dialog is open in it (permission, plan, …)")])
+    section("MESSAGES", [(fmt.MSG_GLYPH[k], MSG_STYLE.get(k, "dim"), MSG_HELP[k]) for k in fmt.MSG_GLYPH])
+    section("AGENT SAYS", [(fmt.CLAIM_GLYPH[k], CLAIM_STYLE.get(k, ""), CLAIM_HELP[k]) for k in CLAIM_HELP])
+    t.append("? or Esc closes", style="dim")
+    return t
+
+
+def row_tip(s: dict, reach: str, on_left: bool, ssh: dict, now: datetime) -> str:
+    """One row of the list in words, for its hover tooltip."""
+    st = fmt.session_state(s)
+    live = s.get("live_status") in LIVE
+    when = fmt.age(s.get("status_since") if live else s.get("last_activity"), now)
+    lines = [f"{fmt.state_glyph(s)} {STATE_HELP.get(st, st)}, {when}" if live else f"{fmt.state_glyph(s)} {STATE_HELP.get(st, st)}, last active {when} ago"]
+    asks = s.get("open_asks") or []
+    if asks:
+        lines.append(f"◐ [{asks[0].get('kind')}] waiting {fmt.age(asks[0].get('asked_at'), now)}: {fmt.one_line(asks[0].get('text'), 80)}")
+    if on_left:
+        lines.append("▶ on the left now")
+    elif reach and reach != "none":
+        lines.append(f"{tmux.REACH_GLYPH[reach]} {tmux.reach_help(s, reach, ssh)}")
+    if s.get("unseen"):
+        lines.append(f"+{s['unseen']} exchange{'s' if s['unseen'] != 1 else ''} since you last looked")
+    lines.append(f"{HARNESS_NAME.get(s.get('harness', ''), s.get('harness', ''))} on {s.get('host_id', '?')} · {fmt.repo_label(s)}")
+    return "\n".join(lines)
+
+
+class Board(DataTable):
+    """The session list, with a tooltip that follows the row under the mouse (a DataTable has one tooltip, not one
+    per row)."""
+
+    def watch_hover_coordinate(self, old, value) -> None:
+        super().watch_hover_coordinate(old, value)
+        try:
+            key = self.coordinate_to_cell_key(value).row_key.value
+        except Exception:                               # noqa: BLE001 - off the rows
+            key = None
+        self.tooltip = self.app.tip_for(key) if key else None
+
+
+class Legend(ModalScreen):
+    BINDINGS = [Binding("escape", "dismiss", show=False), Binding("question_mark", "dismiss", show=False),
+                Binding("q", "dismiss", show=False)]
+    DEFAULT_CSS = """
+    Legend { align: center middle; }
+    Legend > VerticalScroll { width: auto; max-width: 100%; height: auto; max-height: 100%; border: round $accent; padding: 0 1; background: $surface; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Static(legend())
 
 
 class CtxApp(App):
@@ -65,7 +147,7 @@ class CtxApp(App):
         Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
-        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"),
+        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"), Binding("question_mark", "legend", "legend"),
         Binding("W", "message_work", "msg work", show=False),
         Binding("escape", "clear_filter", show=False),
     ]
@@ -100,7 +182,7 @@ class CtxApp(App):
     def compose(self) -> ComposeResult:
         yield Static("", id="attention")
         with Vertical(id="body"):
-            yield DataTable(id="table", cursor_type="row", zebra_stripes=True, show_header=False)
+            yield Board(id="table", cursor_type="row", zebra_stripes=True, show_header=False)
             yield VerticalScroll(Static("", id="detail_text"), id="detail")
         inp = Input(placeholder="filter sessions (title, repo, key)…", id="filter")
         inp.can_focus = False                     # only focusable while shown via "/"
@@ -112,6 +194,7 @@ class CtxApp(App):
         t.add_columns(" ", "age", "session")
         self.title = "ctxswitch"
         self.query_one("#attention", Static).border_title = "ctxswitch"
+        self.query_one("#attention", Static).tooltip = ATTENTION_TIP
         if tmux.in_tmux():
             tmux.set_role(os.environ.get("TMUX_PANE"), "tui")   # lets an exiting agent recognise the viewer window
         t.focus()
@@ -595,6 +678,15 @@ class CtxApp(App):
             msg = f"tmux: {e}"
         popup_log(f"new {harness} in {cwd}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=6)
+
+    def action_legend(self) -> None:
+        self.push_screen(Legend())
+
+    def tip_for(self, key: str) -> str | None:
+        if key.startswith("ws:"):
+            return f"▾ {fmt.workstream_label(key[3:])}: the sessions on this repo + branch, any host. m messages the work"
+        s = next((x for x in self.sessions if x["key"] == key), None)
+        return row_tip(s, self.reach.get(key, ""), key == self.visible_key, self.cfg.ssh, datetime.now(timezone.utc)) if s else None
 
     def _selected_session(self) -> dict | None:
         return next((x for x in self.sessions if x["key"] == self.selected), None)

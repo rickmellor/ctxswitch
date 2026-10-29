@@ -133,3 +133,34 @@ def test_starting_a_new_agent_logs_and_reports_it(monkeypatch):
     b = SimpleNamespace(call_from_thread=lambda fn, *a, **k: fn(*a, **k), notify=lambda msg, **k: seen.append(msg))
     tui.CtxApp.start_agent.__wrapped__(b, "pi", "/r")                 # was a NameError, raised in the worker
     assert logged == ["new pi in /r: started pi"] and seen == ["started pi"]
+
+
+def test_the_legend_explains_every_glyph_the_board_draws():
+    from ctxswitch.client import tmux
+    text = tui.legend().plain
+    glyphs = [*fmt.GLYPH.values(), *(g for r, g in tmux.REACH_GLYPH.items() if r != "none"), *fmt.HARNESS.values(),
+              *fmt.MSG_GLYPH.values(), *fmt.CLAIM_GLYPH.values(), "▶", "▾", "+2", "◐4m"]
+    lines = text.splitlines()
+    for g in set(glyphs) - {"·"}:                                      # "·" is the claim fallback, never drawn alone
+        assert any(ln.strip().startswith(g) for ln in lines), g
+    for words in tui.STATE_HELP.values():
+        assert words in text
+
+
+def test_a_rows_tooltip_says_it_in_words():
+    from datetime import datetime, timezone
+    now = datetime(2026, 10, 29, 10, 10, tzinfo=timezone.utc)
+    s = {"key": "devbox/pi/p1", "host_id": "devbox", "harness": "pi", "live_status": "idle", "status_since": "2026-10-29T10:07:00Z",
+         "repo_root": "/r/proj", "git_branch": "main", "unseen": 2,
+         "open_asks": [{"kind": "plain", "text": "Ship it?", "asked_at": "2026-10-29T10:06:00Z"}]}
+    tip = tui.row_tip(s, "pane", False, {}, now).splitlines()
+    assert tip[0] == "◐ waiting on you: a question, plan, permission prompt or dialog, 3m"
+    assert tip[1] == "◐ [plain] waiting 4m: Ship it?"
+    assert tip[2].startswith("◆ in ctx's tmux") and tip[3] == "+2 exchanges since you last looked"
+    assert tip[4].startswith("pi on devbox · proj")
+    ended = {"key": "k", "host_id": "laptop", "harness": "claude", "live_status": "ended", "ended": True, "last_activity": "2026-10-29T08:10:00Z"}
+    t2 = tui.row_tip(ended, "resume", True, {}, now).splitlines()
+    assert t2[0] == "– ended (shown with e), last active 2h00 ago" and t2[1] == "▶ on the left now" and len(t2) == 3
+    b = SimpleNamespace(sessions=[s], reach={s["key"]: "pane"}, visible_key=None, cfg=SimpleNamespace(ssh={}))
+    assert tui.CtxApp.tip_for(b, s["key"]).startswith("◐ waiting") and tui.CtxApp.tip_for(b, "gone") is None
+    assert tui.CtxApp.tip_for(b, "ws:me/proj@main").startswith("▾ proj@main: the sessions")

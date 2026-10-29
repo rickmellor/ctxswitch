@@ -230,6 +230,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `r` | refresh now (the board also updates live over a WebSocket) |
 | `n` | pop-ups off / on for this run (`notify` sets how it starts) |
 | `x` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
+| `?` | the legend: every glyph on the board in words (`?` or Esc closes). Hovering the mouse over a row, or the top box, says the same for that row |
 | `q` | detach: close your terminal, keep everything running |
 | `Q` | quit all: end the tmux session and every agent in it, after a y/n |
 
