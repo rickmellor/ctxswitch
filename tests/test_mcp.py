@@ -137,7 +137,7 @@ def test_tools_read_the_hub(tmp_path):
     err, text = _call(s, "attention")
     assert not err and text.startswith(B) and "[plain] Shall I publish?" in text
     err, text = _call(s, "get_session", session="pi docs", turns=1)
-    assert not err and text.startswith("◐ " + B) and "Shall I publish?" in text and "write the docs" not in text   # 1 exchange
+    assert not err and text.split("\n")[0].split()[1] == B and "Shall I publish?" in text and "write the docs" not in text   # 1 exchange
     assert store.session(B)["last_viewed_at"] is None                 # an agent reading isn't the operator looking
     err, text = _call(s, "search", query="spaces")
     assert not err and text == f"{A} #0 (tabs work) [decision] Tabs or spaces?  →  Spaces, 4 wide"
@@ -150,6 +150,8 @@ def test_bad_calls_come_back_as_tool_errors(tmp_path):
     assert err and text.startswith("2 sessions match 's': ")
     assert _call(s, "get_session", session="zzz") == (True, "0 sessions match 'zzz'")
     assert _call(s, "get_session", session="a/b/c")[0]                # a full key that isn't there
+    err, text = _call(s, "get_session", session="devbox/pi/p")         # a key cut short matches like a part of one
+    assert not err and text.split("\n")[0].split()[1] == B
     assert _call(s, "get_session") == (True, "missing argument(s): session")
     assert _call(s, "get_session", session="x", nope=1) == (True, "unknown argument(s): nope")
     assert _call(s, "get_session", session=3) == (True, "session must be a string")
@@ -176,3 +178,12 @@ def test_an_older_hub_without_search_says_so(tmp_path):
     s = _server(tmp_path)
     s.c._c = TestClient(Starlette(routes=[]), headers=H)              # 404, plain text
     assert _call(s, "search", query="x") == (True, "HTTP 404")
+
+
+def test_a_full_key_wins_over_part_of_another(tmp_path):
+    store = _store(tmp_path)
+    _session(store, A + "0", "tabs again")                            # A is part of this key too
+    _session(store, "devbox/claude/new", "fresh", live=False)         # no turns yet: not in the list
+    s = _server(tmp_path, store)
+    assert s._key(A) == A and s._key("devbox/claude/new") == "devbox/claude/new"
+    assert _call(s, "get_session", session="devbox/claude/new")[0] is False

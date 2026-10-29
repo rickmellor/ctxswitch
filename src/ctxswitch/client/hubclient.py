@@ -33,10 +33,14 @@ class HubClient:
         return r.json() if r.status_code == 200 else None
 
     def resolve(self, q: str) -> tuple[str | None, list[dict[str, Any]]]:
-        """A full key as given, or the one session whose key or title contains ``q``; else (None, the candidates)."""
-        if q.count("/") >= 2:
+        """A full key, or the one session whose key or title contains ``q``; else (None, the candidates). A key cut
+        short ("devbox/pi/01a1") matches like any other part of one."""
+        rows = self.sessions(None)["sessions"]
+        if any(s["key"] == q for s in rows):
             return q, []
-        matches = [s for s in self.sessions(None)["sessions"] if q in s["key"] or q in (s.get("title") or "")]
+        matches = [s for s in rows if q in s["key"] or q in (s.get("title") or "")]
+        if not matches and q.count("/") >= 2:
+            return q, []                                             # not listed: let the hub say whether it exists
         return (matches[0]["key"], matches) if len(matches) == 1 else (None, matches)
 
     def attention(self, host: str | None = None) -> dict[str, Any]:
