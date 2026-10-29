@@ -174,7 +174,7 @@ class CtxApp(App):
             if not self.show_ended and fmt.session_state(s) == "ended":
                 continue
             if self.text_filter:
-                hay = " ".join([s.get("title") or "", s.get("key", ""), fmt.repo_label(s), (s.get("last_turn") or {}).get("user_text") or ""]).lower()
+                hay = " ".join([fmt.display_title(s), s.get("key", ""), fmt.repo_label(s), (s.get("last_turn") or {}).get("user_text") or ""]).lower()
                 if self.text_filter.lower() not in hay:
                     continue
             out.append(s)

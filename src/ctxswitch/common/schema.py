@@ -112,6 +112,7 @@ class Liveness:
     status_since: str | None = None     # ISO
     pid: int | None = None
     socket: str | None = None           # Claude messagingSocketPath / pi extension socket
+    name: str | None = None             # user-set session name (Claude registry); may not be in the transcript yet
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

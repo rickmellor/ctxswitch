@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     meta TEXT NOT NULL, title TEXT, cwd TEXT, repo_root TEXT, repo_remote TEXT, git_branch TEXT,
     started_at TEXT, last_activity TEXT, ended INTEGER NOT NULL DEFAULT 0,
     live_status TEXT NOT NULL DEFAULT 'unknown', status_since TEXT, pid INTEGER, socket TEXT,
-    last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL
+    last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL, live_name TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_host ON sessions(host_id);
 CREATE TABLE IF NOT EXISTS turns (
@@ -49,7 +49,7 @@ class Store:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}
-        for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL")):   # pre-recap databases
+        for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL"), ("live_name", "TEXT")):   # older databases
             if col not in cols:
                 self.db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
         self._lock = threading.Lock()
@@ -115,13 +115,13 @@ class Store:
             now = time.time()
             live_keys = {i["key"] for i in items}
             for i in items:
-                self.db.execute("UPDATE sessions SET live_status=?, status_since=?, pid=?, socket=?, ended=0, updated=? WHERE key=?",
-                                (i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), now, i["key"]))
+                self.db.execute("UPDATE sessions SET live_status=?, status_since=?, pid=?, socket=?, live_name=?, ended=0, updated=? WHERE key=?",
+                                (i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), i.get("name"), now, i["key"]))
                 if self.db.execute("SELECT changes()").fetchone()[0] == 0:
                     # live but transcript not indexed yet: placeholder row so the TUI shows it
                     h, harness, sid = i["key"].split("/", 2)
-                    self.db.execute("INSERT OR IGNORE INTO sessions(key,host_id,harness,session_id,meta,live_status,status_since,pid,socket,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                    (i["key"], h, harness, sid, "{}", i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), now))
+                    self.db.execute("INSERT OR IGNORE INTO sessions(key,host_id,harness,session_id,meta,live_status,status_since,pid,socket,live_name,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                    (i["key"], h, harness, sid, "{}", i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), i.get("name"), now))
             # Claude shows a dialog only while "waiting": idle means any hook ask from before then was dismissed
             # (Esc on a permission prompt fires no hook at all).
             for i in items:
@@ -136,7 +136,7 @@ class Store:
                 if r["key"] in live_keys:
                     continue
                 if r["harness"] == "claude" or r["live_status"] in LIVE:
-                    self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, updated=? WHERE key=?", (now, r["key"]))
+                    self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, live_name=NULL, updated=? WHERE key=?", (now, r["key"]))
             self._bump()
 
     def mark_viewed(self, key: str, when: str) -> None:
@@ -172,6 +172,8 @@ class Store:
 
     def _session_row(self, r: sqlite3.Row) -> dict[str, Any]:
         d = dict(r); d["meta"] = json.loads(d["meta"] or "{}"); d["ended"] = bool(d["ended"])
+        if d.get("live_name"):                          # the running session's own name beats the transcript's
+            d["title"] = d["live_name"]
         last = self.db.execute("SELECT data FROM turns WHERE key=? ORDER BY idx DESC LIMIT 1", (d["key"],)).fetchone()
         d["last_turn"] = json.loads(last[0]) if last else None
         d["turn_count"] = self.db.execute("SELECT COUNT(*) FROM turns WHERE key=?", (d["key"],)).fetchone()[0]

@@ -61,3 +61,29 @@ def test_state_files_and_outbox_roundtrip(tmp_path):
     assert [p[1] for p in st.pending()] == ["liveness"]
     st.set("hub_seq", "42"); assert st.get("hub_seq") == "42" and st.get("nope", "d") == "d"
     st.close()
+
+
+def test_registry_user_name_survives_to_the_hub_title(tmp_path):
+    # a resumed session's /rename name lives in the registry before the transcript has a custom-title
+    from ctxswitch.hub.store import Store
+    proc = tmp_path / "proc"
+    reg = tmp_path / "sessions"; reg.mkdir()
+    names = {"user": ("Netflow", "user"), "legacy": ("brownfield", None), "derived": ("rick-cd", "derived"),
+             "auto": ("zephyr-plan", "auto"), "blank": ("  ", "user")}
+    for i, (sid, (name, src)) in enumerate(names.items(), start=100):
+        _fake_proc(tmp_path, i, str(i))
+        (reg / f"{i}.json").write_text(json.dumps({"pid": i, "sessionId": sid, "procStart": str(i), "status": "idle",
+                                                   "name": name, **({"nameSource": src} if src else {})}))
+    live = read_claude_registry(reg, "h", proc=str(proc))
+    assert {k.rsplit("/", 1)[1]: l.name for k, l in live.items()} == \
+        {"user": "Netflow", "legacy": "brownfield", "derived": None, "auto": None, "blank": None}
+
+    store = Store(tmp_path / "hub.db")
+    key = "h/claude/user"
+    store.upsert_session({"key": key, "host_id": "h", "harness": "claude", "session_id": "user",
+                          "title": "Ubiquiti Dream Wall network monitoring"})
+    store.set_liveness("h", [live[key].to_dict()])
+    assert store.session(key)["title"] == "Netflow"
+    assert [s["title"] for s in store.sessions("h")] == ["Netflow"]     # listed (live, no turns) under the name
+    store.set_liveness("h", [])                                         # exited: back to the transcript's title
+    assert store.session(key)["title"] == "Ubiquiti Dream Wall network monitoring"

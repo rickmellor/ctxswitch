@@ -53,6 +53,15 @@ def read_claude_win_registry(sessions_dir: Path, host_id: str, pids=None) -> dic
     return _claude_registry(sessions_dir, host_id, "claude-win", lambda pid, d: pid in alive)
 
 
+def _user_name(d: dict) -> str | None:
+    """The registry's session name when the user chose it (/rename, --name). A resumed session can carry a name
+    the transcript has no custom-title for; "derived"/"auto" names are generated and the ai-title covers them."""
+    n = d.get("name")
+    if not isinstance(n, str) or not n.strip() or d.get("nameSource") in ("derived", "auto"):
+        return None
+    return n.strip()
+
+
 def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> dict[str, Liveness]:
     out: dict[str, Liveness] = {}
     if not sessions_dir.is_dir():
@@ -72,7 +81,8 @@ def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> d
         out[session_key(host_id, harness, sid)] = Liveness(
             key=session_key(host_id, harness, sid), status=status,
             status_since=_iso_ms(d.get("statusUpdatedAt") or d.get("updatedAt")), pid=pid,
-            socket=d.get("messagingSocketPath") if isinstance(d.get("messagingSocketPath"), str) else None)
+            socket=d.get("messagingSocketPath") if isinstance(d.get("messagingSocketPath"), str) else None,
+            name=_user_name(d))
     return out
 
 
