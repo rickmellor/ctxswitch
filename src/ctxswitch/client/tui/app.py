@@ -82,6 +82,7 @@ class CtxApp(App):
         self.selected: str | None = None
         self.change = -1
         self.visible_key: str | None = None          # session shown in the tmux viewer pane
+        self.on_screen: set[str] = set()             # sessions in the tmux window being looked at (no pop-ups for them)
         self.reach: dict[str, str] = {}             # key -> tmux.REACH_GLYPH key (how Enter can open it)
         self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:<harness>" | "msg:<key>" | "confirm:…"
         self.pending_body = ""                       # the tmux buffer waiting on a y/n
@@ -127,10 +128,13 @@ class CtxApp(App):
             return
         try:
             tmux.reap_viewer()                          # an agent exited to a bare shell in the viewer: move on
-            self.visible_key = tmux.visible_key(sessions=data["sessions"])
+            ps = tmux.panes()
+            self.visible_key = tmux.visible_key(ps, sessions=data["sessions"])
+            self.on_screen = tmux.on_screen_keys(ps, sessions=data["sessions"])
             self.reach = tmux.reach_all(data["sessions"], self.this_host, self.cfg.ssh)
         except Exception:                               # noqa: BLE001 - tmux is optional
             self.visible_key = None
+            self.on_screen = set()
             self.reach = {}
         self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"])
 
@@ -195,14 +199,14 @@ class CtxApp(App):
 
     def popup_now(self) -> None:
         self.settling = False
-        new = self.notifier.fresh(self.attention, skip=self.visible_key)
+        new = self.notifier.fresh(self.attention, skip=self.on_screen)
         if not new or not self.popups:                  # off: what turns up meanwhile is on the board, not popped later
             return
         msg, ids = popup_text(new), [item_id(i) for i in new]
         if tmux.in_tmux() and self.cfg.notify_style == "popup" and (self.box is None or self.box.poll() is not None):
             try:
                 self.box = tmux_box(new)
-                popup_log(f"box skip={self.visible_key} {ids} {msg}")
+                popup_log(f"box skip={sorted(self.on_screen)} {ids} {msg}")
                 self.wait_box(self.box, [i["key"] for i in new], msg)
                 return
             except OSError as e:
@@ -242,7 +246,7 @@ class CtxApp(App):
 
     def status_popup(self, msg: str, ids: list[str]) -> None:
         shown = tmux.in_tmux() and tmux_popup(msg)
-        popup_log(f"{'tmux' if shown else 'toast'} skip={self.visible_key} {ids} {msg}")
+        popup_log(f"{'tmux' if shown else 'toast'} skip={sorted(self.on_screen)} {ids} {msg}")
         if not shown:
             self.notify(msg, timeout=8)                 # outside tmux (or tmux refused): the TUI's own toast
 
@@ -544,6 +548,7 @@ class CtxApp(App):
             msg = tmux.show(s, ssh=self.cfg.ssh)
         except Exception as e:                          # noqa: BLE001
             msg = f"tmux: {e}"
+        popup_log(f"open {s['key']}: {msg}")            # what Enter (on a row or in the box) did
         self.call_from_thread(self.notify, msg, timeout=6)
         self.refresh_data()
 
@@ -575,6 +580,7 @@ class CtxApp(App):
             msg = tmux.new_agent(harness, cwd)
         except Exception as e:                          # noqa: BLE001
             msg = f"tmux: {e}"
+        popup_log(f"open {s['key']}: {msg}")            # what Enter (on a row or in the box) did
         self.call_from_thread(self.notify, msg, timeout=6)
 
     def _selected_session(self) -> dict | None:

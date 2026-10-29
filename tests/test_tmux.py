@@ -291,3 +291,32 @@ def test_open_tab_resumes_another_hosts_session_over_ssh(monkeypatch):
     assert launch.open_tab(far, "laptop", {}) == ("run: cd ~ && ssh -t -o ConnectTimeout=5 -o ServerAliveInterval=30 devbox "
                                                   "bash -lc 'cd /r 2>/dev/null || cd; exec claude --resume far'")
     assert launch.open_tab(far, "laptop", {"devbox": ""}) == "on devbox: cd /r && claude --resume far"
+
+
+def test_on_screen_is_the_window_being_looked_at_and_open_switches_to_it(server, monkeypatch):
+    if shutil.which("script") is None:
+        pytest.skip("needs script(1) for an attached client")
+    viewer, tui = sorted((p for p in tmux.panes() if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    tm("new-window", "-d", "-t", "ctx:", "-n", "hand", "sleep 30")
+    time.sleep(0.3)
+    hand = next(p for p in tmux.panes() if p.window_name == "hand")
+    s = {"key": "laptop/claude/abc", "pid": hand.pid, "live_status": "busy", "host_id": "laptop", "title": "Hand session",
+         "session_id": "abc", "harness": "claude"}
+    v = {"key": "laptop/claude/view", "pid": None, "host_id": "laptop", "harness": "claude"}
+    tmux.tag(viewer.id, v["key"])
+    assert tmux.on_screen_keys(sessions=[s, v]) == set()                 # nobody attached: nothing is on screen
+    client = subprocess.Popen(["script", "-qfc", f"tmux -L {SOCK} attach -t ctx", "/dev/null"],
+                              stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(50):
+            if tm("list-clients", check=False): break
+            time.sleep(0.1)
+        assert tmux.on_screen_keys(sessions=[s, v]) == {v["key"]}       # looking at mgr: the viewer's session
+        tm("select-window", "-t", "ctx:hand")
+        assert tmux.on_screen_keys(sessions=[s, v]) == {s["key"]}       # looking at its own window: that one, not the viewer
+        assert tmux.show(s).startswith("showing")
+        assert tm("display-message", "-p", "#{window_name}") == "mgr"    # opening it takes you to it
+        assert tmux.on_screen_keys(sessions=[s, v]) == {s["key"]}
+    finally:
+        client.kill()

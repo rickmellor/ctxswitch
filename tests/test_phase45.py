@@ -270,7 +270,7 @@ def test_box_command_prints_exactly_the_text_and_says_which_key():
 
 def _board(popups=True):
     seen = []
-    b = SimpleNamespace(notifier=Notifier(), visible_key=None, popups=popups, box=None, settling=False,
+    b = SimpleNamespace(notifier=Notifier(), visible_key=None, on_screen=set(), popups=popups, box=None, settling=False,
                         cfg=SimpleNamespace(notify_style="popup"), opened=seen, statused=seen,
                         open_key=lambda k: seen.append(("open", k)), status_popup=lambda m, ids: seen.append(("status", m)),
                         wait_box=lambda box, keys, msg: seen.append(("wait", keys)))

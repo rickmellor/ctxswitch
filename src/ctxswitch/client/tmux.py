@@ -48,17 +48,18 @@ class Pane:
     role: str = ""     # @ctx_role: "tui" for the ctx TUI pane, "agent" for agent panes we started
     activity: int = 0  # window_activity (epoch seconds)
     cmd: str = ""      # pane_current_command
+    on_screen: bool = False   # in the current window of a tmux session a client is attached to
 
 
 def panes() -> list[Pane]:
     out = _run("list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_index}\t#{pane_pid}\t#{@ctx_key}\t#{session_name}"
-               "\t#{@ctx_role}\t#{window_activity}\t#{pane_current_command}", check=False)
+               "\t#{@ctx_role}\t#{window_activity}\t#{pane_current_command}\t#{&&:#{window_active},#{session_attached}}", check=False)
     res = []
     for line in out.splitlines():
         f = line.split("\t")
-        if len(f) < 10:
+        if len(f) < 11:
             continue
-        res.append(Pane(f[0], f[1], f[2], int(f[3] or 0), int(f[4] or 0), f[5], f[6], f[7], int(f[8] or 0), f[9]))
+        res.append(Pane(f[0], f[1], f[2], int(f[3] or 0), int(f[4] or 0), f[5], f[6], f[7], int(f[8] or 0), f[9], f[10] == "1"))
     return res
 
 
@@ -293,6 +294,8 @@ def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None) -> str:
     if pane is None:
         pane = new_session_window(s, ssh)
         created = True
+    if focus:                                           # select-pane alone doesn't change the window you're looking at
+        _run("select-window", "-t", viewer.window, check=False)
     if pane.id == viewer.id:
         if focus:
             _run("select-pane", "-t", viewer.id, check=False)
@@ -426,6 +429,26 @@ def visible_key(ps: list[Pane] | None = None, sessions: list[dict] | None = None
             tag(v.id, s["key"])
             return s["key"]
     return None
+
+
+def on_screen_keys(ps: list[Pane] | None = None, sessions: list[dict] | None = None) -> set[str]:
+    """Keys of the sessions in a pane someone can see: the current window of an attached tmux session. The viewer
+    only counts while its window is the one shown; a session's own window counts when that's the one shown."""
+    if not in_tmux():
+        return set()
+    ps = ps if ps is not None else panes()
+    here, out = _this_host(), set()
+    known = {s["key"] for s in sessions or []}
+    for p in ps:
+        if not p.on_screen:
+            continue
+        if p.key and (not known or p.key in known):
+            out.add(p.key)
+            continue
+        for s in sessions or []:                        # untagged: map by the agent's pid, as visible_key does
+            if not _is_remote(s, here) and (q := pane_for_pid(s.get("pid"), ps)) is not None and q.id == p.id:
+                out.add(s["key"])
+    return out
 
 
 def bootstrap(width: str = "18%") -> str:
