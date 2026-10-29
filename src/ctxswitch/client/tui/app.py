@@ -36,7 +36,7 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
-from ctxswitch.client.notify import Notifier, item_id, log as popup_log, text as popup_text, tmux_popup
+from ctxswitch.client.notify import Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
@@ -87,6 +87,7 @@ class CtxApp(App):
         self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
         self.group_ws = False                        # w: rows grouped under workstream headers
         self.notifier = Notifier(cfg.notify_idle) if cfg.notify else None
+        self.box = None                              # our open tmux popup box (a display-popup process), if any
 
     def compose(self) -> ComposeResult:
         yield Static("", id="attention")
@@ -186,9 +187,27 @@ class CtxApp(App):
         new = self.notifier.fresh(attention, skip=self.visible_key)
         if not new:
             return
-        msg = popup_text(new)
+        msg, ids = popup_text(new), [item_id(i) for i in new]
+        if tmux.in_tmux() and self.cfg.notify_style == "popup" and (self.box is None or self.box.poll() is not None):
+            try:
+                self.box = tmux_box(new)
+                popup_log(f"box skip={self.visible_key} {ids} {msg}")
+                self.set_timer(0.5, lambda: self.box_failed(msg))
+                return
+            except OSError as e:
+                popup_log(f"box failed: {e}")
+        self.status_popup(msg, ids)                     # status style, or a box of ours is still open
+
+    def box_failed(self, msg: str) -> None:
+        b = self.box
+        if b is not None and b.poll() not in (None, 0):  # rc 1: no client to show it on
+            popup_log(f"box rc={b.returncode} {(b.stderr.read() if b.stderr else '').strip()}")
+            self.box = None
+            self.status_popup(msg, [])
+
+    def status_popup(self, msg: str, ids: list[str]) -> None:
         shown = tmux.in_tmux() and tmux_popup(msg)
-        popup_log(f"{'tmux' if shown else 'toast'} skip={self.visible_key} {[item_id(i) for i in new]} {msg}")
+        popup_log(f"{'tmux' if shown else 'toast'} skip={self.visible_key} {ids} {msg}")
         if not shown:
             self.notify(msg, timeout=8)                 # outside tmux (or tmux refused): the TUI's own toast
 

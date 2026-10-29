@@ -36,3 +36,4 @@ disable_thinking = true
 
 notify = true                         # tmux pop-up on this machine for each new question or dialog
 notify_idle = false                   # ... and when an agent finishes its turn
+notify_style = "popup"                # "popup": a box over the panes until you press a key; "status": the status line

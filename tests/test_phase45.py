@@ -4,7 +4,7 @@ import time
 from starlette.testclient import TestClient
 
 from ctxswitch.client import fmt
-from ctxswitch.client.notify import Notifier, text, tmux_popup
+from ctxswitch.client.notify import BOX_CMD, Notifier, box_lines, text, tmux_box, tmux_popup
 from ctxswitch.collector import deliver
 from ctxswitch.collector.gitinfo import branch
 from ctxswitch.hub.api import Hub
@@ -210,3 +210,19 @@ def test_tmux_popup_escapes_formats():
     assert calls == [["tmux", "display-message", "-N", "-d", "8000", "use ##{pane_id} and ##[fg=red]"]]
     R.returncode = 1
     assert not tmux_popup("x", run=lambda argv, **kw: R())
+
+
+def test_tmux_box_shows_the_items_until_a_key():
+    items = [_item(f"k{n}", f"r{n}", txt=f"Q{n}?") for n in range(8)]
+    lines = box_lines(items)
+    assert lines[:2] == ["devbox · T: Q0?", "devbox · T: Q1?"] and lines[6] == "+2 more on the board"
+    assert lines[-2:] == ["", "any key closes · Enter on the board opens it"]
+    calls = []
+    tmux_box(items[:1], popen=lambda argv, **kw: calls.append((argv, kw)))
+    ((argv, kw),) = calls
+    assert argv[:3] == ["tmux", "display-popup", "-E"] and argv[-1] == BOX_CMD     # started, not waited on
+    assert argv[argv.index("-T") + 1] == " ctx: waiting on you "
+    assert argv[argv.index("-e") + 1] == "CTX_POPUP=devbox · T: Q0?\n\nany key closes · Enter on the board opens it"
+    assert int(argv[argv.index("-h") + 1]) == 3 + 2                   # 3 lines + the border
+    assert int(argv[argv.index("-w") + 1]) == len("any key closes · Enter on the board opens it") + 4
+    assert kw["stdin"] is not None                                    # never the TUI's terminal

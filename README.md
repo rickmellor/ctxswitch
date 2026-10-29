@@ -41,7 +41,7 @@ in one narrow side panel next to whatever you are doing.
   any machine, or queues it for an ended one until it next runs. The board follows it from queued to delivered
   to the agent's reply. `a` (or `ctx reply`) answers the question a session is waiting on, and the ledger
   records your answer as you typed it.
-- **Pops up what's new.** When a session asks you something, a one-line pop-up shows in the tmux status line.
+- **Pops up what's new.** When a session asks you something, a box pops up over your tmux panes.
 - **Says what changed since you last looked.** Each row shows `+N` for the exchanges you haven't seen, and the
   detail pane lists the new ones.
 - **Links the same work across machines.** Sessions on the same repo and branch (on any host) are one
@@ -290,12 +290,15 @@ queued or sent, the hub refuses the reply (409), so two machines can't both answ
 (`ctx send --cancel <id>`) to answer differently.
 
 ### Pop-ups
-When something new needs you (a question, approval or dialog), the TUI shows one line in place of the tmux status
-line for 8 s: `ctx · host · title: the question`. What's already waiting when the TUI starts pops up once, as one line
-(`+N more`). Nothing pops up for the session already on the left; that one pops up when you move off it with the
-question still open. Each TUI pops up on its own machine. Every attempt is logged to
-`~/.local/state/ctxswitch/popup.log`. Turn it off with `notify = false`. Set `notify_idle = true` for a pop-up
-when an agent finishes its turn as well. Outside tmux the TUI shows its own toast.
+When something new needs you (a question, approval or dialog), the TUI opens a box in the middle of the screen,
+over every pane, listing what's waiting (`host · title: the question`). Any key closes it, and that key goes to the
+box, not to the pane underneath. While the box is open, anything newer shows in place of the tmux status line for
+8 s instead (tmux shows one box at a time). With `notify_style = "status"` every pop-up is that status line.
+
+What's already waiting when the TUI starts pops up once. Nothing pops up for the session already on the left; that
+one pops up when you move off it with the question still open. Each TUI pops up on its own machine. Every attempt is
+logged to `~/.local/state/ctxswitch/popup.log`. Turn it off with `notify = false`. Set `notify_idle = true` for a
+pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its own toast.
 
 ## 8. Command line
 | Command | Shows |
@@ -326,6 +329,7 @@ option. The ones you'll touch:
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
 | `[ssh]` | client only: `<host_id> = "<ssh destination>"` for resuming another host's sessions. Unlisted hosts use the host id itself (an `~/.ssh/config` alias); `""` = not reachable from here (e.g. a laptop that blocks inbound) |
 | `notify`, `notify_idle` | client: tmux pop-ups for new questions and dialogs (default on), and for an agent finishing its turn (default off) |
+| `notify_style` | client: `"popup"` (default), a box over the panes until you press a key; `"status"`, one line in the status bar for 8 s |
 | `[hub] ledger` | hub only: keep the ledger (instructions, decisions, claims) as well as recaps (default true) |
 | `[[seats]]` | hub only: the LLM endpoint for recaps and the ledger |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
@@ -344,7 +348,7 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | a message stays `→` sent | Claude in plan or bypass mode holds it for approval in its terminal. pi: it's still busy with the run before |
 | a message to a live pi session stays `…` queued | that pi process predates the extension's message socket; restart it (`/exit`, then Enter) |
 | `a` says "answer it in the session" | it's a dialog (permission, plan, AskUserQuestion, pi prompt); Enter opens it |
-| no pop-ups | the TUI runs in tmux and `notify` is on; `~/.local/state/ctxswitch/popup.log` lists each one sent. Check `tmux display-message -N -d 5000 hi` replaces the status line for 5 s |
+| no pop-ups | the TUI runs in tmux and `notify` is on; `~/.local/state/ctxswitch/popup.log` lists each one sent. Check `tmux display-popup -E 'read -n1'` shows a box (tmux 3.2+) |
 | two sessions on one repo aren't grouped | different branches, or no remote (a remote-less checkout only matches itself). pi: the branch is read from the checkout's HEAD |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
