@@ -50,15 +50,16 @@ class Notifier:
 
     def fresh(self, items: list[dict], skip: str | set[str] | None = None) -> list[dict]:
         """One item per session that has something not seen before (the one that says most); ``skip`` = the session
-        on screen right now (or several). A session that already popped up and is still waiting doesn't pop up again for another
-        item about the same thing (the permission notification that follows a question)."""
+        on screen right now (or several). A session that already popped up and is still waiting doesn't pop up again for a
+        notice or bare state about the same thing (the permission notification that follows a question); a new question
+        does pop up."""
         skip = {skip} if isinstance(skip, str) else skip or set()
         ids = {item_id(i): i for i in items}
         popped = {i["key"] for k, i in ids.items() if k in self.seen}
         best: dict[str, dict] = {}
         for k, i in ids.items():
             if (k not in self.seen and (i.get("item") != "idle" or self.idle) and i.get("key") not in skip
-                    and i["key"] not in popped and (i["key"] not in best or _rank(i) < _rank(best[i["key"]]))):
+                    and (i["key"] not in popped or _rank(i) == 0) and (i["key"] not in best or _rank(i) < _rank(best[i["key"]]))):
                 best[i["key"]] = i
         # forget what left, so the same session can pop up again; what was skipped on screen stays unseen, so it
         # pops up once you move off it with the question still open

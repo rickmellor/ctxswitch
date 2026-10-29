@@ -105,6 +105,20 @@ def test_quick_reply_answers_an_older_tracker_ask_and_refuses_dialogs(tmp_path):
     assert a["hook:perm:Bash:1"]["answered"] == 0
 
 
+def test_attention_drops_an_ask_the_session_moved_past(tmp_path):
+    store = Store(tmp_path / "hub.db")
+    _session(store)
+    store.upsert_turns(KEY, [_turn(0, "go", "", asks=[_ask("toolu_1", "Which?", kind="question")])], None)
+    assert [i["ref"] for i in store.attention()] == ["toolu_1"]
+    # killed with the dialog up, resumed, prompted again: no tool_result ever arrives for it
+    store.upsert_turns(KEY, [_turn(1, "<bash-input>ls</bash-input>", "a", t=T1), _turn(2, "x", "done", t=T1, origin="task")], None)
+    assert [i["ref"] for i in store.attention()] == ["toolu_1"]       # a command or a task notice doesn't move it on
+    store.upsert_turns(KEY, [_turn(3, "carry on", Q, t=T1, asks=[_ask("3:plain", Q)])], None)
+    assert [i["ref"] for i in store.attention()] == ["3:plain"]
+    store.upsert_turns(KEY, [_turn(4, WRAP + "go on", "ok", t=T1, origin="peer")], None)
+    assert [i["item"] for i in store.attention()] == ["idle"]          # a peer's message moves it on too
+
+
 def test_reply_target_says_why_not():
     perm = {"ref": "h", "kind": "permission", "text": "allow?", "answered": 0}
     plain = {"ref": "p", "kind": "plain", "text": "?", "answered": 0}
@@ -210,11 +224,14 @@ def test_notifier_pops_up_a_session_once_with_what_says_most():
     wait, ask = _item("k1", item="waiting", at="t1"), _item("k1", "llm:3:0", txt="Which one?")
     perm = _item("k1", "hook:notif:9", txt="Claude needs your permission")
     assert n.fresh([wait, perm, ask]) == [ask]                       # its question, not "waiting on a dialog"
-    assert n.fresh([wait, perm]) == [] and n.fresh([perm, ask, wait]) == []
+    assert n.fresh([wait, perm, ask]) == [] and n.fresh([perm, ask, wait]) == []
     m = Notifier()
     assert m.fresh([wait, perm]) == [perm] and m.fresh([wait]) == []
-    assert m.fresh([wait, perm, ask]) == []                          # popped already, still waiting: same thing
-    assert m.fresh([]) == [] and m.fresh([ask]) == [ask]             # left (answered), asked again
+    assert m.fresh([wait, perm, ask]) == [ask]                       # popped for a notice: its question still pops up
+    old, prose = _item("k1", "toolu_1", txt="Old?"), _item("k1", "llm:9:0", txt="Box or pane?")
+    p = Notifier()
+    assert p.fresh([old]) == [old] and p.fresh([old, perm]) == []    # popped already, still waiting: a notice is the same thing
+    assert p.fresh([old, perm, prose]) == [prose]                    # a new question in prose: pops up
     o = Notifier()
     assert o.fresh([wait, _item("k2", "r2")]) == [wait, _item("k2", "r2")]
 

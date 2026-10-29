@@ -431,9 +431,14 @@ class Store:
         return out
 
     def attention(self, host: str | None = None) -> list[dict[str, Any]]:
-        """Open asks on sessions that are not ended, plus idle live sessions, oldest wait first."""
+        """Open asks on sessions that are not ended (and not moved past), plus idle live sessions, oldest wait first."""
         q = ("SELECT a.*, s.host_id, s.harness, s.title, s.live_status, s.status_since FROM asks a JOIN sessions s ON s.key=a.key "
-             "WHERE a.answered=0 AND s.live_status!='ended' AND s.ended=0")
+             "WHERE a.answered=0 AND s.live_status!='ended' AND s.ended=0 "
+             # a later prompt (yours or a peer's, not a command wrapper or task notice) means it moved on: a dialog
+             # left open when the session was killed and resumed never gets an answer in the transcript
+             "AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.key=a.key AND t.idx>a.turn_idx "
+             "AND json_extract(t.data,'$.user_origin') IN ('human','peer') "
+             "AND substr(ltrim(coalesce(json_extract(t.data,'$.user_text'),'')),1,1) NOT IN ('','<'))")
         args: list[Any] = []
         if host:
             q += " AND s.host_id=?"; args.append(host)
