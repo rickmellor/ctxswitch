@@ -146,7 +146,8 @@ def merge_hooks(settings: dict[str, Any], command: str) -> dict[str, Any]:
     hooks = out.setdefault("hooks", {})
     for ev in hook.EVENTS:
         groups = [g for g in hooks.get(ev, []) if not _ours(g)]
-        groups.append({"hooks": [{"type": "command", "command": command, "async": True, "timeout": 10}]})
+        group = {"hooks": [{"type": "command", "command": command, "async": True, "timeout": 10}]}
+        groups.append({"matcher": "|".join(hook.DIALOG_TOOLS)} | group if ev == "PreToolUse" else group)
         if ev == "SessionStart":
             groups.append(brief_group(command))
         hooks[ev] = groups

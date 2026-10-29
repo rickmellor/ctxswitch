@@ -12,6 +12,7 @@ import pytest
 from ctxswitch import hook
 from ctxswitch.collector import spool
 from ctxswitch.collector.liveness import read_pi_registry
+from ctxswitch.common.schema import question_text
 from ctxswitch.hub.hooks import HookApplier, summarize
 from ctxswitch.hub.store import Store
 
@@ -272,3 +273,51 @@ def test_idle_claude_closes_dismissed_hook_asks(tmp_path):
     assert len(f.attention()) == 1
     f.store.set_liveness("laptop", [{"key": KEY, "status": "idle", "status_since": "2026-10-28T10:00:20Z"}])  # Esc'd
     assert f.attention() == [] and f.asks()[0]["answer"] == "closed: dismissed"
+
+
+# -- a dialog's question from PreToolUse (Claude 2.1.312's transcript can carry the tool_use late) -------------------
+def test_hook_spools_only_dialog_tools_before_they_run(tmp_path):
+    qs = [{"question": "Red or blue?", "options": [{"label": "Red"}] * 30}, {"question": "q" * 1000}, "junk"]
+    assert _claude(tmp_path, "PreToolUse", tool_name="AskUserQuestion", tool_use_id="toolu_1", tool_input={"questions": qs})
+    assert _claude(tmp_path, "PreToolUse", tool_name="ExitPlanMode", tool_use_id="toolu_2", tool_input={"plan": "p" * 5000})
+    assert _claude(tmp_path, "PreToolUse", tool_name="Bash", tool_use_id="toolu_3", tool_input={"command": "ls"}) is None
+    assert _claude(tmp_path, "PreToolUse", tool_name="AskUserQuestion", tool_input={"questions": qs}) is None   # no id to match
+    a, b = _records(tmp_path)
+    assert a["data"] == {"tool_name": "AskUserQuestion", "tool_use_id": "toolu_1", "questions": ["Red or blue?", "q" * 399 + "…"]}
+    assert b["data"] == {"tool_name": "ExitPlanMode", "tool_use_id": "toolu_2", "questions": []}
+    assert not (tmp_path / ".pending" / "s1").exists()                                # not a permission: no gating
+
+
+def test_a_dialog_shows_its_question_and_its_notification_is_dropped(tmp_path):
+    f = Feed(tmp_path)
+    f("PreToolUse", 1, tool_name="AskUserQuestion", tool_use_id="toolu_q", questions=["Red or blue?", "Size?"])
+    f("Notification", 2, notification_type="permission_prompt", message="Claude needs your permission")
+    assert f.attention() == [("question", "Red or blue? | Size?")]
+    # answered: the transcript brings the same ref, now answered, and it's one ask
+    t = {"idx": 0, "started_at": "2026-10-28T10:00:00Z", "ended_at": "2026-10-28T10:00:09Z", "user_text": "pick", "user_origin": "human",
+         "assistant_text": "", "tally": {}, "events": [], "complete": True, "offset_end": 10,
+         "asks": [{"ref": "toolu_q", "kind": "question", "text": "Red or blue? | Size?", "answered": True, "answer": "Red or blue?: Red",
+                   "answered_at": "2026-10-28T10:00:09Z"}]}
+    f.store.upsert_turns(KEY, [t], None)
+    assert [(a["ref"], a["answered"], a["answer"], a["asked_at"]) for a in f.asks()] == [("toolu_q", 1, "Red or blue?: Red", "2026-10-28T10:00:01Z")]
+    (tmp_path / "2").mkdir()
+    g = Feed(tmp_path / "2")
+    g("Notification", 1, notification_type="permission_prompt", message="Claude needs your permission")
+    g("PreToolUse", 2, tool_name="ExitPlanMode", tool_use_id="toolu_p")              # the notification came first
+    assert g.attention() == [("plan", "Plan approval requested")] and len(g.asks()) == 1
+    g("Notification", 40, notification_type="permission_prompt", message="Claude needs your permission to use Bash")
+    assert ("permission", "Claude needs your permission to use Bash") in g.attention()   # 38 s on: another dialog
+    g("PreToolUse", 41, tool_name="Bash", tool_use_id="toolu_b")                     # not a dialog tool: nothing
+    assert [a["ref"] for a in g.asks()] == ["toolu_p", g.asks()[1]["ref"]] and g.asks()[1]["ref"].startswith("hook:notif:")
+    (tmp_path / "3").mkdir()
+    h = Feed(tmp_path / "3")
+    h("PreToolUse", 1, tool_name="ExitPlanMode", tool_use_id="toolu_p2")
+    h("Notification", 2, notification_type="permission_prompt", message="Claude needs your permission")
+    assert h.attention() == [("plan", "Plan approval requested")]                    # a plan's notification too
+
+
+def test_question_text_is_the_same_from_either_source():
+    assert question_text([{"question": "A?"}, {"question": ""}, {"x": 1}, "B?", None]) == "A? | B?"
+    assert question_text([]) == question_text(None) == "(question)"
+    long = question_text(["q" * 700])
+    assert len(long) == 600 and "…" in long

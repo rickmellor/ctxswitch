@@ -118,6 +118,15 @@ class Liveness:
         return dataclasses.asdict(self)
 
 
+PLAN_ASK = "Plan approval requested"
+
+
+def question_text(questions: Any) -> str:
+    """An AskUserQuestion ask's text, the same from its transcript tool_use and its PreToolUse hook."""
+    qs = [q.get("question", "") if isinstance(q, dict) else q for q in questions or []]
+    return trim(" | ".join(q for q in qs if isinstance(q, str) and q) or "(question)", 600)
+
+
 def trim(text: str, cap: int) -> str:
     """Keep the head and a shorter tail so both the ask and the sign-off survive trimming."""
     if len(text) <= cap:

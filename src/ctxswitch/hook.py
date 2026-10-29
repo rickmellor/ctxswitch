@@ -24,7 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 EVENTS = ("SessionStart", "SessionEnd", "Notification", "PermissionRequest", "PermissionDenied",
-          "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop")
+          "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop", "PreToolUse")
+# A dialog's tool_use can reach the transcript late (2.1.312: missing for a minute while the dialog was up), so the
+# question also comes from PreToolUse (installed with this matcher; anything else is dropped here too)
+DIALOG_TOOLS = ("AskUserQuestion", "ExitPlanMode")
 GATED = {"PostToolUse", "PostToolUseFailure"}               # spooled only while a permission is pending
 OPENS = {"PermissionRequest"}
 CLOSES = {"Stop", "UserPromptSubmit", "SessionEnd", "SessionStart"}       # SessionStart: a crash left it
@@ -67,6 +70,12 @@ def handle_claude(d: dict, spool: Path) -> Path | None:
     marker = spool / ".pending" / sid
     if event in GATED and not marker.exists():
         return None
+    if event == "PreToolUse":
+        if d.get("tool_name") not in DIALOG_TOOLS or not isinstance(d.get("tool_use_id"), str):
+            return None
+        qs = (d.get("tool_input") or {}).get("questions") if isinstance(d.get("tool_input"), dict) else None
+        return write_event(spool, "claude", sid, event, {"tool_name": d["tool_name"], "tool_use_id": d["tool_use_id"],
+                                                         "questions": [_trim(q.get("question")) for q in qs or [] if isinstance(q, dict)]})
     out = write_event(spool, "claude", sid, event, {k: _trim(d[k]) for k in KEEP if k in d})
     if event in OPENS or (event == "Notification" and d.get("notification_type") == "permission_prompt"):
         marker.parent.mkdir(parents=True, exist_ok=True); marker.touch()

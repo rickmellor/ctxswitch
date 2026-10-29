@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ctxswitch.common.schema import Ask, ToolTally, Turn, trim
+from ctxswitch.common.schema import PLAN_ASK, Ask, ToolTally, Turn, question_text, trim
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "ToolSearch"}
@@ -247,11 +247,9 @@ class ClaudeParser:
                     else: cur.tally.other += 1
                     inp = c.get("input") or {}
                     if name == "AskUserQuestion":
-                        qs = inp.get("questions") or []
-                        qtext = " | ".join(q.get("question", "") for q in qs if isinstance(q, dict)) or "(question)"
-                        cur.asks.append(Ask("question", trim(qtext, 600), tid))
+                        cur.asks.append(Ask("question", question_text(inp.get("questions")), tid))
                     elif name == "ExitPlanMode":
-                        cur.asks.append(Ask("plan", "Plan approval requested", tid))
+                        cur.asks.append(Ask("plan", PLAN_ASK, tid))
         self._touch(offset_end, e.get("timestamp"))
 
     def _system(self, e: dict[str, Any], offset_end: int) -> None:

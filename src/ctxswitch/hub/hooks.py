@@ -3,8 +3,11 @@
 A collector forwards each spool record as an ingest event of kind "hook":
   {harness, session_id, name (spool file name, unique per event), event, ts, data}
 
+  claude PreToolUse AskUserQuestion / ExitPlanMode opens the "question" / "plan" ask under its tool_use_id, the ref
+                                      the transcript gives it (whose tool_use can come late: 2.1.312)
   claude PermissionRequest            opens a "permission" ask: "allow Bash: rm -rf build"
-  claude Notification permission_prompt opens one too, unless a PermissionRequest ask is within DEDUPE_S
+  claude Notification permission_prompt opens one too, unless a PermissionRequest, question or plan ask is within
+                                      DEDUPE_S (a dialog's notification says only "Claude needs your permission")
   claude Notification elicitation_dialog opens an "elicitation" ask (MCP server asking for input)
   claude PostToolUse[Failure]          resolves the oldest open permission ask for that tool: "allowed"
   claude PermissionDenied              … "denied: <reason>"
@@ -13,7 +16,7 @@ A collector forwards each spool record as an ingest event of kind "hook":
   pi ui_prompt_start / ui_prompt_end   open / resolve a "prompt" ask; session_start / session_shutdown close all
 
 Every event is applied once: (host, name) is recorded, so a replayed batch can't resolve a later ask.
-Asks the transcript already carries (AskUserQuestion, ExitPlanMode) are skipped here.
+The transcript answers the question and plan asks; their PermissionRequest/PostToolUse are skipped here.
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from ctxswitch.common.schema import session_key
+from ctxswitch.common.schema import PLAN_ASK, question_text, session_key
 from ctxswitch.hub.store import Store
 
 DEDUPE_S = 30
@@ -104,12 +107,15 @@ class HookApplier:
         self.store.db.execute("UPDATE asks SET answered=1, answer=?, answered_at=? WHERE key=? AND answered=0 AND ref LIKE 'hook:%'",
                               (answer, ts, key))
 
-    def _near_permission(self, key: str, ts: str, like: str) -> str | None:
-        """ref of a hook permission ask (open or not) within DEDUPE_S of ts."""
+    def _near(self, key: str, ts: str, like: str, kinds: tuple[str, ...] | None = None) -> str | None:
+        """ref of an ask (open or not) whose ref is LIKE ``like`` (and of one of ``kinds``) within DEDUPE_S of ts."""
         t = _epoch(ts)
         if t is None:
             return None
-        for ref, asked in self.store.db.execute("SELECT ref, asked_at FROM asks WHERE key=? AND ref LIKE ?", (key, like)):
+        q, args = "SELECT ref, asked_at FROM asks WHERE key=? AND ref LIKE ?", [key, like]
+        if kinds:
+            q += f" AND kind IN ({','.join('?' * len(kinds))})"; args += kinds
+        for ref, asked in self.store.db.execute(q, args):
             a = _epoch(asked)
             if a is not None and abs(a - t) <= DEDUPE_S:
                 return ref
@@ -118,11 +124,19 @@ class HookApplier:
     # -- harnesses ----------------------------------------------------------------------------------------------
     def _claude(self, key: str, name: str, event: str, ts: str, d: dict[str, Any]) -> None:
         tool = d.get("tool_name") if isinstance(d.get("tool_name"), str) else ""
-        if event == "PermissionRequest":
+        if event == "PreToolUse":
+            ref = d.get("tool_use_id")
+            if tool in TRANSCRIPT_TOOLS and isinstance(ref, str) and ref:
+                kind = "question" if tool == "AskUserQuestion" else "plan"
+                self._open(key, ref, kind, question_text(d.get("questions")) if kind == "question" else PLAN_ASK, ts)
+                note = self._near(key, ts, "hook:notif:%")
+                if note:                                # its notification came first: the question says it better
+                    self.store.db.execute("DELETE FROM asks WHERE key=? AND ref=?", (key, note))
+        elif event == "PermissionRequest":
             if tool in TRANSCRIPT_TOOLS:
                 return
             text = summarize(tool or "tool", d.get("tool_input"))
-            note = self._near_permission(key, ts, "hook:notif:%")
+            note = self._near(key, ts, "hook:notif:%")
             if note:                                    # the Notification came first: give it the better text and tool
                 self.store.db.execute("UPDATE asks SET ref=?, text=? WHERE key=? AND ref=?", (f"hook:perm:{tool}:{name}", text, key, note))
             else:
@@ -130,7 +144,7 @@ class HookApplier:
         elif event == "Notification":
             nt = d.get("notification_type")
             if nt == "permission_prompt":
-                if not self._near_permission(key, ts, "hook:perm:%"):
+                if not self._near(key, ts, "hook:perm:%") and not self._near(key, ts, "%", kinds=("question", "plan")):
                     self._open(key, f"hook:notif:{name}", "permission", str(d.get("message") or "permission needed"), ts)
             elif nt == "elicitation_dialog":
                 self._open(key, f"hook:elic:{name}", "elicitation", str(d.get("message") or d.get("title") or "input requested"), ts)

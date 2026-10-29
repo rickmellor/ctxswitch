@@ -118,6 +118,12 @@ Greenfield repo: `~/repos/ctxswitch`.
   message per (sender, recipient) pair (409), `AGENT_PER_HOUR` = 20 per sender (429, cancelled ones don't count), not
   to itself. Version skew: the outbox only hands agent messages to a collector that asks with `agents=1`, so an old
   collector (operator header) never delivers one.
+- 2026-10-29 (Claude 2.1.312 on all hosts): a dialog's AskUserQuestion/ExitPlanMode tool_use can reach the
+  transcript late (seen missing for a minute while the dialog was up), leaving only the dialog's Notification ("Claude
+  needs your permission"). A `PreToolUse` hook, matched to those two tools only, sends the question under its
+  `tool_use_id`, the ref the transcript later gives the same ask (which then answers it); a permission Notification
+  within 30 s of a question/plan ask is dropped, which also removes the duplicate `[permission]` line 2.1.280 showed.
+  Needs `ctx install` re-run on each host (done on all three).
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles

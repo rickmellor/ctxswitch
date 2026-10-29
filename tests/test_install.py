@@ -43,6 +43,8 @@ def test_merge_keeps_other_hooks_and_is_idempotent(home):
     (brief,) = [g for g in s["hooks"]["SessionStart"] if ins._ours(g) and "brief" in g["hooks"][0]["command"]]
     assert brief["matcher"] == "resume" and "async" not in brief["hooks"][0]                      # output is dropped if async
     assert brief["hooks"][0]["command"] == f"{ins.hook_exe()} brief claude"
+    assert [g.get("matcher") for g in s["hooks"]["PreToolUse"] if ins._ours(g)] == ["AskUserQuestion|ExitPlanMode"]   # not every tool
+    assert all("matcher" not in g for g in s["hooks"]["Stop"] if ins._ours(g))
     assert oct(p.stat().st_mode & 0o777) == "0o600"
     before = p.read_bytes()
     assert "already" in _run(ins.install_claude)[0]
