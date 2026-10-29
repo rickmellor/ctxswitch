@@ -47,16 +47,17 @@ class CtxApp(App):
     #body { height: 1fr; }
     #table { height: auto; max-height: 50%; }
     #detail { height: 1fr; border-top: solid $surface; padding: 0 1; }
-    #filter { dock: bottom; display: none; }
+    #filter { display: none; }                 /* in the flow above the footer, so the footer never covers it */
     #filter.visible { display: block; }
     .h { color: $text-muted; }
     """
+    # one footer line in a ~40-column side pane: most-used first, short labels; the rest fall off the right edge
     BINDINGS = [
-        Binding("h", "cycle_host", "host"), Binding("e", "toggle_ended", "ended"), Binding("v", "mark_viewed", "viewed"),
-        Binding("enter", "resume", "resume", show=True), Binding("r", "refresh", "refresh"),
-        Binding("c", "new_claude", "new claude"), Binding("p", "new_pi", "new pi"),
-        Binding("slash", "filter", "/ filter"), Binding("escape", "clear_filter", show=False), Binding("q", "detach", "detach"),
-        Binding("Q", "kill_all", "quit all", show=False),
+        Binding("enter", "resume", "open", show=True), Binding("c", "new_claude", "claude"), Binding("p", "new_pi", "pi"),
+        Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
+        Binding("h", "cycle_host", "host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
+        Binding("v", "mark_viewed", "viewed"), Binding("r", "refresh", "refresh"),
+        Binding("escape", "clear_filter", show=False),
     ]
 
     def __init__(self, cfg: Config, host: str | None):
@@ -83,7 +84,7 @@ class CtxApp(App):
         inp = Input(placeholder="filter sessions (title, repo, key)…", id="filter")
         inp.can_focus = False                     # only focusable while shown via "/"
         yield inp
-        yield Footer()
+        yield Footer(compact=True, show_command_palette=False)
 
     def on_mount(self) -> None:
         t = self.query_one("#table", DataTable)
@@ -427,8 +428,8 @@ class CtxApp(App):
         agents = tmux.agent_panes(ps)
         keys = {p.key for p in agents}
         busy = sum(1 for x in self.sessions if x["key"] in keys and x.get("live_status") == "busy")
-        self._show_input("confirm:kill", f"end tmux session '{tmux.my_session(ps)}' and its {len(agents)} agents"
-                         + (f" ({busy} busy)" if busy else "") + "? y to confirm")
+        self._show_input("confirm:kill", f"end all {len(agents)} agents" + (f" ({busy} busy)" if busy else "") + "? y/n")
+        self.notify(f"Q ends tmux session '{tmux.my_session(ps)}' and every agent in it", timeout=6)
 
     def on_input_submitted(self, ev: Input.Submitted) -> None:
         mode, value = self.input_mode, ev.value
