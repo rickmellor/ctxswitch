@@ -27,7 +27,7 @@ from watchfiles import Change, awatch
 from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
-from ctxswitch.collector.liveness import read_claude_registry, read_claude_win_registry, read_pi_registry, runtime_dir
+from ctxswitch.collector.liveness import read_agy_presence, read_claude_registry, read_claude_win_registry, read_pi_registry, runtime_dir
 from ctxswitch.common.wsl import windows_pids
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import Config, data_dir, load
@@ -61,6 +61,9 @@ class Collector:
         for d in self.cfg.claude_sessions_dirs():
             live |= read_claude_registry(d, self.host_id)
         live |= read_pi_registry(runtime_dir(), self.host_id)
+        for r, h in self.ix.roots:
+            if h == "agy" and r.is_dir():
+                live |= read_agy_presence(r, self.host_id)
         live |= self.win_live
         self.live = live
         self.ix.live_keys = set(live)
@@ -179,7 +182,11 @@ class Collector:
             log.warning("no transcript roots exist: %s", [str(r) for r, _ in self.ix.roots]); return
         async for changes in awatch(*roots, step=300):
             for change, path in changes:
-                if change == Change.deleted or not path.endswith(".jsonl") or "/subagents/" in path:
+                if change == Change.deleted or "/subagents/" in path:
+                    continue
+                if path.endswith(".db-wal") or path.endswith(".db"):            # an agy conversation (WAL mode)
+                    path = path[:-4] if path.endswith(".db-wal") else path
+                elif not path.endswith(".jsonl"):
                     continue
                 try:
                     self.ix.process(Path(path))

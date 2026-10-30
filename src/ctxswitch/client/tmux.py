@@ -212,6 +212,8 @@ def resume_argv(s: dict, profiles: list | None = None, extra: list[str] | None =
     if harness == "pi":
         path = (s.get("meta") or {}).get("transcript_path") or s.get("transcript_path")
         return ["pi", "--session", path] if path else None
+    if harness == "agy":
+        return ["agy", "--conversation", sid, *(extra or [])]
     return None
 
 
@@ -274,10 +276,12 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
         argv = [*prof.argv(), *(["--model", prof.model] if prof.model else [])]
         if len(profiles) > 1:
             label = f"claude[{prof.name}]"
-    elif harness == "pi":
-        argv = ["pi"]
+    elif harness in ("pi", "agy"):
+        argv = [harness]
     else:
         return f"unknown harness {harness}"
+    if not shutil.which(argv[0]) and not os.path.isabs(argv[0]):
+        return f"{argv[0]} is not installed on this host"
     argv = [*argv, *(extra or [])]
     cwd = os.path.expanduser(cwd.strip() or "~")
     if not os.path.isdir(cwd):

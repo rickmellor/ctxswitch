@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 GLYPH = {"busy": "●", "waiting": "◐", "idle": "○", "shell": "$", "unknown": "◌", "ended": "–"}
-HARNESS = {"claude": "cc", "pi": "pi", "claude-win": "cw"}
+HARNESS = {"claude": "cc", "pi": "pi", "claude-win": "cw", "agy": "agy"}
 
 
 def harness_label(s: dict, profiles: list | None = None) -> str:
@@ -119,6 +119,8 @@ def can_message(s: dict) -> str | None:
     """None if a message can be queued for this session, else why not."""
     if s.get("harness") == "claude-win":
         return "Windows-native Claude sessions can't take messages"
+    if s.get("harness") == "agy":
+        return "Antigravity sessions can't take messages (no input channel yet)"
     return None
 
 

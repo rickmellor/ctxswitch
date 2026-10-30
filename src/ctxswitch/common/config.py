@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+AGY_ROOT = "~/.gemini/antigravity-cli/conversations"    # where Antigravity (agy) keeps one SQLite file per conversation
+
+
 def default_path() -> Path:
     env = os.environ.get("CTXSWITCH_CONFIG")
     if env:
@@ -43,6 +46,7 @@ class CollectorConfig:
     claude_sessions_dir: str = "~/.claude/sessions"
     pi_roots: list[str] = field(default_factory=lambda: ["~/.pi/agent/sessions"])
     claude_win_roots: list[str] = field(default_factory=list)   # e.g. /mnt/c/Users/<me>/.claude/projects
+    agy_roots: list[str] = field(default_factory=list)   # Antigravity conversations (<id>.db); load() defaults it to AGY_ROOT
     queue_path: str = ""                   # default: <data_dir>/collector-queue.db
     spool_dir: str = ""                    # hook/pi-extension events; default $CTXSWITCH_SPOOL or ~/.local/state/ctxswitch/spool
     backfill_days: int = 30                # how far back to index on first run (hard signals only)
@@ -161,11 +165,14 @@ def load(path: Path | None = None) -> Config:
     path = path or default_path()
     cfg = Config()
     if not path.exists():
+        cfg.collector.agy_roots = [AGY_ROOT]
         return cfg
     with open(path, "rb") as f:
         raw = tomllib.load(f)
     _apply(cfg.hub, raw.get("hub", {}))
     _apply(cfg.collector, raw.get("collector", {}))
+    if "agy_roots" not in raw.get("collector", {}):      # on by default; [] in the file opts out
+        cfg.collector.agy_roots = [AGY_ROOT]
     if "seats" in raw:
         cfg.seats = [_apply(SeatConfig(), s) for s in raw["seats"]]
     cfg.notify = bool(raw.get("notify", cfg.notify))

@@ -6,7 +6,7 @@ is the truth.** For example, DESIGN.md describes a collector WebSocket, but coll
 HTTP `POST /v1/ingest`.
 
 ## The product in one paragraph
-ctxswitch is a live memory of the **human↔agent conversation** across many Claude Code and pi sessions on
+ctxswitch is a live memory of the **human↔agent conversation** across many Claude Code, pi and Antigravity sessions on
 several machines. It is not a summary of code work and not a cold-start primer. Collectors on each host parse
 transcripts and push to one hub. The hub stores sessions and turns in SQLite and serves a REST API. TUIs and the
 CLI on any host read from the hub. The TUI runs as a narrow tmux side pane (about 40 columns), so everything it
@@ -37,6 +37,7 @@ src/ctxswitch/
     indexer.py            per-transcript incremental parse (byte offsets), emits turn/session events
     adapters/claude.py    Claude Code transcript → turns, asks (AskUserQuestion, ExitPlanMode, plain "?")
     adapters/pi.py        pi v3 session tree → turns
+    adapters/agy.py       Google Antigravity: SQLite trajectory (<id>.db) → turns, blobs read as raw protobuf (fields verified on 1.4.11)
     liveness.py           Claude ~/.claude/sessions/<pid>.json + pi registry → busy/idle (verifies pid start)
     state.py              local SQLite outbox + offsets (idempotent replay)
     gitinfo.py            repo/branch labels; branch() reads HEAD for pi, which records none

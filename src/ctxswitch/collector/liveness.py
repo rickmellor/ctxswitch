@@ -86,6 +86,70 @@ def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> d
     return out
 
 
+def read_agy_presence(conversations_dir: Path, host_id: str, proc: str = "/proc") -> dict[str, Liveness]:
+    """Antigravity holds an flock on ../presence/<conversation id>.lock while a conversation is open. Locked = live.
+    busy/idle comes from conversation_summaries.db (status BUSY/RUNNING, not_fully_idle); the pid is the agy process
+    holding the lock (found through /proc, so the board can map it to its pane)."""
+    import fcntl
+    from ctxswitch.collector.adapters.agy import read_summary
+    out: dict[str, Liveness] = {}
+    presence = conversations_dir.parent / "presence"
+    if not presence.is_dir():
+        return out
+    holders: dict[str, int] | None = None
+    for lock in presence.glob("*.lock"):
+        try:
+            fd = os.open(lock, os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                continue                                  # nobody holds it: not running
+            except OSError:
+                pass                                      # held: a live conversation
+        finally:
+            os.close(fd)
+        sid = lock.stem
+        if holders is None:
+            holders = _agy_lock_holders(proc)
+        summ = read_summary(str(conversations_dir.parent / "conversation_summaries.db"), sid)
+        st = summ.get("status", "")
+        status = "busy" if summ.get("busy") or st.endswith(("BUSY", "RUNNING")) else "idle" if st.endswith("IDLE") else "unknown"
+        k = session_key(host_id, "agy", sid)
+        out[k] = Liveness(key=k, status=status, status_since=_iso_sql(summ.get("last_modified")), pid=holders.get(sid))
+    return out
+
+
+def _agy_lock_holders(proc: str = "/proc") -> dict[str, int]:
+    """{conversation id: pid} for every agy process with a presence lock open."""
+    out: dict[str, int] = {}
+    try:
+        pids = [int(p) for p in os.listdir(proc) if p.isdigit()]
+    except OSError:
+        return out
+    for pid in pids:
+        try:
+            with open(f"{proc}/{pid}/comm") as f:
+                if f.read().strip() != "agy":
+                    continue
+            for fd in os.listdir(f"{proc}/{pid}/fd"):
+                target = os.readlink(f"{proc}/{pid}/fd/{fd}")
+                if "/presence/" in target and target.endswith(".lock"):
+                    out.setdefault(target.rsplit("/", 1)[1][:-5], pid)
+        except OSError:
+            continue
+    return out
+
+
+def _iso_sql(v: Any) -> str | None:
+    """'2026-10-30 18:29:28.131084492+00:00' (sqlite datetime) -> ISO with Z."""
+    if not isinstance(v, str) or len(v) < 19:
+        return None
+    return v[:19].replace(" ", "T") + "Z"
+
+
 def runtime_dir() -> Path:
     """Where the pi extension registers (same order as pi_ext/ctxswitch.ts)."""
     if os.environ.get("CTXSWITCH_RUNTIME"):

@@ -29,7 +29,7 @@ from typing import Any
 from ctxswitch import hook
 from ctxswitch.common.config import Config, default_path, load
 
-VALIDATED = {"claude": "2.1.280", "pi": "1.2.0"}           # versions whose hook/extension payloads were checked
+VALIDATED = {"claude": "2.1.280", "pi": "1.2.0", "agy": "1.4.11"}   # versions whose hook/extension/store payloads were checked
 MARK = "ctx-hook"                                           # identifies our hook entries in settings.json
 UNIT = "ctx-collector.service"
 EXT_NAME = "ctxswitch.ts"
@@ -604,7 +604,7 @@ def doctor(cfg: Config | None = None) -> list[Check]:
         out.append(Check("✗", "spool", f"{len(old)} events waiting >60s in {sp}", "the collector isn't draining: check its log"))
     else:
         out.append(Check("!" if bad else "✓", "spool", f"{sp}" + (f" ({len(bad)} unreadable in bad/)" if bad else "")))
-    for harness, check in (("claude", _check_claude), ("pi", _check_pi)):
+    for harness, check in (("claude", _check_claude), ("pi", _check_pi), ("agy", lambda: _check_agy(cfg))):
         if not shutil.which(harness):
             out.append(Check("!", harness, "not installed on this host"))
             continue
@@ -650,6 +650,15 @@ def _check_claude(p: Path | None = None, label: str = "claude hooks") -> Check:
     if not os.access(exe, os.X_OK):
         return Check("✗", label, f"{exe} not executable", "ctx install --claude (re-points the hooks)")
     return Check("✓", label, f"{len(hook.EVENTS)} events -> {exe}")
+
+
+def _check_agy(cfg: Config) -> Check:
+    """Antigravity conversations are read straight from its SQLite store; say where and how many."""
+    roots = [Path(os.path.expanduser(r)) for r in cfg.collector.agy_roots]
+    found = [(r, len(list(r.glob("*.db")))) for r in roots if r.is_dir()]
+    if not found:
+        return Check("!", "agy store", f"no conversations yet in {', '.join(map(str, roots))}")
+    return Check("✓", "agy store", ", ".join(f"{n} conversation{'s' if n != 1 else ''} in {r}" for r, n in found))
 
 
 def _check_claude_win(root: Path) -> Check:

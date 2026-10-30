@@ -286,10 +286,15 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    **Dropped**: an FTS index (`ctx search` answers in ~0.2 s end to end over 2,354 turns / 440 sessions; revisit if
    that grows tenfold).
 6b. Accounts (2026-10-30): `[[claude_profiles]]` (Bedrock, Max): per-profile launch command, config dir, env, model;
-   rows labelled by account; `c` takes `max: dir`; Enter resumes under the transcript's profile; `x` / `ctx move`
+   rows labelled by account; `n` picks the agent and account (`c`/`p` until 2026-10-30; `p` is now pop-ups);
+   Enter resumes under the transcript's profile; `x` / `ctx move`
    moves an ended session's transcript + sidecar to the other profile and resumes it with that profile's model
    (verified both ways on 2026-10-30: the transcript's remembered model id is the only thing the other account
    rejects, so `--model` on the first resume is required).
+6c. Antigravity (2026-10-30): `agy` as a harness. Its store is SQLite per conversation with protobuf step blobs;
+   read raw (user prompt = step 14 payload f19.f2, reply = step 15 payload f20.f1, tool name = metadata f4.f2),
+   step index as the replay offset, title/cwd/busy from conversation_summaries.db, liveness = the flock on
+   presence/<id>.lock, pid via /proc. Resume: `agy --conversation <id>`. Not yet: messaging in, hook events (asks).
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 

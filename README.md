@@ -4,7 +4,7 @@
 
 <p align="center">
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776ab?logo=python&logoColor=white">
-  <img alt="Claude Code and pi" src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20pi-d97757">
+  <img alt="Claude Code, pi and Antigravity" src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20pi%20%C2%B7%20Antigravity-d97757">
   <img alt="tmux" src="https://img.shields.io/badge/runs%20in-tmux-5fd75f?logo=tmux&logoColor=white">
   <img alt="local LLM" src="https://img.shields.io/badge/LLM-local%20only-8a2be2">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-agents%20can%20ask%20it-444">
@@ -12,7 +12,7 @@
 
 <p align="center"><img src="docs/img/board.svg" alt="ctx in tmux: an agent session on the left, the ctxswitch board on the right" width="100%"></p>
 
-If you keep a dozen Claude Code and pi sessions going across a few machines, the hard part stops being the code.
+If you keep a dozen Claude Code, pi and Antigravity sessions going across a few machines, the hard part stops being the code.
 It becomes remembering, every time you switch back to one: *what was this session for, what did I tell it, what
 did I already answer, and what is it waiting on right now?* ctxswitch keeps that for you, live, and shows it
 in one narrow board next to whatever you're doing.
@@ -24,8 +24,9 @@ billing endpoints"), what it claims, its recap, and a message you've queued for 
 rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessions.
 
 ## What it does
-- **Watches every session on every machine.** It reads Claude Code and pi transcripts as they are written, so
-  capture is automatic. Nothing depends on an agent remembering to call a tool.
+- **Watches every session on every machine.** It reads Claude Code and pi transcripts as they are written, and
+  Google Antigravity's conversation store, so capture is automatic. Nothing depends on an agent remembering to
+  call a tool.
 - **Tracks the human↔agent conversation, not the code.** For each session it keeps your last prompt, the agent's
   last reply, the questions it asked and your verbatim answers, the plan approvals, a tool tally, and whether it
   is busy, idle, waiting on you or ended.
@@ -37,8 +38,9 @@ rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessio
   (done, tests pass, blocked) and what the session is for. Every ledger row quotes the transcript word for word.
   Both come from a *local* LLM seat. Nothing leaves your network.
 - **Switches sessions for you.** Inside tmux, Enter (or Alt+1…9, by the row's number) swaps a session into the
-  main pane, resumes an ended one, or says why it can't (running in another terminal, or on another host). `c` /
-  `p` start a new Claude / pi session, `k` ends one. When an agent exits, the next one takes its place.
+  main pane, resumes an ended one, or says why it can't (running in another terminal, or on another host). `n`
+  starts a new session (Claude per account, pi or Antigravity), `k` ends one. When an agent exits, the next one
+  takes its place.
 - **Messages a session from anywhere.** `m` (or `ctx send`) types a message into a live Claude or pi session on
   any machine, or queues it for an ended one until it next runs. The board follows it from queued to delivered
   to the agent's reply. `a` (or `ctx reply`) answers the question a session is waiting on, and the ledger
@@ -68,7 +70,7 @@ rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessio
 
 ## Status
 Working and in daily use on three machines. Phases 0–6 of [DESIGN.md](DESIGN.md) are done: the hub, collectors,
-Claude hooks and the pi extension, the board and tmux manager, the local-LLM tracker (recaps and the ledger),
+Claude hooks and the pi extension, the Antigravity reader, the board and tmux manager, the local-LLM tracker (recaps and the ledger),
 messaging (to a session, a workstream, or as an answer), cross-host resume, pop-ups, `ctx search` and the MCP
 server. Not done: Phase 7 (hub backups, token rotation, TLS) and Phase 8 (experimental drift/re-ask flags).
 
@@ -213,7 +215,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `↑` `↓` | select a session (the detail pane follows) |
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
 | `Alt+1`…`Alt+9` | open the session with that number (the list's first column; numbers follow the order shown). Works from any pane of the ctx session, agents included; outside it the key goes through as typed |
-| `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's). With several `[[claude_profiles]]` (accounts), `max: ~/repos/x` starts it under the `max` profile |
+| `n` | new session: a one-key picker (Claude Code per `[[claude_profiles]]` account, pi, Antigravity; only what's installed), then a directory (default: the selected session's). For Claude, `max: ~/repos/x` also picks the account |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
@@ -224,7 +226,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `e` | show or hide ended sessions |
 | `v` | mark the selected session viewed (it's also marked whenever you open it, on any machine) |
 | `r` | refresh now (the board also updates live over a WebSocket) |
-| `n` | pop-ups off / on for this run (`notify` sets how it starts) |
+| `p` | pop-ups off / on for this run (`notify` sets how it starts) |
 | `x` | exchange: move the selected Claude session to the other account and resume it there (see Exchanging a session). A running one in ctx's tmux is ended first, after a y. With three or more profiles it asks which |
 | `i` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
@@ -251,7 +253,7 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
   one session would fork it). The window closes when the agent (or ssh) exits.
 - **Two Claude accounts** (say, corporate Bedrock and a personal Max subscription in its own config directory):
   list them as `[[claude_profiles]]` (see 9. Configuration). Rows then show the account instead of `cc`
-  (`bedrock·laptop`, `max·laptop`). `c` takes `max: ~/repos/x` to start under the `max` profile, the window is
+  (`bedrock·laptop`, `max·laptop`). `n` lists one entry per account, `max: ~/repos/x` at the directory prompt does the same, the window is
   named `claude[max]:x`, and Enter resumes each session under the profile its transcript lives in. A profile's
   `command` must be a program, not a shell alias; wrap an alias in a script.
 - **Exchanging a session between accounts** (`x`, or `ctx move <session> --to max`): when a session needs a
@@ -262,6 +264,11 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
   refuse). Press `x` again later to move it back. The session keeps its number, history, ledger and recap. One
   running in another terminal or on another host has to be quit there first, and only a session whose files are
   on this machine moves (on another host, run `ctx move` there).
+- **Antigravity sessions** (`agy`) are read from agy's own SQLite store (one conversation per file, protobuf
+  steps read raw: the prompt, the model's reply, tool calls by name), live while agy holds the conversation's
+  presence lock, busy or idle from its summary row. Enter resumes one with `agy --conversation <id>`; `n` starts
+  one; `k` ends one. No messaging into them yet (agy has no input channel we can reach), and no hook events, so
+  permission prompts don't show as waiting. Verified on agy 1.4.11.
 - **Windows-native Claude sessions** (`cw`) are read-only: Enter tells you the command to run in a Windows
   terminal. They're picked up within 30 s (Windows writes don't wake the Linux file watcher).
 - **Ending a session**: `k` on its row, then `y`. It ends that agent only (its transcript stays, so it's
@@ -427,6 +434,7 @@ option. The ones you'll touch:
 | `[collector] host_id` | short stable name for this machine (default: hostname) |
 | `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
 | `[[claude_profiles]]` | ways to start Claude Code, one per account (a host with one account still names it, e.g. `name = "max"`, so every board labels its sessions): `name`, `command` (argv), `config_dir` (`CLAUDE_CONFIG_DIR`), `env`, `unset`, `model` (for new sessions and the first resume after `x`). `c` uses the first unless you prefix the directory with `name:`; Enter resumes a session under the profile its transcript lives in; `x` moves one between them; the collector watches every profile's `projects/` and `sessions/`; `ctx install --claude` hooks every profile's `settings.json` |
+| `[collector] agy_roots` | Google Antigravity's conversation store (default `~/.gemini/antigravity-cli/conversations`; `[]` opts out) |
 | `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
 | `[collector] accept_messages` | deliver messages into this host's sessions (default true) |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |

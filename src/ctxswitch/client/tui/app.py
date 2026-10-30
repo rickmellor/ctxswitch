@@ -65,7 +65,7 @@ def slot_key(n: int) -> str:
 STATE_HELP = {"busy": "busy: the agent is working", "waiting": "waiting on you: a question, plan, permission prompt or dialog",
               "idle": "idle: at the prompt, your turn", "shell": "Claude Code reports a shell state",
               "unknown": "live status unknown", "ended": "ended (shown with e)"}
-HARNESS_NAME = {"claude": "Claude Code", "pi": "pi", "claude-win": "Windows-native Claude Code"}
+HARNESS_NAME = {"claude": "Claude Code", "pi": "pi", "claude-win": "Windows-native Claude Code", "agy": "Google Antigravity"}
 MSG_HELP = {"queued": "queued: waiting for its host to pick it up", "sent": "sent: written into the session",
             "delivered": "delivered: the agent is working on it", "replied": "replied: that exchange finished",
             "failed": "failed: the reason is shown; send it again", "cancelled": "cancelled"}
@@ -138,8 +138,8 @@ def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
 HELP_KEYS = [
     (("enter",), "Enter", "open the selected session: bring it to the left pane, resume it, or say why not"),
     (("slot",), "Alt+1…9", "open the session with that number, from any pane of the ctx session"),
-    (("c", "p"), "c / p", "start a new Claude Code / pi session (asks for a directory; default: the selected one's). "
-                          "With several [[claude_profiles]], 'name: directory' picks the account"),
+    (("n",), "n", "new session: pick Claude Code (one entry per account), pi or Antigravity, then a directory "
+                  "(default: the selected session's). For Claude, 'max: directory' also picks the account"),
     (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
     (("W",), "W", "message the selected session's workstream: whichever session is, or next is, live on it"),
     (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
@@ -155,7 +155,7 @@ HELP_KEYS = [
     (("e",), "e", "show or hide ended sessions"),
     (("v",), "v", "mark the selected session viewed (opening it does too, on any machine)"),
     (("r",), "r", "refresh now (the board also updates live)"),
-    (("n",), "n", "pop-ups off / on for this run"),
+    (("p",), "p", "pop-ups off / on for this run"),
     (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
     (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
     (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y"),
@@ -282,6 +282,51 @@ class Confirm(ModalScreen):
         self.dismiss(ev.key in ("y", "Y"))
 
 
+class Picker(ModalScreen):
+    """n: which agent to start. One key: the option's number; Esc cancels. Dismisses (harness, profile) or None."""
+    DEFAULT_CSS = """
+    Picker { align: center bottom; background: $background 30%; }
+    Picker > Static { width: 100%; height: auto; border: round $accent; padding: 0 1; background: $surface; }
+    """
+
+    def __init__(self, options: list[tuple[str, str, str | None]]):
+        super().__init__()
+        self.options = options                          # (label, harness, profile)
+
+    def compose(self) -> ComposeResult:
+        t = Text("new session: ", style="bold")
+        for n, (label, _, _) in enumerate(self.options, 1):
+            t.append(f"{n} ", style="bold"); t.append(f"{label}   ")
+        t.append("Esc cancels", style="dim")
+        yield Static(t)
+
+    def on_key(self, ev) -> None:
+        ev.stop(); ev.prevent_default()
+        if ev.key.isdigit() and 1 <= int(ev.key) <= len(self.options):
+            _, harness, profile = self.options[int(ev.key) - 1]
+            self.dismiss((harness, profile))
+        elif ev.key == "escape":
+            self.dismiss(None)
+
+
+def new_session_options(cfg: Config, which=None) -> list[tuple[str, str, str | None]]:
+    """What n offers: Claude Code per [[claude_profiles]] account, then pi and Antigravity when installed."""
+    import shutil
+    from ctxswitch.common.config import profiles_matter
+    which = which or shutil.which
+    out: list[tuple[str, str, str | None]] = []
+    named = profiles_matter(cfg.claude_profiles)
+    for p in cfg.claude_profiles:
+        cmd = p.command[0] if p.command else "claude"
+        if which(cmd) or os.path.isabs(cmd):
+            out.append((f"claude · {p.name}" if named else "claude", "claude", p.name if named else None))
+    if which("pi"):
+        out.append(("pi", "pi", None))
+    if which("agy"):
+        out.append(("antigravity", "agy", None))
+    return out
+
+
 class Help(Screen):
     """? : the whole pane, scrollable; Esc (or ? or q) closes it."""
     BINDINGS = [Binding("escape", "close", show=False), Binding("question_mark", "close", show=False),
@@ -311,12 +356,12 @@ class CtxApp(App):
     """
     # the key bar (key_bar) wraps in the narrow pane: most-used first, short labels
     BINDINGS = [
-        Binding("enter", "resume", "open", show=True), Binding("c", "new_claude", "claude"), Binding("p", "new_pi", "pi"),
+        Binding("enter", "resume", "open", show=True), Binding("n", "new_session", "new"),
         Binding("m", "message", "msg"), Binding("a", "reply", "answer"), Binding("M", "message_buffer", show=False),
         Binding("k", "end_session", "end"), Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
-        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"), Binding("question_mark", "help", "help"),
+        Binding("p", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"), Binding("question_mark", "help", "help"),
         Binding("W", "message_work", "msg work", show=False),
         Binding("escape", "clear_filter", show=False),
         *(Binding(f"{slot_key(n)},alt+{n}", f"slot({n})", show=False) for n in range(1, SLOTS + 1)),
@@ -848,25 +893,33 @@ class CtxApp(App):
         s = next((x for x in self.sessions if x["key"] == self.selected), None)
         return (s or {}).get("cwd") or os.path.expanduser("~")
 
-    def action_new_claude(self) -> None:
+    def action_new_session(self) -> None:
+        """n: pick the agent (Claude per account, pi, Antigravity), then the directory."""
         if not tmux.in_tmux():
             self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
-        names = [p.name for p in self.cfg.claude_profiles]
-        others = " or ".join(f"'{n}: [path]'" for n in names[1:])
-        hint = f" ({names[0]}), or {others} for that account" if others else ""
-        self._show_input("new:claude", f"directory for the new claude session, enter to start{hint}", self._selected_cwd())
+        options = new_session_options(self.cfg)
+        if not options:
+            self.notify("no agent found on PATH (claude, pi, agy)", severity="warning"); return
+        self.push_screen(Picker(options), self._picked)
 
-    def action_new_pi(self) -> None:
-        if not tmux.in_tmux():
-            self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
-        self._show_input("new:pi", "directory for the new pi session, enter to start", self._selected_cwd())
+    def _picked(self, choice: tuple[str, str | None] | None) -> None:
+        if not choice:
+            return
+        harness, profile = choice
+        what = f"{harness} · {profile}" if profile else {"agy": "antigravity"}.get(harness, harness)
+        hint = ""
+        if harness == "claude":
+            others = [p.name for p in self.cfg.claude_profiles if p.name != profile]
+            if others:
+                hint = f", or '{others[0]}: [path]' for that account"
+        self._show_input(f"new:{harness}:{profile or ''}", f"directory for the new {what} session, enter to start{hint}", self._selected_cwd())
 
     @work(exclusive=True, group="tmux", thread=True)
-    def start_agent(self, harness: str, cwd: str) -> None:
-        profile = None
+    def start_agent(self, harness: str, cwd: str, profile: str | None = None) -> None:
         try:
             if harness == "claude":
-                profile, cwd = split_profile(cwd, [p.name for p in self.cfg.claude_profiles])
+                typed, cwd = split_profile(cwd, [p.name for p in self.cfg.claude_profiles])
+                profile = typed or profile
                 msg = tmux.new_agent(harness, cwd, profile=profile, profiles=self.cfg.claude_profiles)
             else:
                 msg = tmux.new_agent(harness, cwd)
@@ -1109,7 +1162,8 @@ class CtxApp(App):
                 self.exchange_session(s, value.strip(), end_first=live)
             return
         if mode.startswith("new:"):
-            self.start_agent(mode.split(":", 1)[1], value)
+            _, harness, profile = (mode.split(":", 2) + [""])[:3]
+            self.start_agent(harness, value, profile or None)
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
 
 

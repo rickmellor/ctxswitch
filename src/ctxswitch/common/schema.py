@@ -9,7 +9,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Harness = Literal["claude", "pi", "claude-win"]
+Harness = Literal["claude", "pi", "claude-win", "agy"]
 AskKind = Literal["question", "plan", "permission", "elicitation", "prompt", "plain"]
 # plain = final text ending in "?" (heuristic); permission/elicitation/prompt come from hooks (hub/hooks.py)
 UserOrigin = Literal["human", "peer", "task", "meta", "unknown"]

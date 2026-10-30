@@ -16,6 +16,8 @@ from typing import Any, Callable
 from ctxswitch.collector.adapters import parse_json_line
 from ctxswitch.collector.adapters.claude import ClaudeParser
 from ctxswitch.collector.adapters.pi import PiParser
+from ctxswitch.collector.adapters import agy as agy_store
+from ctxswitch.collector.adapters.agy import AgyParser
 from ctxswitch.collector.gitinfo import branch, repo_info
 from ctxswitch.common.wsl import wsl_path
 from ctxswitch.collector.state import CollectorState
@@ -25,6 +27,16 @@ from ctxswitch.common.schema import SessionMeta, session_key
 log = logging.getLogger("ctxswitch.indexer")
 Emit = Callable[[str, dict[str, Any]], None]
 ENDED_AFTER_S = 15 * 60          # a non-live transcript untouched this long counts as ended
+
+
+def _mtime(p: Path, harness: str) -> float:
+    """When the transcript last changed: for an agy conversation, the newer of the db and its WAL."""
+    m = p.stat().st_mtime
+    if harness == "agy":
+        wal = p.with_name(p.name + "-wal")
+        if wal.exists():
+            m = max(m, wal.stat().st_mtime)
+    return m
 
 
 def _iso(ts: float) -> str:
@@ -49,6 +61,8 @@ class Indexer:
             self.roots.append((Path(os.path.expanduser(r)), "pi"))
         for r in cfg.claude_win_roots:
             self.roots.append((Path(os.path.expanduser(r)), "claude-win"))
+        for r in cfg.agy_roots:
+            self.roots.append((Path(os.path.expanduser(r)), "agy"))
         self.live_keys: set[str] = set()         # updated by the liveness poller
         self._meta_sent: dict[str, dict] = {}
 
@@ -62,17 +76,21 @@ class Indexer:
                 continue
         return None
 
+    @staticmethod
+    def _glob(h: str) -> str:
+        return "*.db" if h == "agy" else "*/*.jsonl"
+
     def discover(self) -> list[tuple[Path, str]]:
         cutoff = time.time() - self.cfg.backfill_days * 86400
         out = []
         for root, h in self.roots:
             if not root.is_dir():
                 continue
-            for p in root.glob("*/*.jsonl"):
+            for p in root.glob(self._glob(h)):
                 if "/subagents/" in str(p):
                     continue
                 try:
-                    if p.stat().st_mtime < cutoff and self.state.file(str(p)) is None:
+                    if _mtime(p, h) < cutoff and self.state.file(str(p)) is None:
                         continue
                 except OSError:
                     continue
@@ -86,15 +104,16 @@ class Indexer:
         for root, h in self.roots:
             if h != harness or not root.is_dir():
                 continue
-            for p in root.glob("*/*.jsonl"):
+            for p in root.glob(self._glob(h)):
                 try:
                     st = p.stat()
+                    mtime = _mtime(p, h)
                 except OSError:
                     continue
                 rec = self.state.file(str(p))
-                if rec and rec["size"] == st.st_size and rec["mtime"] == st.st_mtime:
+                if rec and rec["mtime"] == mtime and (h == "agy" or rec["size"] == st.st_size):
                     continue
-                if rec is None and st.st_mtime < time.time() - self.cfg.backfill_days * 86400:
+                if rec is None and mtime < time.time() - self.cfg.backfill_days * 86400:
                     continue
                 self.process(p, h); n += 1
         return n
@@ -111,6 +130,8 @@ class Indexer:
         harness = harness or self.harness_for(path)
         if harness is None:
             return False
+        if harness == "agy":
+            return self._process_agy(path)
         try:
             st = path.stat()
         except OSError:
@@ -166,6 +187,66 @@ class Indexer:
         self.state.save_file(str(path), harness, key, offset, parser.state(), st.st_size, st.st_mtime,
                              (rec["turns_emitted"] if rec else 0) + len(turns), ended)
         return emitted
+
+    def _process_agy(self, path: Path) -> bool:
+        """An Antigravity conversation: the step index is the offset, the step count the size, and the newer of the
+        db and its WAL the mtime. Title and cwd come from the summaries db beside the conversations."""
+        try:
+            st = path.stat()
+            mtime = _mtime(path, "agy")
+        except OSError:
+            return False
+        rec = self.state.file(str(path))
+        offset = rec["offset"] if rec else 0
+        total = agy_store.step_count(str(path))
+        if total is None:
+            return False
+        if total < offset:                               # rewritten: start over
+            offset, rec = 0, None
+        parser = AgyParser.from_state(rec["parser_state"], self.cfg.max_text_chars) if rec and rec["parser_state"] else AgyParser(self.cfg.max_text_chars)
+        sid = path.stem
+        key = session_key(self.host_id, "agy", sid)
+        summ = agy_store.read_summary(str(path.parent.parent / "conversation_summaries.db"), sid)
+        if rec and rec["ended"] and total == offset and rec["mtime"] == mtime:
+            if key in self._meta_sent or not rec["parser_state"]:
+                return False
+            meta = self._meta(parser.meta | self._agy_meta(summ, sid), key, path, "agy", st)
+            self.emit("session", {**meta, "ended": True, "reset": False})
+            self._meta_sent[key] = meta
+            return True
+        rows = agy_store.read_steps(str(path), offset) if total > offset else []
+        for row in rows:
+            parser.feed(row, row["idx"] + 1)
+        offset = (rows[-1]["idx"] + 1) if rows else offset
+        live = key in self.live_keys
+        ended = not live and (time.time() - mtime) > ENDED_AFTER_S
+        if ended:
+            parser.finish()
+        elif not live and parser.current is not None and not summ.get("busy") and summ.get("status", "").endswith("IDLE"):
+            parser.finish()                              # agy says the turn is over (idle); the next prompt opens a new one
+        turns = parser.drain()
+        meta = self._meta(parser.meta | self._agy_meta(summ, sid), key, path, "agy", st)
+        emitted = False
+        if meta != self._meta_sent.get(key) or rec is None:
+            self.emit("session", {**meta, "ended": ended, "reset": rec is None})
+            self._meta_sent[key] = meta
+            emitted = True
+        if turns or (parser.current is not None and rows):
+            self.emit("turns", {"key": key, "turns": [t.to_dict() for t in turns],
+                                "open": parser.current.to_dict() if parser.current else None, "ended": ended})
+            emitted = True
+        self.state.save_file(str(path), "agy", key, offset, parser.state(), total, mtime,
+                             (rec["turns_emitted"] if rec else 0) + len(turns), ended)
+        return emitted
+
+    @staticmethod
+    def _agy_meta(summ: dict[str, Any], sid: str) -> dict[str, Any]:
+        out: dict[str, Any] = {"session_id": sid}
+        if summ.get("title"):
+            out["title"] = summ["title"]
+        if summ.get("cwd"):
+            out["cwd"] = summ["cwd"]
+        return out
 
     def _meta(self, pm: dict[str, Any], key: str, path: Path, harness: str, st: os.stat_result) -> dict[str, Any]:
         cwd = pm.get("cwd", "")
