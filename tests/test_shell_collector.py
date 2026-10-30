@@ -318,3 +318,11 @@ def test_shell_registry_live_stale_dead_and_bad(tmp_path):
 
 def test_shell_registry_missing_directory_is_empty(tmp_path):
     assert read_shell_registry(tmp_path / "nowhere", "laptop") == {}
+
+
+def test_the_collector_creates_its_shell_root_so_the_first_shell_is_watched(tmp_path):
+    from ctxswitch.collector.main import ensure_shell_roots
+    shells, claude = tmp_path / "a" / "shells", tmp_path / "claude"
+    ensure_shell_roots([(shells, "shell"), (claude, "claude")])
+    assert shells.is_dir() and oct(shells.stat().st_mode & 0o777) == "0o700"
+    assert not claude.exists()                                        # only shell roots: the others belong to their harness

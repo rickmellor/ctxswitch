@@ -24,6 +24,17 @@ from typing import Any
 import httpx
 from watchfiles import Change, awatch
 
+
+def ensure_shell_roots(roots) -> None:
+    """Create the `ctx shell` transcript directories (0700) before watching: only directories that exist when the
+    watch starts are watched, and the first shell on a host is what would otherwise create it."""
+    for r, h in roots:
+        if h == "shell":
+            try:
+                r.mkdir(parents=True, exist_ok=True, mode=0o700)
+            except OSError:
+                pass
+
 from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
@@ -178,6 +189,7 @@ class Collector:
 
     # -- watchers -------------------------------------------------------------------------------------------------
     async def watch_loop(self) -> None:
+        ensure_shell_roots(self.ix.roots)
         roots = [str(r) for r, h in self.ix.roots if r.is_dir() and h != "claude-win"]
         if not roots:
             log.warning("no transcript roots exist: %s", [str(r) for r, _ in self.ix.roots]); return
