@@ -46,6 +46,20 @@ STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "
 CLAIM_STYLE = {"done": "green", "tests_pass": "green", "tests_fail": "red", "blocked": "yellow"}
 MSG_STYLE = {"queued": "yellow", "sent": "yellow", "delivered": "green", "replied": "green", "failed": "red"}
 REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "foreign": "red", "remote": "blue", "none": "dim"}
+SLOTS = 9                                          # Alt+1…9 open the session with that number
+
+
+def slot_key(n: int) -> str:
+    """The key Textual reports for Alt+n, asked of its own input parser. It maps ESC+digit to the character macOS's
+    Option+digit types (a WezTerm workaround), so Alt+1 arrives as "inverted_exclamation_mark" on every terminal; if
+    it ever stops, this is alt+n."""
+    from textual import events
+    from textual._xterm_parser import XTermParser
+    p = XTermParser()
+    keys = [e.key for e in [*p.feed(f"\x1b{n}"), *p.feed("")] if isinstance(e, events.Key)]
+    return keys[0] if len(keys) == 1 else f"alt+{n}"
+
+
 STATE_HELP = {"busy": "busy: the agent is working", "waiting": "waiting on you: a question, plan, permission prompt or dialog",
               "idle": "idle: at the prompt, your turn", "shell": "Claude Code reports a shell state",
               "unknown": "live status unknown", "ended": "ended (shown with e)"}
@@ -71,7 +85,8 @@ def legend() -> Text:
     section("SESSION STATE (first column)", [(g, STATE_STYLE[st], STATE_HELP[st]) for st, g in fmt.GLYPH.items()])
     section("ENTER (before the host)", [("▶", "bold", "it's on the left now")] +
             [(g, REACH_STYLE.get(r, ""), tmux.REACH_HELP[r]) for r, g in tmux.REACH_GLYPH.items() if r != "none"])
-    section("ROW", [("3m", "dim", "second column: time in this state (live), or since it was last active (ended)")] +
+    section("ROW", [("1", "dim", "its number: Alt+1…9 opens it from any pane of the ctx session"),
+                    ("3m", "dim", "time in this state (live), or since it was last active (ended)")] +
             [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
             [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
              ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work")])
@@ -150,6 +165,7 @@ class CtxApp(App):
         Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"), Binding("question_mark", "legend", "legend"),
         Binding("W", "message_work", "msg work", show=False),
         Binding("escape", "clear_filter", show=False),
+        *(Binding(f"{slot_key(n)},alt+{n}", f"slot({n})", show=False) for n in range(1, SLOTS + 1)),
     ]
 
     def __init__(self, cfg: Config, host: str | None):
@@ -171,6 +187,7 @@ class CtxApp(App):
         self.pending_body = ""                       # the tmux buffer waiting on a y/n
         self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
         self.pending_rules: tuple[str, list[int]] | None = None   # (session key, row ids by number) x retires one of
+        self.slots: list[str] = []                   # session keys by their row number, for Alt+N
         self.detail: dict | None = None              # the session shown in the detail pane
         self.group_ws = False                        # w: rows grouped under workstream headers
         self.notifier = Notifier(cfg.notify_idle)
@@ -191,12 +208,11 @@ class CtxApp(App):
 
     def on_mount(self) -> None:
         t = self.query_one("#table", DataTable)
-        t.add_columns(" ", "age", "session")
+        t.add_columns("#", " ", "age", "session")
         self.title = "ctxswitch"
         self.query_one("#attention", Static).border_title = "ctxswitch"
         self.query_one("#attention", Static).tooltip = ATTENTION_TIP
-        if tmux.in_tmux():
-            tmux.set_role(os.environ.get("TMUX_PANE"), "tui")   # lets an exiting agent recognise the viewer window
+        self.join_tmux()
         t.focus()
         self.refresh_data()
         self.set_interval(10, self.refresh_data)
@@ -313,6 +329,17 @@ class CtxApp(App):
         elif rc not in (0, 3) and not OPEN_RC <= rc < OPEN_RC + BOX_ITEMS:   # rc 1: no client to show it on
             self.status_popup(msg, [])
 
+    def join_tmux(self) -> None:
+        if tmux.in_tmux():
+            tmux.set_role(os.environ.get("TMUX_PANE"), "tui")   # lets an exiting agent recognise the viewer window
+            tmux.bind_slot_keys(os.environ.get("TMUX_PANE"))     # Alt+1…9 from any pane of the ctx session
+
+    def action_slot(self, n: int) -> None:
+        """Alt+N: open the session numbered N on the board, as Enter on its row does."""
+        if not 1 <= n <= len(self.slots):
+            self.notify(f"no session {n} on the board", severity="warning"); return
+        self.open_key(self.slots[n - 1])
+
     def open_key(self, key: str) -> None:
         """Select a session on the board and open it, as Enter on its row does."""
         if not any(x["key"] == key for x in self.sessions):
@@ -349,7 +376,7 @@ class CtxApp(App):
         return out
 
     def _label_width(self) -> int:
-        return max(16, self.size.width - 14)          # glyph + age columns + paddings + scrollbar
+        return max(16, self.size.width - 16)          # number + glyph + age columns + paddings + scrollbar
 
     def render_table(self) -> None:
         t = self.query_one("#table", DataTable)
@@ -359,6 +386,7 @@ class CtxApp(App):
         t.clear()
         visible = self._visible()
         rows = 0
+        self.slots = []                                 # session keys by their number (Alt+N), in the order shown
         if self.group_ws:                              # groups in the order of their most urgent member
             order: dict = {}
             for s in visible:
@@ -369,7 +397,7 @@ class CtxApp(App):
                 head = Text(f"{fmt.one_line(fmt.workstream_label(ws), width - 8)} · {len(members)}", style="bold")
                 if len(hosts) > 1:
                     head.append(f" · {' '.join(hosts)}", style="dim")
-                t.add_row(Text("▾", style="dim"), Text(""), head, key=f"ws:{ws}"); rows += 1
+                t.add_row(Text(""), Text("▾", style="dim"), Text(""), head, key=f"ws:{ws}"); rows += 1
                 visible += members
         for s in visible:
             st = fmt.session_state(s)
@@ -398,7 +426,10 @@ class CtxApp(App):
                 label.append(f" ◐{fmt.age(asks[0].get('asked_at'), now)}", style="bold yellow")
             if s.get("unseen"):                        # exchanges since you last looked
                 label.append(f" +{s['unseen']}", style="bold cyan")
-            t.add_row(Text(fmt.state_glyph(s), style=style), Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"])
+            self.slots.append(s["key"])
+            n = len(self.slots)
+            t.add_row(Text(str(n) if n <= SLOTS else "", style="dim"), Text(fmt.state_glyph(s), style=style),
+                      Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"])
             rows += 1
         t.styles.height = max(1, rows)                # grow with the list, up to the max-height cap
         if prev and (prev in [s["key"] for s in visible] or prev.startswith("ws:")):

@@ -217,6 +217,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 |---|---|
 | `↑` `↓` | select a session (the detail pane follows) |
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
+| `Alt+1`…`Alt+9` | open the session with that number (the list's first column; numbers follow the order shown). Works from any pane of the ctx session, agents included; outside it the key goes through as typed |
 | `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's) |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |

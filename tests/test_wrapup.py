@@ -164,3 +164,68 @@ def test_a_rows_tooltip_says_it_in_words():
     b = SimpleNamespace(sessions=[s], reach={s["key"]: "pane"}, visible_key=None, cfg=SimpleNamespace(ssh={}))
     assert tui.CtxApp.tip_for(b, s["key"]).startswith("◐ waiting") and tui.CtxApp.tip_for(b, "gone") is None
     assert tui.CtxApp.tip_for(b, "ws:me/proj@main").startswith("▾ proj@main: the sessions")
+
+
+# -- numbered rows and Alt+1…9 ----------------------------------------------------------------------------------
+def test_every_alt_digit_a_terminal_sends_reaches_its_slot():
+    from textual import events
+    from textual._xterm_parser import XTermParser
+    bound = {k.strip(): b.action for b in tui.CtxApp.BINDINGS for k in b.key.split(",")}
+    for n in range(1, tui.SLOTS + 1):
+        p = XTermParser()
+        (key,) = [e.key for e in [*p.feed(f"\x1b{n}"), *p.feed("")] if isinstance(e, events.Key)]   # what tmux / WT send
+        assert bound.get(key) == f"slot({n})", (n, key)
+
+
+def test_alt_n_opens_the_session_numbered_n():
+    opened, said = [], []
+    b = SimpleNamespace(slots=["k1", "k2"], open_key=opened.append, notify=lambda m, **k: said.append(m))
+    tui.CtxApp.action_slot(b, 2)
+    tui.CtxApp.action_slot(b, 3)
+    tui.CtxApp.action_slot(b, 0)
+    assert opened == ["k2"] and said == ["no session 3 on the board", "no session 0 on the board"]
+
+
+def test_the_board_binds_alt_digits_to_its_own_pane_in_tmux(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tui.tmux, "set_role", lambda p, r: calls.append(("role", p, r)))
+    monkeypatch.setattr(tui.tmux, "bind_slot_keys", lambda p: calls.append(("bind", p)))
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
+    tui.CtxApp.join_tmux(None)
+    assert calls == []
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    tui.CtxApp.join_tmux(None)
+    assert calls == [("role", "%7", "tui"), ("bind", "%7")]
+
+
+async def test_the_board_numbers_its_session_rows_in_the_order_shown(tmp_path, monkeypatch):
+    store = Store(tmp_path / "hub.db")
+    extra = [f"laptop/claude/x{i}" for i in range(8)]                  # 11 sessions: only 9 numbers
+    for k, st in ((LAP, "idle"), ("laptop/claude/s9", "busy"), (DEV, "idle"), *((x, "idle") for x in extra)):
+        _session(store, k)
+        store.upsert_turns(k, [{"idx": 0, "started_at": "2026-10-29T10:00:00Z", "ended_at": "2026-10-29T10:00:00Z", "user_text": "go",
+                                "user_origin": "human", "assistant_text": "", "tally": {}, "asks": [], "events": [], "complete": True, "offset_end": 1}], None)
+    _live(store, "laptop", (LAP, "idle"), ("laptop/claude/s9", "busy"), *((x, "idle") for x in extra)); _live(store, "devbox", (DEV, "idle"))
+    cfg = Config(); cfg.hub.token = "t"; cfg.collector.host_id = "laptop"
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
+    app = tui.CtxApp(cfg, None)
+    app.client._c = TestClient(Hub(store, token="t").app(), headers=H)
+    monkeypatch.setattr(tui.CtxApp, "listen_ws", lambda self: None)
+    joined = []
+    monkeypatch.setattr(tui.CtxApp, "join_tmux", lambda self: joined.append(1))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert joined == [1]                                              # at start: role + Alt+N bindings
+        t = app.query_one("#table")
+        nums = [t.get_row_at(i)[0].plain for i in range(t.row_count)]
+        assert nums == [str(n) for n in range(1, 10)] + ["", ""] and app.slots[0] == "laptop/claude/s9"   # busy first; 10+ unnumbered
+        app.action_toggle_ws(); await pilot.pause(0.3)
+        rows = [(t.get_row_at(i)[0].plain, str(t.coordinate_to_cell_key((i, 0)).row_key.value)) for i in range(t.row_count)]
+        sessions = [(n, k) for n, k in rows if not k.startswith("ws:")]
+        assert [k for _, k in sessions] == app.slots and all(not n for n, k in rows if k.startswith("ws:"))   # headers unnumbered
+        assert [n for n, _ in sessions] == [str(i) for i in range(1, 10)] + ["", ""]                         # still 1…9 in order
+        opened = []
+        monkeypatch.setattr(app, "open_key", opened.append)
+        await pilot.press(tui.slot_key(2)); await pilot.pause(0.2)
+        assert opened == [app.slots[1]]

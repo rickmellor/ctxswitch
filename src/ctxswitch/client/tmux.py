@@ -451,6 +451,17 @@ def on_screen_keys(ps: list[Pane] | None = None, sessions: list[dict] | None = N
     return out
 
 
+def bind_slot_keys(board: str | None, n: int = 9) -> None:
+    """Alt+1…n in the ctx session go to the board (which opens its row N), from whichever pane has focus: a root-table
+    binding, so it's server-wide, but outside the ctx session the key goes through as typed. Bound by the board at
+    start with its own pane id, so a restarted board takes them over."""
+    if not board:
+        return
+    for k in range(1, n + 1):
+        _run("bind-key", "-n", f"M-{k}", "if-shell", "-F", f"#{{==:#{{session_name}},{SESSION}}}",
+             f"send-keys -t {board} M-{k}", f"send-keys M-{k}", check=False)
+
+
 def ensure_board(width: str, ctx_cmd: str, restart: bool = False) -> str:
     """The ctx session's board pane: put back on the right of the viewer window if it's gone (closed, crashed: the
     agents stay, but nothing manages them), restarted in place with ``restart`` (new code). '' if nothing changed."""

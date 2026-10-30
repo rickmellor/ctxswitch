@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import re
 import time
 
 import pytest
@@ -361,3 +362,14 @@ def test_joining_from_outside_tmux_puts_the_board_back_then_attaches(server, mon
     monkeypatch.setattr(tmux.os, "execvp", lambda f, argv: calls.append(argv))
     tmux.bootstrap("20")
     assert [p for p in tmux.panes() if p.session == "ctx" and p.role == "tui"] and calls == [["tmux", "attach-session", "-t", "ctx"]]
+
+
+def test_alt_digits_go_to_the_board_only_inside_the_ctx_session(server):
+    tmux.bind_slot_keys(None)
+    assert "M-1" not in tm("list-keys", "-T", "root")                 # no board pane: nothing bound
+    tmux.bind_slot_keys("%42")
+    keys = {ln.split()[3]: ln for ln in tm("list-keys", "-T", "root").splitlines() if re.fullmatch(r"M-\d", ln.split()[3])}
+    assert sorted(keys) == [f"M-{n}" for n in range(1, 10)]
+    assert 'if-shell -F "#{==:#{session_name},ctx}" "send-keys -t %42 M-4" "send-keys M-4"' in keys["M-4"]   # elsewhere: as typed
+    tmux.bind_slot_keys("%43")                                        # a restarted board takes them over
+    assert "send-keys -t %43 M-4" in tm("list-keys", "-T", "root")
