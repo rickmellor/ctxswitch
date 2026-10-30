@@ -226,7 +226,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's) |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
-| `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y/n |
+| `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
 | `a` | answer the question it's waiting on: type the answer, Enter sends (see Answering a question) |
 | `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
 | `h` | host filter: this host → all → each other host |
@@ -238,7 +238,10 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `x` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
-| `Q` | quit all: end the tmux session and every agent in it, after a y/n |
+| `k` | end the selected session's agent, after a y (see Ending a session) |
+| `Q` | quit all: end the tmux session and every agent in it, after a y |
+
+A confirm takes one key: `y` does it at once, any other key (Esc included) cancels.
 
 The footer shows as many keys as fit; the rest still work.
 
@@ -257,6 +260,10 @@ The footer shows as many keys as fit; the rest still work.
   one session would fork it). The window closes when the agent (or ssh) exits.
 - **Windows-native Claude sessions** (`cw`) are read-only: Enter tells you the command to run in a Windows
   terminal. They're picked up within 30 s (Windows writes don't wake the Linux file watcher).
+- **Ending a session**: `k` on its row, then `y`. It ends that agent only (its transcript stays, so it's
+  resumable with Enter), the next agent takes the left pane and the ended one drops off the list (`e` shows it).
+  Quitting the agent yourself (`/exit` in Claude Code) does the same. `k` works on sessions in ctx's tmux; one in
+  another terminal (`⊘`) or live on another host (`⇢`) has to be quit where it runs, and the board says so.
 - **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
 
 ## 6. Recaps

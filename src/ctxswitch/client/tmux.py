@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -146,7 +147,8 @@ def on_agent_exit(rc: int = 0, started: float | None = None, pane_id: str | None
     stays readable.
     """
     pane_id = pane_id or os.environ.get("TMUX_PANE")
-    if rc != 0 or (started is not None and time.time() - started < 5):
+    asked = _run("display-message", "-p", "-t", pane_id or "", "#{@ctx_ending}", check=False).strip() == "1"
+    if not asked and (rc != 0 or (started is not None and time.time() - started < 5)):   # k ended it: no pause
         try:
             prompt(f"[agent exited rc={rc}] press Enter to close ")
         except EOFError:
@@ -392,6 +394,36 @@ def agent_panes(ps: list[Pane] | None = None) -> list[Pane]:
     ps = ps if ps is not None else panes()
     me = my_session(ps)
     return [p for p in ps if p.session == me and p.role != "tui" and (p.role == "agent" or p.key) and p.cmd not in SHELLS]
+
+
+def agent_pane(key: str, ps: list[Pane] | None = None) -> Pane | None:
+    """The pane in this tmux session with ``key``'s agent running in it, if any."""
+    return next((p for p in agent_panes(ps) if p.key == key), None)
+
+
+def _children(pid: int, proc: str = "/proc") -> list[int]:
+    out: list[int] = []
+    try:
+        for tid in os.listdir(f"{proc}/{pid}/task"):
+            with open(f"{proc}/{pid}/task/{tid}/children") as f:
+                out += [int(x) for x in f.read().split()]
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def end_agent(p: Pane, proc: str = "/proc", kill=os.kill) -> int:
+    """End the agent in pane ``p`` (k): SIGTERM to the processes its wrapper started (the agent, or the ssh to it),
+    so the wrapper's `ctx tmux-exit` hands the viewer on and the window closes, as when you quit it yourself. The pane
+    is marked first so that exit doesn't stop on "press Enter". Returns how many processes were signalled."""
+    _run("set-option", "-p", "-t", p.id, "@ctx_ending", "1", check=False)
+    pids = _children(p.pid, proc)
+    for pid in pids:
+        try:
+            kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    return len(pids)
 
 
 def kill_all() -> None:

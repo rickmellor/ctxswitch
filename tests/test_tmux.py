@@ -373,3 +373,27 @@ def test_alt_digits_go_to_the_board_only_inside_the_ctx_session(server):
     assert 'if-shell -F "#{==:#{session_name},ctx}" "send-keys -t %42 M-4" "send-keys M-4"' in keys["M-4"]   # elsewhere: as typed
     tmux.bind_slot_keys("%43")                                        # a restarted board takes them over
     assert "send-keys -t %43 M-4" in tm("list-keys", "-T", "root")
+
+
+def test_k_ends_just_that_agent_and_its_exit_doesnt_wait_for_enter(server, monkeypatch, tmp_path):
+    done = tmp_path / "after"
+    # the agent wrapper's shape: the agent runs as a child of sh, then the wrapper carries on (here: records rc)
+    tm("new-window", "-d", "-t", "ctx", "-n", "agent", f"sh -c 'sleep 300; echo $? > {done}; sleep 300'")
+    tm("set-option", "-p", "-t", "ctx:agent", "@ctx_key", "laptop/claude/s1")
+    monkeypatch.setenv("TMUX_PANE", tm("display-message", "-p", "-t", "ctx:mgr.0", "#{pane_id}"))
+    time.sleep(0.5)
+    p = tmux.agent_pane("laptop/claude/s1")
+    assert p is not None and tmux.agent_pane("laptop/claude/other") is None
+    assert tmux.end_agent(p) == 1                                     # the sleep (the "agent"), not the wrapper
+    for _ in range(50):
+        if done.exists():
+            break
+        time.sleep(0.1)
+    assert done.read_text().strip() == "143"                          # SIGTERM'd; the wrapper went on to its exit step
+    assert tm("display-message", "-p", "-t", p.id, "#{@ctx_ending}") == "1"
+    asked = []
+    tmux.on_agent_exit(143, time.time(), p.id, prompt=asked.append)
+    assert asked == []                                                # asked for: no "press Enter"
+    tm("set-option", "-p", "-u", "-t", p.id, "@ctx_ending")
+    tmux.on_agent_exit(143, time.time(), p.id, prompt=asked.append)
+    assert asked and "rc=143" in asked[0]                             # a crash still waits

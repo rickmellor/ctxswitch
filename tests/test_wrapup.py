@@ -260,6 +260,8 @@ def test_help_documents_every_key_the_board_binds():
         else:
             for k in b.key.split(","):
                 assert k.strip() in documented, (k, b.action)
+    bound = {k.strip() for b in tui.CtxApp.BINDINGS for k in b.key.split(",")}
+    assert documented - {"slot"} <= bound                             # and every documented key is bound
     text = tui.help_text()
     assert text.index("KEYS") < text.index("SESSION STATE") < text.index("RESTARTING THE BOARD")   # keys, legend, how-tos
     assert all(shown in text for _, shown, _ in tui.HELP_KEYS)
@@ -306,3 +308,82 @@ def test_a_waiting_row_says_what_it_waits_on():
     rows = [_row("a", "busy"), _row("b", "waiting"), _row("c", open_asks=[{"kind": "plain", "text": "?"}]), _row("e", "ended", ended=True)]
     assert tui.summary_line(rows, "laptop").plain == "ctx · laptop · 3 live · 2 waiting on you"
     assert tui.summary_line(rows[:1], None).plain == "ctx · all · 1 live · nothing waiting"
+
+
+# -- k ends a session; y/n takes one key ---------------------------------------------------------------------------
+async def test_a_confirm_takes_one_key_and_only_y_says_yes():
+    from textual.app import App
+    got = []
+
+    class A(App):
+        BINDINGS = [("k", "fired", "")]
+
+        def on_mount(self):
+            self.push_screen(tui.Confirm("end it?"), got.append)
+
+        def action_fired(self):
+            got.append("board saw the key")
+    for key, want in (("y", True), ("Y", True), ("n", False), ("escape", False), ("enter", False), ("k", False)):
+        app = A()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1); await pilot.press(key); await pilot.pause(0.1)
+            assert not isinstance(app.screen, tui.Confirm)            # gone after that one key
+        assert got[-1] is want, key                                      # and the board never saw it
+
+
+def test_a_no_runs_nothing():
+    ran, said = [], []
+    for ok in (False, True):
+        b = SimpleNamespace(push_screen=lambda screen, cb, ok=ok: cb(ok), notify=lambda m, **k: said.append(m))
+        tui.CtxApp.confirm(b, "sure?", lambda: ran.append(1))
+    assert ran == [1] and said == ["cancelled"]
+
+
+def _ender(monkeypatch, pane=None, reach="", status="idle"):
+    s = {"key": LAP, "harness": "claude", "host_id": "laptop", "title": "tabs", "live_status": status}
+    seen = []
+    b = SimpleNamespace(sessions=[s], selected=LAP, reach={LAP: reach}, cfg=SimpleNamespace(ssh={}),
+                        notify=lambda m, **k: seen.append(("notify", m)), confirm=lambda prompt, yes: seen.append(("confirm", prompt, yes)))
+    b._selected_session = lambda: s
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tui.tmux, "agent_pane", lambda key: pane)
+    return b, seen
+
+
+def test_k_asks_then_ends_the_agent_or_says_why_it_cant(monkeypatch):
+    ended = []
+    monkeypatch.setattr(tui.tmux, "end_agent", lambda p: ended.append(p) or 1)
+    b, seen = _ender(monkeypatch, pane="P", status="busy")
+    tui.CtxApp.action_end_session(b)
+    (_, prompt, yes), = seen
+    assert prompt == "end tabs (cc·laptop) (busy: it's working)?" and ended == []          # nothing until y
+    yes()
+    assert ended == ["P"] and seen[-1] == ("notify", "ending tabs")
+    for reach, why in (("foreign", "it runs in another terminal: quit it there"), ("resume", "it isn't running")):
+        b, seen = _ender(monkeypatch, reach=reach)
+        tui.CtxApp.action_end_session(b)
+        assert seen == [("notify", f"can't end it from here: {why}")]
+    b, seen = _ender(monkeypatch)
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
+    tui.CtxApp.action_end_session(b)
+    assert seen[0][1].startswith("k ends sessions in ctx's tmux")
+
+
+def test_Q_and_M_confirm_with_one_key_too(monkeypatch):
+    killed, sent, seen = [], [], []
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tui.tmux, "panes", list)
+    monkeypatch.setattr(tui.tmux, "agent_panes", lambda ps: [SimpleNamespace(key="a"), SimpleNamespace(key="b")])
+    monkeypatch.setattr(tui.tmux, "my_session", lambda ps: "ctx")
+    monkeypatch.setattr(tui.tmux, "kill_all", lambda: killed.append(1))
+    b = SimpleNamespace(sessions=[], confirm=lambda prompt, yes: seen.append((prompt, yes)))
+    tui.CtxApp.action_kill_all(b)
+    assert seen[-1][0] == "end tmux session 'ctx' and all 2 agents?" and killed == []
+    seen[-1][1](); assert killed == [1]
+    s = {"key": LAP, "harness": "claude"}
+    b = SimpleNamespace(confirm=lambda prompt, yes: seen.append((prompt, yes)), send_message=lambda k, body: sent.append((k, body)),
+                        _selected_session=lambda: s, notify=lambda *a, **k: None)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="line one\nline two"))
+    tui.CtxApp.action_message_buffer(b)
+    assert seen[-1][0] == 'send 2 line(s) "line one line two" to it?' and sent == []
+    seen[-1][1](); assert sent == [(LAP, "line one\nline two")]

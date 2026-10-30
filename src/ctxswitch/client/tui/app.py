@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static
@@ -129,7 +129,8 @@ HELP_KEYS = [
     (("c", "p"), "c / p", "start a new Claude Code / pi session (asks for a directory; default: the selected one's)"),
     (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
     (("W",), "W", "message the selected session's workstream: whichever session is, or next is, live on it"),
-    (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y/n"),
+    (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
+    (("k",), "k", "end the selected session's agent, after a y (it stays resumable: Enter brings it back)"),
     (("a",), "a", "answer the question it's waiting on (plain-text questions; dialogs are answered in the session)"),
     (("x",), "x", "retire one of YOUR INSTRUCTIONS that no longer holds: type its number"),
     (("w",), "w", "group the list by workstream (repo@branch across hosts), or back to a flat list"),
@@ -141,7 +142,7 @@ HELP_KEYS = [
     (("n",), "n", "pop-ups off / on for this run"),
     (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
     (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
-    (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y/n"),
+    (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y"),
 ]
 HELP_TIPS = [
     ("Where things are", ("The header: how many sessions are live and how many wait on you. The list: every session, "
@@ -153,6 +154,9 @@ HELP_TIPS = [
      "prompt) waits on a keypress in its own terminal: Enter opens it.")),
     ("Agents", ("Agents can read this board and message each other through the ctxswitch MCP tools. Their messages "
      "say which session and host sent them, and never count as yours.")),
+    ("Ending a session", ("k ends the selected session's agent after a y (the transcript stays: Enter resumes it). "
+     "Quitting it yourself (/exit in Claude Code) does the same. Either way the next agent takes its place on the "
+     "left and the ended one drops off the list (e shows ended ones). Q ends everything in the ctx session.")),
     ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
      "pane is ever gone, `ctx tmux` puts it back.")),
     ("More", "`ctx --help`, and the README (User guide)."),
@@ -243,6 +247,25 @@ class KeyBar(Static):
         return key_bar(self.app.BINDINGS, max(10, self.content_size.width))
 
 
+class Confirm(ModalScreen):
+    """A y/n that takes one key: y (or Y) says yes at once, any other key no."""
+    DEFAULT_CSS = """
+    Confirm { align: center bottom; background: $background 30%; }
+    Confirm > Static { width: 100%; height: auto; border: round $warning; padding: 0 1; background: $surface; }
+    """
+
+    def __init__(self, prompt: str):
+        super().__init__()
+        self.prompt = prompt
+
+    def compose(self) -> ComposeResult:
+        yield Static(Text.assemble((self.prompt, "bold"), ("  y = yes, any other key = no", "dim")))
+
+    def on_key(self, ev) -> None:
+        ev.stop(); ev.prevent_default()
+        self.dismiss(ev.key in ("y", "Y"))
+
+
 class Help(Screen):
     """? : the whole pane, scrollable; Esc (or ? or q) closes it."""
     BINDINGS = [Binding("escape", "close", "close"), Binding("question_mark", "close", show=False),
@@ -275,7 +298,7 @@ class CtxApp(App):
     BINDINGS = [
         Binding("enter", "resume", "open", show=True), Binding("c", "new_claude", "claude"), Binding("p", "new_pi", "pi"),
         Binding("m", "message", "msg"), Binding("a", "reply", "answer"), Binding("M", "message_buffer", show=False),
-        Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
+        Binding("k", "end_session", "end"), Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
         Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"), Binding("question_mark", "help", "help"),
@@ -299,8 +322,7 @@ class CtxApp(App):
         self.visible_key: str | None = None          # session shown in the tmux viewer pane
         self.on_screen: set[str] = set()             # sessions in the tmux window being looked at (no pop-ups for them)
         self.reach: dict[str, str] = {}             # key -> tmux.REACH_GLYPH key (how Enter can open it)
-        self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:<harness>" | "msg:<key>" | "confirm:…"
-        self.pending_body = ""                       # the tmux buffer waiting on a y/n
+        self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:<harness>" | "msg:<key>" | …
         self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
         self.pending_rules: tuple[str, list[int]] | None = None   # (session key, row ids by number) x retires one of
         self.slots: list[str] = []                   # session keys by their row number, for Alt+N
@@ -902,9 +924,8 @@ class CtxApp(App):
         r = subprocess.run(["tmux", "show-buffer"], capture_output=True, text=True)
         if r.returncode != 0 or not r.stdout.strip():
             self.notify("no tmux paste buffer (select text in copy mode first)", severity="warning"); return
-        self.pending_body = r.stdout
-        lines = r.stdout.count("\n") + 1
-        self._show_input(f"confirm:buffer:{s['key']}", f"send {lines} line(s) \"{fmt.one_line(r.stdout, 30)}\" to it? y/n")
+        body, key, lines = r.stdout, s["key"], r.stdout.count("\n") + 1
+        self.confirm(f"send {lines} line(s) \"{fmt.one_line(body, 30)}\" to it?", lambda: self.send_message(key, body))
 
     @work(group="send", thread=True)
     def send_message(self, key: str, body: str, answers: str | None = None) -> None:
@@ -927,7 +948,7 @@ class CtxApp(App):
         if self.input_mode == "filter":
             self.text_filter = ""; self.query_one("#filter", Input).value = ""; self.render_table()
         else:                                           # Esc out of a message/answer/confirm: nothing is sent
-            self.input_mode, self.pending_reply, self.pending_body = "filter", None, ""
+            self.input_mode, self.pending_reply = "filter", None
             self.query_one("#filter", Input).value = ""
         self._hide_input()
 
@@ -951,23 +972,33 @@ class CtxApp(App):
         agents = tmux.agent_panes(ps)
         keys = {p.key for p in agents}
         busy = sum(1 for x in self.sessions if x["key"] in keys and x.get("live_status") == "busy")
-        self._show_input("confirm:kill", f"end all {len(agents)} agents" + (f" ({busy} busy)" if busy else "") + "? y/n")
-        self.notify(f"Q ends tmux session '{tmux.my_session(ps)}' and every agent in it", timeout=6)
+        self.confirm(f"end tmux session '{tmux.my_session(ps)}' and all {len(agents)} agents" + (f" ({busy} busy)" if busy else "") + "?",
+                     tmux.kill_all)
+
+    def confirm(self, prompt: str, yes) -> None:
+        """One key: y runs ``yes``, anything else cancels."""
+        self.push_screen(Confirm(prompt), lambda ok: yes() if ok else self.notify("cancelled", timeout=3))
+
+    def action_end_session(self) -> None:
+        """k: end the selected session's agent, after a y."""
+        s = self._selected_session()
+        if not s:
+            return
+        if not tmux.in_tmux():
+            self.notify("k ends sessions in ctx's tmux (ctx tmux); quit this one where it runs", severity="warning"); return
+        p = tmux.agent_pane(s["key"])
+        if p is None:
+            reach = self.reach.get(s["key"], "")
+            why = ("it runs in another terminal: quit it there" if reach == "foreign" else
+                   tmux.reach_help(s, reach, self.cfg.ssh) if reach == "remote" else "it isn't running")
+            self.notify(f"can't end it from here: {why}", severity="warning", timeout=6); return
+        busy = " (busy: it's working)" if s.get("live_status") == "busy" else ""
+        self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)} ({fmt.HARNESS.get(s['harness'], s['harness'])}·{s['host_id']}){busy}?",
+                     lambda: self.notify(f"ending {fmt.one_line(fmt.display_title(s), 30)}" if tmux.end_agent(p) else "its agent had already exited", timeout=4))
 
     def on_input_submitted(self, ev: Input.Submitted) -> None:
         mode, value = self.input_mode, ev.value
         self._hide_input()
-        if mode == "confirm:kill":
-            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
-            if value.strip().lower() in ("y", "yes"):
-                tmux.kill_all()
-            return
-        if mode.startswith("confirm:buffer:"):
-            body, self.pending_body = self.pending_body, ""
-            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
-            if value.strip().lower() in ("y", "yes"):
-                self.send_message(mode.split(":", 2)[2], body)
-            return
         if mode == "reply":
             target, self.pending_reply = self.pending_reply, None
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
