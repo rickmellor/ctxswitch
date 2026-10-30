@@ -182,3 +182,28 @@ def read_pi_registry(runtime_dir: Path, host_id: str, proc: str = "/proc") -> di
         out[k] = Liveness(key=k, status=e.get("status") if e.get("status") in ("busy", "idle") else "unknown", status_since=e.get("statusSince"), pid=pid,
                           socket=e.get("socket"))
     return out
+
+
+def read_shell_registry(runtime_dir: Path, host_id: str, proc: str = "/proc") -> dict[str, Liveness]:
+    """A ``ctx shell`` registers as <runtime>/ctxswitch/shell-<pid>.json while it runs (busy while a command is
+    running, idle at its prompt). An exited shell deletes its file; one that died leaves it behind, so it counts as
+    live only when the pid exists and, when recorded, its start time still matches."""
+    out: dict[str, Liveness] = {}
+    d = runtime_dir / "ctxswitch"
+    if not d.is_dir():
+        return out
+    for p in d.glob("shell-*.json"):
+        try:
+            with open(p) as f:
+                e = json.load(f)
+        except (OSError, ValueError):
+            continue
+        pid, sid = e.get("pid"), e.get("sessionId")
+        if not isinstance(pid, int) or not isinstance(sid, str) or not os.path.exists(f"{proc}/{pid}"):
+            continue
+        if e.get("procStart") is not None and proc_start(pid, proc) != str(e["procStart"]):
+            continue
+        k = session_key(host_id, "shell", sid)
+        out[k] = Liveness(key=k, status=e.get("status") if e.get("status") in ("busy", "idle") else "unknown",
+                          status_since=e.get("statusSince"), pid=pid)
+    return out

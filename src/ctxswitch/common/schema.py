@@ -9,10 +9,10 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Harness = Literal["claude", "pi", "claude-win", "agy"]
+Harness = Literal["claude", "pi", "claude-win", "agy", "shell"]
 AskKind = Literal["question", "plan", "permission", "elicitation", "prompt", "plain"]
 # plain = final text ending in "?" (heuristic); permission/elicitation/prompt come from hooks (hub/hooks.py)
-UserOrigin = Literal["human", "peer", "task", "meta", "unknown"]
+UserOrigin = Literal["human", "peer", "task", "meta", "unknown", "shell"]
 LiveStatus = Literal["busy", "waiting", "idle", "shell", "ended", "unknown"]   # waiting: Claude's dialog is up
 LIVE = ("busy", "waiting", "idle", "shell")
 
