@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 660" width="1180" height="660">
+<defs><marker id="a98e024" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#98e024"/></marker><marker id="s98e024" viewBox="0 0 10 10" refX="1.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#98e024"/></marker><marker id="ae45eff" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e45eff"/></marker><marker id="se45eff" viewBox="0 0 10 10" refX="1.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e45eff"/></marker><marker id="affa62b" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffa62b"/></marker><marker id="sffa62b" viewBox="0 0 10 10" refX="1.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffa62b"/></marker><filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#000" flood-opacity="0.45"/></filter><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#181818"/><stop offset="1" stop-color="#121212"/></linearGradient></defs><rect width="1180" height="660" rx="16" fill="url(#bg)"/>
+<text x="40" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#e0e0e0" text-anchor="start">How ctxswitch works</text>
+<text x="40" y="78" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="400" fill="#8a8a8a" text-anchor="start">every machine pushes to one hub; every board, CLI and agent reads the same live state</text>
+<rect x="40" y="112" width="330" height="148" rx="14" fill="#1e1e1e" stroke="#3a3a3a" stroke-width="1.5" filter="url(#shadow)"/>
+<path d="M54,112 h302 a14,14 0 0 1 14,14 v24 h-330 v-24 a14,14 0 0 1 14,-14 z" fill="#58d1eb" opacity="0.18"/>
+<rect x="40" y="150" width="330" height="1.2" fill="#58d1eb" opacity="0.55"/>
+<text x="56" y="137" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#58d1eb" text-anchor="start">laptop</text>
+<text x="356" y="137" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="end">a machine with agents</text>
+<rect x="58" y="166" width="122" height="28" rx="14" fill="#262626" stroke="#d97757" stroke-width="1.4" />
+<text x="119.0" y="184.68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#d97757" text-anchor="middle">Claude Code</text>
+<rect x="190" y="166" width="122" height="28" rx="14" fill="#262626" stroke="#ae81ff" stroke-width="1.4" />
+<text x="251.0" y="184.68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#ae81ff" text-anchor="middle">pi</text>
+<rect x="58" y="206" width="294" height="38" rx="8" fill="#262626" stroke="#98e024" stroke-width="1.4" />
+<text x="72" y="225" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14" font-weight="700" fill="#98e024" text-anchor="start">ctx-collector</text>
+<text x="72" y="239" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">transcripts · live registry · hook spool</text>
+<path d="M354,225 C430,225 440,300 488,300" fill="none" stroke="#98e024" stroke-width="2.2" marker-end="url(#a98e024)"/>
+<path d="M488,338 C430,338 440,236 356,236" fill="none" stroke="#ffa62b" stroke-width="1.6" stroke-dasharray="7 6" marker-end="url(#affa62b)"/>
+<rect x="40" y="280" width="330" height="148" rx="14" fill="#1e1e1e" stroke="#3a3a3a" stroke-width="1.5" filter="url(#shadow)"/>
+<path d="M54,280 h302 a14,14 0 0 1 14,14 v24 h-330 v-24 a14,14 0 0 1 14,-14 z" fill="#58d1eb" opacity="0.18"/>
+<rect x="40" y="318" width="330" height="1.2" fill="#58d1eb" opacity="0.55"/>
+<text x="56" y="305" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#58d1eb" text-anchor="start">devbox</text>
+<text x="356" y="305" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="end">a machine with agents</text>
+<rect x="58" y="334" width="122" height="28" rx="14" fill="#262626" stroke="#d97757" stroke-width="1.4" />
+<text x="119.0" y="352.68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#d97757" text-anchor="middle">Claude Code</text>
+<rect x="190" y="334" width="122" height="28" rx="14" fill="#262626" stroke="#ae81ff" stroke-width="1.4" />
+<text x="251.0" y="352.68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#ae81ff" text-anchor="middle">pi</text>
+<rect x="58" y="374" width="294" height="38" rx="8" fill="#262626" stroke="#98e024" stroke-width="1.4" />
+<text x="72" y="393" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14" font-weight="700" fill="#98e024" text-anchor="start">ctx-collector</text>
+<text x="72" y="407" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">transcripts · live registry · hook spool</text>
+<path d="M354,393 C430,393 440,300 488,300" fill="none" stroke="#98e024" stroke-width="2.2" marker-end="url(#a98e024)"/>
+<path d="M488,338 C430,338 440,404 356,404" fill="none" stroke="#ffa62b" stroke-width="1.6" stroke-dasharray="7 6" marker-end="url(#affa62b)"/>
+<rect x="40" y="448" width="330" height="148" rx="14" fill="#1e1e1e" stroke="#3a3a3a" stroke-width="1.5" filter="url(#shadow)"/>
+<path d="M54,448 h302 a14,14 0 0 1 14,14 v24 h-330 v-24 a14,14 0 0 1 14,-14 z" fill="#58d1eb" opacity="0.18"/>
+<rect x="40" y="486" width="330" height="1.2" fill="#58d1eb" opacity="0.55"/>
+<text x="56" y="473" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#58d1eb" text-anchor="start">gpu-host</text>
+<text x="356" y="473" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="end">a machine with agents</text>
+<rect x="58" y="502" width="122" height="28" rx="14" fill="#262626" stroke="#d97757" stroke-width="1.4" />
+<text x="119.0" y="520.68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#d97757" text-anchor="middle">Claude Code</text>
+<rect x="58" y="542" width="294" height="38" rx="8" fill="#262626" stroke="#98e024" stroke-width="1.4" />
+<text x="72" y="561" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14" font-weight="700" fill="#98e024" text-anchor="start">ctx-collector</text>
+<text x="72" y="575" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">transcripts · live registry · hook spool</text>
+<path d="M354,561 C430,561 440,300 488,300" fill="none" stroke="#98e024" stroke-width="2.2" marker-end="url(#a98e024)"/>
+<path d="M488,338 C430,338 440,572 356,572" fill="none" stroke="#ffa62b" stroke-width="1.6" stroke-dasharray="7 6" marker-end="url(#affa62b)"/>
+<text x="408" y="150" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#98e024" text-anchor="start">push (outbound only)</text>
+<text x="392" y="560" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#ffa62b" text-anchor="start">messages, long-polled by the collector</text>
+<rect x="490" y="190" width="330" height="290" rx="14" fill="#1e1e1e" stroke="#3a3a3a" stroke-width="1.5" filter="url(#shadow)"/>
+<path d="M504,190 h302 a14,14 0 0 1 14,14 v24 h-330 v-24 a14,14 0 0 1 14,-14 z" fill="#0178d4" opacity="0.18"/>
+<rect x="490" y="228" width="330" height="1.2" fill="#0178d4" opacity="0.55"/>
+<text x="506" y="215" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#0178d4" text-anchor="start">ctx-hub</text>
+<text x="806" y="215" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="end">one, e.g. in docker</text>
+<rect x="508" y="246" width="294" height="36" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="520" y="262" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e0e0e0" text-anchor="start">SQLite</text>
+<text x="520" y="276" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">sessions · turns · asks · ledger · messages</text>
+<rect x="508" y="290" width="294" height="36" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="520" y="306" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e0e0e0" text-anchor="start">REST + WebSocket</text>
+<text x="520" y="320" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">:7433, bearer token, live change feed</text>
+<rect x="508" y="334" width="294" height="36" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="520" y="350" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#ffa62b" text-anchor="start">attention</text>
+<text x="520" y="364" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">what waits on you, for boards and pop-ups</text>
+<rect x="508" y="378" width="294" height="36" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="520" y="394" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#58d1eb" text-anchor="start">workstreams</text>
+<text x="520" y="408" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">the same repo + branch on any host</text>
+<rect x="508" y="422" width="294" height="36" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="520" y="438" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e45eff" text-anchor="start">tracker</text>
+<text x="520" y="452" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">recaps + the ledger, quote-checked</text>
+<rect x="870" y="112" width="270" height="130" rx="14" fill="#1e1e1e" stroke="#3a3a3a" stroke-width="1.5" filter="url(#shadow)"/>
+<path d="M884,112 h242 a14,14 0 0 1 14,14 v24 h-270 v-24 a14,14 0 0 1 14,-14 z" fill="#e45eff" opacity="0.18"/>
+<rect x="870" y="150" width="270" height="1.2" fill="#e45eff" opacity="0.55"/>
+<text x="886" y="137" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e45eff" text-anchor="start">your local LLM</text>
+<text x="886" y="166" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#e0e0e0" text-anchor="start">any OpenAI-compatible endpoint</text>
+<text x="886" y="184" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="start">vLLM · LiteLLM · llama.cpp · …</text>
+<text x="886" y="202" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="start">json_schema answers, thinking off</text>
+<text x="886" y="224" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#98e024" text-anchor="start">nothing leaves your network</text>
+<path d="M802,440 C850,440 840,177 868,177" fill="none" stroke="#e45eff" stroke-width="2.2" marker-end="url(#ae45eff)"/>
+<text x="862" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="11" fill="#e45eff" transform="rotate(-90 862 236)" text-anchor="middle">/chat/completions</text>
+<rect x="870" y="290" width="270" height="300" rx="14" fill="#1e1e1e" stroke="#3a3a3a" stroke-width="1.5" filter="url(#shadow)"/>
+<path d="M884,290 h242 a14,14 0 0 1 14,14 v24 h-270 v-24 a14,14 0 0 1 14,-14 z" fill="#98e024" opacity="0.18"/>
+<rect x="870" y="328" width="270" height="1.2" fill="#98e024" opacity="0.55"/>
+<text x="886" y="315" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#98e024" text-anchor="start">anywhere you look</text>
+<rect x="888" y="344" width="234" height="38" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="900" y="361" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="700" fill="#98e024" text-anchor="start">ctx tmux</text>
+<text x="900" y="375" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">the board beside your agents</text>
+<rect x="888" y="390" width="234" height="38" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="900" y="407" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="700" fill="#98e024" text-anchor="start">ctx tui</text>
+<text x="900" y="421" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">the board on its own</text>
+<rect x="888" y="436" width="234" height="38" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="900" y="453" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="700" fill="#58d1eb" text-anchor="start">ctx ls · show · send</text>
+<text x="900" y="467" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">search · reply · retire</text>
+<rect x="888" y="482" width="234" height="38" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="900" y="499" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="700" fill="#d97757" text-anchor="start">ctx mcp</text>
+<text x="900" y="513" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">agents read it, message each other</text>
+<rect x="888" y="528" width="234" height="38" rx="8" fill="#262626" stroke="#3a3a3a" stroke-width="1" />
+<text x="900" y="545" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="700" fill="#ffa62b" text-anchor="start">pop-ups</text>
+<text x="900" y="559" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#8a8a8a" text-anchor="start">a tmux box when something needs you</text>
+<path d="M804,307 C838,307 836,372 868,372" fill="none" stroke="#98e024" stroke-width="2.2" marker-end="url(#a98e024)" marker-start="url(#s98e024)"/>
+<rect x="40" y="616" width="1100" height="1" rx="0" fill="#3a3a3a" stroke="#3a3a3a" stroke-width="0" />
+<text x="40" y="640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#8a8a8a" text-anchor="start">Deterministic first: questions, approvals, idle-since and the last prompt are parsed without a model. The LLM only adds the recap and the ledger.</text>
+</svg>

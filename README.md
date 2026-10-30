@@ -56,15 +56,8 @@ rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessio
   (the header shows which), or start with `ctx tui --all`.
 
 ## How it works
-```
- each machine                         hub (one, e.g. a docker host)          any machine
- ctx-collector ── HTTP POST ───────►  ctx-hub: SQLite + REST API   ◄──────  ctx tui / ctx ls / ctx show
-   watches ~/.claude/projects          recap + ledger tracker ──► your local LLM
-   and ~/.pi/agent/sessions            (OpenAI-compatible endpoint)
-   + live-session registries
-   + hook spool (Claude hooks,
-     pi extension)
-```
+<p align="center"><img src="docs/img/architecture.svg" alt="collectors on each machine push to one hub; the hub calls your local LLM; boards, the CLI and agents read the hub" width="100%"></p>
+
 - **Collectors only connect outbound.** A machine that blocks inbound traffic still takes part fully. While
   the hub is unreachable, a local queue buffers events and replays them idempotently.
 - **Deterministic first.** Anything the harness states outright (questions, approvals, idle-since, the last
@@ -159,18 +152,8 @@ ones go at the bottom), so its number, and the Alt+N that opens it, stays put wh
 only close up when a session above leaves the list: it ends (and ended ones are hidden), the hub drops it, or `h`
 or `/` filters it out. One that leaves and comes back joins at the bottom. A session waiting on you gets a second
 line saying what it's waiting on:
-```
-2 ◐  3m ◆ cc·laptop zephyr-sdk@feat/x  P2 carve: interface review ◐4m
-  ↳ approve the plan?
-│ │  │  │ │        │                   │                          └ an open question, and how long it has waited
-│ │  │  │ │        │                   └ title (or your last prompt)
-│ │  │  │ │        └ repo@branch (hidden when the pane is very narrow)
-│ │  │  │ └ harness·host (cc = Claude Code, pi = pi, cw = Windows Claude; host is dropped when filtered to one)
-│ │  │  └ what Enter can do (below)
-│ │  └ time in the current state (live) or since last activity (ended)
-│ └ state
-└ its number: Alt+1…9 opens it
-```
+
+<p align="center"><img src="docs/img/row.svg" alt="one board row with each part numbered and explained" width="100%"></p>
 
 <p align="center"><img src="docs/img/legend.svg" alt="every glyph on the board, in its colours" width="70%"></p>
 
@@ -311,6 +294,8 @@ again, keeping the old recap meanwhile; `docker logs ctxswitch-hub` shows each `
 ## 7. Messages
 `m` on the board, or `ctx send <session> "text"`, sends a message to a session on any host. It's typed into the
 session as a new prompt, so the agent works on it like anything you type there:
+
+<p align="center"><img src="docs/img/messages.svg" alt="a message goes queued, sent, delivered, replied; or cancelled or failed" width="100%"></p>
 
 | | |
 |---|---|
@@ -466,5 +451,6 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 ## Tests
 ```sh
 .venv/bin/python -m pytest -q     # the tmux tests run against a private tmux server and skip if tmux is missing
-.venv/bin/python scripts/screenshots.py   # regenerate docs/img/*.svg after a change to the board
+.venv/bin/python scripts/screenshots.py   # regenerate the board screenshots in docs/img/ after a change to the board
+.venv/bin/python scripts/diagrams.py      # and the diagrams (architecture, row, messages)
 ```
