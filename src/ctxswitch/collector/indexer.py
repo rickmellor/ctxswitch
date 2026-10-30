@@ -117,12 +117,21 @@ class Indexer:
             return False
         rec = self.state.file(str(path))
         offset = rec["offset"] if rec else 0
-        if rec and rec["ended"] and st.st_size == rec["size"]:
-            return False
         if st.st_size < offset:                      # truncated/rewritten: start over
             offset, rec = 0, None
         pcls = PiParser if harness == "pi" else ClaudeParser
         parser = pcls.from_state(rec["parser_state"], self.cfg.max_text_chars) if rec and rec["parser_state"] else pcls(self.cfg.max_text_chars)
+        if rec and rec["ended"] and st.st_size == rec["size"]:
+            # ended and unchanged: nothing to parse, but once per collector run resend its meta (no turns, no reset),
+            # so what this collector derives from its config (the account/profile name) reaches the hub for old
+            # sessions too
+            key = session_key(self.host_id, harness if harness != "claude-win" else "claude-win", session_id_from_path(path, harness))
+            if key in self._meta_sent or not rec["parser_state"]:
+                return False
+            meta = self._meta(parser.meta, key, path, harness, st)
+            self.emit("session", {**meta, "ended": True, "reset": False})
+            self._meta_sent[key] = meta
+            return True
         emitted = False
         if st.st_size > offset:
             with open(path, "rb") as f:
