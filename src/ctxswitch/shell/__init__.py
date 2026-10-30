@@ -53,5 +53,5 @@ def run(session_id: str | None = None) -> NoReturn:
         subprocess.run(["tmux", "pipe-pane", "-o", "-t", os.environ["TMUX_PANE"], f"cat >> {shlex.quote(str(out))}"],
                        capture_output=True, check=False)
     env.update({"CTX_SHELL_ID": sid, "CTX_SHELL_LOG": str(log), "CTX_SHELL_OUT": str(out),
-                "CTX_SHELL_REG_DIR": str(reg_dir), "HISTFILE": str(hist)})
+                "CTX_SHELL_REG_DIR": str(reg_dir), "HISTFILE": str(hist), "CTX_SHELL_HIST": str(hist)})
     os.execvpe("bash", ["bash", "--rcfile", str(RC), "-i"], env)

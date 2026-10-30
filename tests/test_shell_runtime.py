@@ -79,7 +79,8 @@ def pane(tmp_path, monkeypatch):
     sh, work = tmp_path / "shells", tmp_path / "work"
     (work / "sub").mkdir(parents=True)
     # the operator's own setup: PS1 plus a PROMPT_COMMAND of its own, which must survive ours
-    (tmp_path / ".bashrc").write_text("PS1='$ '\nPROMPT_COMMAND='echo -n'\n")
+    (tmp_path / ".bashrc").write_text("PS1='$ '\nPROMPT_COMMAND='echo -n'\nHISTCONTROL=ignoredups\n"
+                                      f"HISTFILE={tmp_path}/global_history\n")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CTXSWITCH_SHELLS", str(sh))
     monkeypatch.setenv("CTXSWITCH_RUNTIME", str(tmp_path / "run"))
@@ -220,9 +221,8 @@ def test_a_resumed_shell_adds_to_the_same_transcript(pane):
     tm("new-session", "-d", "-x", "200", "-y", "50", "-s", "again",
        f"cd {pane.work} && PYTHONPATH={SRC} {sys.executable} -c 'from ctxswitch.client.cli import main; main()' shell --id t1")
     assert wait_for(lambda: sum(r["t"] == "open" for r in records(pane.log)) == 2)
-    # `exit` is a command like any other: it gets a start, and its end never comes — the contract's "interrupted"
     rs = [r["t"] for r in records(pane.log)]
-    assert rs == ["open", "start", "end", "start", "close", "open"], rs
+    assert rs == ["open", "start", "end", "close", "open"], rs          # `exit` itself isn't recorded
     p = tm("list-panes", "-t", "again:0.0", "-F", "#{pane_id}").splitlines()[0]
     pane.pane = p
     send(pane, "echo two")
@@ -236,3 +236,15 @@ def test_exit_closes_the_session(pane):
     assert wait_for(lambda: reg_file(pane) is None)
     assert not (pane.log.parent / "t1.jsonl.n").exists() and not (pane.log.parent / "t1.jsonl.started").exists()
     assert (pane.sh / "t1.history").exists()
+
+
+def test_a_bashrc_histfile_and_ignoredups_dont_hide_commands(tmp_path, monkeypatch, pane):
+    """~/.bashrc that sets HISTFILE and ignoredups (pane's HOME is tmp_path): this shell keeps its own history file,
+    and a repeated command is recorded each time."""
+    send(pane, "echo again")
+    send(pane, "echo again")
+    assert wait_for(lambda: sum(r["t"] == "end" for r in records(pane.log)) == 2)
+    assert [b64(r["cmd"]) for r in records(pane.log) if r["t"] == "start"] == ["echo again"] * 2   # both, despite ignoredups
+    send(pane, "history -w")
+    assert wait_for(lambda: "echo again" in (pane.sh / "t1.history").read_text(errors="replace"))
+    assert not (tmp_path / "global_history").exists() or "echo again" not in (tmp_path / "global_history").read_text()

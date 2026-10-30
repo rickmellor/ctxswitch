@@ -18,10 +18,12 @@
 
 [ -f ~/.bashrc ] && . ~/.bashrc
 
-# a command that starts with a space stays out of history — and out of the transcript ("secret" lines).
-# keep ignoresups when the user had it; HISTTIMEFORMAT must stay empty: history 1 must print "  N  cmd".
+# this shell's own history file, even when ~/.bashrc set HISTFILE: a resumed shell gets its up-arrow back
+[ -n "${CTX_SHELL_HIST:-}" ] && HISTFILE=$CTX_SHELL_HIST
+# a command that starts with a space stays out of history — and out of the transcript ("secret" lines). Nothing
+# else may keep a command out: with ignoredups a second `make test` would never reach history, so never be
+# recorded. HISTTIMEFORMAT must stay empty: history 1 must print "  N  cmd".
 HISTCONTROL=ignorespace
-case :${HISTCONTROL:-}: in *ignoresups*) HISTCONTROL=$HISTCONTROL:ignoresups ;; esac
 shopt -s histappend
 
 # __ctx_b64 <text> -> base64 of its UTF-8 bytes, no wrapping. A failed encode yields "" rather than a line the
@@ -32,7 +34,7 @@ __ctx_b64() { local b; b=$(printf '%s' "$1" | base64 -w0 2>/dev/null); printf '%
 __ctx_outsize() { local s; s=$(stat -c %s "$CTX_SHELL_OUT" 2>/dev/null); printf '%s\n' "${s:-0}"; }
 
 # __ctx_now -> epoch seconds with a fraction; __ctx_iso -> the same, as the registry's ISO 8601 UTC
-__ctx_now() { local t=$EPOCHREALTIME; printf '%s\n' "${t//,/\\.}"; }
+__ctx_now() { local t=$EPOCHREALTIME; printf '%s\n' "${t//,/.}"; }    # a locale's decimal comma would break the JSON
 __ctx_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # __ctx_jesc <text> -> "..." safe to put in a JSON string: a path, so only backslash and quote can break it
@@ -75,6 +77,7 @@ __ctx_ps0() {
     n=$(cat "$CTX_SHELL_LOG.n" 2>/dev/null)
     if [ -n "$c" ] && [ "${n:-0}" -lt "$c" ] 2>/dev/null; then
         cmd=$(__ctx_cmd)
+        case $cmd in exit|exit\ *|logout|logout\ *) return 0 ;; esac     # leaving the shell isn't a command to show
         __ctx_rec "{\"t\":\"start\",\"n\":$c,\"ts\":$(__ctx_now),\"cwd\":\"$(__ctx_b64 "$PWD")\",\"cmd\":\"$(__ctx_b64 "$cmd")\",\"out\":$(__ctx_outsize)}"
         printf '%s\n' "$c" > "$CTX_SHELL_LOG.started" 2>/dev/null
         __ctx_reg busy
