@@ -78,7 +78,8 @@ REPLY_CHARS = 2000
 MATCH_CHARS = 200                                   # a turn is the message's when its prompt contains this much of the body
 MSG_OPEN = ("queued", "sent")
 AGENT_PER_HOUR = 20                                 # messages one agent session may send in an hour
-NOT_DELIVERABLE = ("claude-win", "agy")            # Windows-native Claude: no socket reachable from WSL; agy: no input channel
+NOT_DELIVERABLE = ("claude-win", "agy", "shell")  # Windows-native Claude: no socket reachable from WSL; agy: no input
+                                                  # channel; shell: a bash, nobody is listening for a prompt
 REPLYABLE = ("plain", "text")                       # asks a message can answer; the rest are dialogs in the session
 SIBLINGS = 6                                        # other sessions shown for a workstream
 SIBLING_DAYS = 14                                   # ... live, or active within this many days
@@ -243,9 +244,12 @@ class Store:
         the sender's key and title) only to a collector that asks for them. A workstream message is bound here to a
         session live on this host on that work, the first such host to ask taking it."""
         self._bind_workstream_messages(host_id)
+        # a harness that can't take one is filtered here too: api refuses them, but a row queued before that must not go out
         q = (f"SELECT m.id, m.key, m.body, s.harness, m.from_key, COALESCE(NULLIF(f.live_name,''), f.title) AS from_title "
              f"FROM messages m JOIN sessions s ON s.key=m.key LEFT JOIN sessions f ON f.key=m.from_key WHERE m.status='queued' "
-             f"AND s.host_id=? AND s.live_status IN ({_LIVE_SQL}){'' if agents else ' AND m.from_key IS NULL'} ORDER BY m.id")
+             f"AND s.host_id=? AND s.live_status IN ({_LIVE_SQL}) "
+             f"AND s.harness NOT IN ({','.join(repr(h) for h in NOT_DELIVERABLE)})"
+             f"{'' if agents else ' AND m.from_key IS NULL'} ORDER BY m.id")
         return [dict(r) for r in self.db.execute(q, (host_id,))]
 
     def _bind_workstream_messages(self, host_id: str) -> None:
@@ -594,7 +598,7 @@ class Store:
     def attention(self, host: str | None = None) -> list[dict[str, Any]]:
         """Open asks on sessions that are not ended (and not moved past), plus idle live sessions, oldest wait first."""
         q = ("SELECT a.*, s.host_id, s.harness, s.title, s.live_status, s.status_since FROM asks a JOIN sessions s ON s.key=a.key "
-             "WHERE a.answered=0 AND s.live_status!='ended' AND s.ended=0 "
+             "WHERE a.answered=0 AND s.live_status!='ended' AND s.ended=0 AND s.harness!='shell' "     # a bash asks nothing
              # a later prompt (yours or a peer's, not a command wrapper or task notice) means it moved on: a dialog
              # left open when the session was killed and resumed never gets an answer in the transcript
              "AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.key=a.key AND t.idx>a.turn_idx "
@@ -611,7 +615,8 @@ class Store:
             q2 += " AND host_id=?"
         asked = {i["key"] for i in items}
         for r in self.db.execute(q2, args):
-            if r["key"] not in asked:
+            # a shell session is at its prompt nearly all the time: idle there is not "your move"
+            if r["key"] not in asked and not (r["harness"] == "shell" and r["live_status"] == "idle"):
                 items.append(dict(r) | {"item": r["live_status"], "asked_at": r["status_since"]})
         return items
 

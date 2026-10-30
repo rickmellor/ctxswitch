@@ -57,6 +57,7 @@ def _clip(text: str | None, n: int) -> str:
 def build_prompt(s: dict[str, Any]) -> str:
     turns = s.get("turns") or []
     human = [t for t in turns if t.get("user_origin") == "human"]
+    sh = s.get("harness") == "shell"              # a plain shell: its "exchanges" are commands and what they printed
     lines = [f"Session: {s.get('title') or '-'} ({s.get('harness')} on {s.get('host_id')}, in {s.get('cwd') or '-'})",
              f"State: {s.get('live_status')}"]
     first = (s.get("meta") or {}).get("first_prompt")
@@ -68,18 +69,21 @@ def build_prompt(s: dict[str, Any]) -> str:
     if held:
         lines.append("Your standing instructions:")
         lines += [f"- {_clip(r['text'], 200)}" for r in held[-8:]]
+    if sh:
+        lines.append("This is a plain shell, not an AI agent: the exchanges are commands and their exit codes and output.")
     lines.append("Recent exchanges, oldest first:")
+    WHO = {"human": "you", "peer": "peer session", "task": "task notification", "shell": "you ran"}
     for t in turns[-6:]:
-        who = {"human": "you", "peer": "peer session", "task": "task notification"}.get(t.get("user_origin"), t.get("user_origin") or "?")
+        who = WHO.get(t.get("user_origin"), t.get("user_origin") or "?")
         if t.get("from_key"):
             who = f"another agent session ({t['from_key']}), not you"
         lines.append(f"- #{t['idx']} {who}: {_clip(t.get('user_text'), 600)}")
         if t.get("assistant_text"):
-            lines.append(f"  agent: {_clip(t.get('assistant_text'), 900)}")
+            lines.append(f"  {'result' if sh else 'agent'}: {_clip(t.get('assistant_text'), 900)}")
         for a in t.get("asks") or []:
             lines.append(f"  agent asked [{a['kind']}]: {_clip(a['text'], 300)}" + (f" -> you answered: {_clip(a.get('answer'), 200)}" if a.get("answered") else ""))
         if not t.get("complete"):
-            lines.append("  (agent still working on this)")
+            lines.append("  (command still running)" if sh else "  (agent still working on this)")
     if human and human[-1] not in turns[-6:]:
         lines.append(f"Your last prompt: {_clip(human[-1].get('user_text'), 600)}")
     opens = s.get("open_asks") or []
