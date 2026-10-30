@@ -117,6 +117,26 @@ class Hub:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         return JSONResponse({"text": brief(self.store.session(req.path_params["key"], turns=10))})
 
+    async def handoff(self, req: Request) -> Response:
+        """GET: the handoff document and opening prompt for continuing this session in another agent (?to=agy&full=1).
+        POST {to, profile}: note that a handoff was started (shown until the new session links itself)."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        from ctxswitch.hub.handoff import prompt, render
+        key = req.path_params["key"]
+        if req.method == "POST":
+            body = await req.json()
+            if not self.store.session(key, turns=0):
+                return JSONResponse({"error": "not found"}, 404)
+            self.store.note_handoff(key, body.get("to", ""), body.get("profile"))
+            self._notify()
+            return JSONResponse({"ok": True})
+        s = self.store.session(key, turns=int(req.query_params.get("turns", "500")))
+        if not s:
+            return JSONResponse({"error": "not found"}, 404)
+        to = req.query_params.get("to") or None
+        full = req.query_params.get("full", "1") != "0"
+        return JSONResponse({"text": render(s, to, full), "prompt": prompt("{path}", s, to)})
+
     async def viewed(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         body = await req.json()
@@ -272,6 +292,7 @@ class Hub:
             Route("/v1/sessions", self.sessions),
             Route("/v1/sessions/{key:path}/viewed", self.viewed, methods=["POST"]),
             Route("/v1/sessions/{key:path}/brief", self.brief),
+            Route("/v1/sessions/{key:path}/handoff", self.handoff, methods=["GET", "POST"]),
             Route("/v1/sessions/{key:path}/ledger/{row:int}/retire", self.retire, methods=["POST"]),
             Route("/v1/sessions/{key:path}/messages", self.send, methods=["POST"]),
             Route("/v1/workstreams/messages", self.send_workstream, methods=["POST"]),

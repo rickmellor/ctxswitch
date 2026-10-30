@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS messages (
     ask_ref TEXT, from_key TEXT, workstream TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_key ON messages(key, status);
+CREATE TABLE IF NOT EXISTS links (
+    to_key TEXT PRIMARY KEY, from_key TEXT NOT NULL, at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tracker (
     key TEXT PRIMARY KEY, through_idx INTEGER NOT NULL DEFAULT -1, purpose TEXT, purpose_turn INTEGER,
     purpose_history TEXT NOT NULL DEFAULT '[]', updated REAL
@@ -135,6 +138,11 @@ class Store:
             self._bump()
 
     def upsert_turns(self, key: str, turns: list[dict[str, Any]], open_turn: dict[str, Any] | None, ended: bool = False) -> None:
+        from ctxswitch.hub.handoff import marker_in
+        for t in [*turns, *([open_turn] if open_turn else [])]:
+            frm = marker_in(t.get("user_text"))
+            if frm:
+                self.link_handoff(key, frm)
         with self._lock:
             for t in [*turns, *([open_turn] if open_turn else [])]:
                 self._match_message(key, t)
@@ -319,6 +327,45 @@ class Store:
              f"ORDER BY CASE WHEN s.live_status IN ({_LIVE_SQL}) THEN 0 ELSE 1 END, s.last_activity DESC")
         return [r[0] for r in self.db.execute(q, (cutoff,))]
 
+    # -- handoffs -------------------------------------------------------------------------------------------------
+    def note_handoff(self, key: str, to: str, profile: str | None = None) -> None:
+        """The operator started a handoff of ``key`` to agent ``to``; shown until the new session links itself."""
+        with self._lock:
+            self.db.execute("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                            (f"handoff:{key}", json.dumps({"to": to, "profile": profile, "at": time.time()})))
+            self.db.commit(); self._bump()
+
+    def link_handoff(self, to_key: str, from_key: str) -> bool:
+        """The new session's first prompt named the session it continues: link them once, and carry the active
+        standing instructions and the purpose over to the new session's ledger (marked inherited)."""
+        with self._lock:
+            if from_key == to_key or self.db.execute("SELECT 1 FROM links WHERE to_key=?", (to_key,)).fetchone():
+                return False
+            if not self.db.execute("SELECT 1 FROM sessions WHERE key=?", (from_key,)).fetchone():
+                return False
+            now = time.time()
+            self.db.execute("INSERT INTO links(to_key,from_key,at) VALUES(?,?,?)", (to_key, from_key, now))
+            for r in self.db.execute("SELECT kind,text,quote,extra FROM ledger WHERE key=? AND kind='instruction' AND active=1 ORDER BY id", (from_key,)).fetchall():
+                extra = json.loads(r[3] or "{}") | {"inherited_from": from_key}
+                self.db.execute("INSERT INTO ledger(key,kind,text,quote,turn_idx,extra,created) VALUES(?,?,?,?,?,?,?)",
+                                (to_key, r[0], r[1], r[2], -1, json.dumps(extra), now))
+            src = self.tracker_state(from_key)
+            if src.get("purpose") and not self.tracker_state(to_key).get("purpose"):
+                self.db.execute("INSERT INTO tracker(key,through_idx,purpose,purpose_turn,purpose_history,updated) VALUES(?,-1,?,-1,'[]',?) "
+                                "ON CONFLICT(key) DO UPDATE SET purpose=excluded.purpose, purpose_turn=-1, updated=excluded.updated",
+                                (to_key, src["purpose"], now))
+            self.db.execute("DELETE FROM kv WHERE k=?", (f"handoff:{from_key}",))
+            self.db.commit(); self._bump()
+            return True
+
+    def handoff_links(self, key: str) -> dict[str, Any]:
+        """continues: the key this session took over from; continued_by: sessions that took over from it; handed_off:
+        a handoff started but not yet linked ({to, profile, at})."""
+        cont = self.db.execute("SELECT from_key FROM links WHERE to_key=?", (key,)).fetchone()
+        by = [r[0] for r in self.db.execute("SELECT to_key FROM links WHERE from_key=? ORDER BY at", (key,))]
+        pend = self.db.execute("SELECT v FROM kv WHERE k=?", (f"handoff:{key}",)).fetchone()
+        return {"continues": cont[0] if cont else None, "continued_by": by, "handed_off": json.loads(pend[0]) if pend else None}
+
     def tracker_state(self, key: str) -> dict[str, Any]:
         r = self.db.execute("SELECT * FROM tracker WHERE key=?", (key,)).fetchone()
         if r is None:
@@ -471,6 +518,7 @@ class Store:
         d["purpose"], d["purpose_history"], d["tracked_through"] = st["purpose"], st["purpose_history"], st["through_idx"]
         d["siblings"] = self.siblings(d)
         d["workstream_messages"] = self.workstream_messages(d.get("workstream"))
+        d.update(self.handoff_links(key))
         return d
 
     def search(self, query: str, kinds: tuple[str, ...] = SEARCH_KINDS, host: str | None = None,

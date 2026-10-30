@@ -71,6 +71,16 @@ class HubClient:
             raise ValueError(_error(r))
         return int(r.json()["id"])
 
+    def handoff(self, key: str, to: str | None = None, full: bool = True) -> dict[str, Any]:
+        """{text, prompt} for continuing ``key`` in agent ``to``; prompt has a {path} placeholder for the document."""
+        r = self._c.get(f"/v1/sessions/{key}/handoff", params={"to": to or "", "full": "1" if full else "0"})
+        if r.status_code != 200:
+            raise ValueError(_error(r))
+        return r.json()
+
+    def note_handoff(self, key: str, to: str, profile: str | None = None) -> None:
+        self._c.post(f"/v1/sessions/{key}/handoff", json={"to": to, "profile": profile}).raise_for_status()
+
     def retire(self, key: str, row_id: int) -> bool:
         return self._c.post(f"/v1/sessions/{key}/ledger/{row_id}/retire").status_code == 200
 

@@ -99,6 +99,53 @@ def resume_extra(target: ClaudeProfile) -> list[str]:
     return ["--model", target.model] if target.model else []
 
 
+# -- handoff to another agent ---------------------------------------------------------------------------------------
+def handoff_dir() -> Path:
+    from ctxswitch.client.install import state_dir
+    d = state_dir() / "handoff"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def write_handoff(s: dict, client, to: str, full: bool = True) -> tuple[Path, str]:
+    """Fetch the handoff document from the hub, write it beside ctxswitch's state, return (path, opening prompt)."""
+    doc = client.handoff(s["key"], to, full)
+    name = s["key"].replace("/", "-") + "-" + time.strftime("%Y%m%d-%H%M%S") + ".md"
+    path = handoff_dir() / name
+    path.write_text(doc["text"])
+    return path, doc["prompt"].replace("{path}", str(path))
+
+
+def handoff_argv(to: str, path: Path, prompt: str) -> list[str]:
+    """What to append to the agent's launch argv so it starts with the prompt and can read the document."""
+    if to == "agy":                                        # agy reads only trusted/added directories
+        return ["--add-dir", str(path.parent), "-i", prompt]
+    return [prompt]                                        # claude [prompt], pi [messages...]
+
+
+def targets(s: dict, options: list[tuple[str, str, str | None]], profiles: list[ClaudeProfile]) -> list[tuple[str, str, str | None]]:
+    """Where x can send this session: every startable agent (new_session_options) except what it already is."""
+    own = profile_for(s, profiles).name if s.get("harness") == "claude" else None
+    return [o for o in options if not (o[1] == s.get("harness") and (o[1] != "claude" or o[2] == own or (o[2] is None)))]
+
+
+def handoff(s: dict, to: str, profile: str | None, cfg, client, start, full: bool = True) -> str:
+    """Continue ``s`` in agent ``to``: write the document, tell the hub, start the agent (``start(harness, cwd,
+    extra, profile)`` -> message). Returns a message for the board."""
+    if to == s.get("harness") and to != "claude":
+        raise CannotMove(f"already a {to} session")
+    path, prompt = write_handoff(s, client, to, full)
+    try:
+        client.note_handoff(s["key"], to, profile)
+    except Exception:                                      # noqa: BLE001 - the link still happens from the marker
+        pass
+    cwd = s.get("cwd") or os.path.expanduser("~")
+    if not os.path.isdir(cwd):
+        cwd = os.path.expanduser("~")
+    msg = start(to, cwd, handoff_argv(to, path, prompt), profile)
+    return f"handoff to {to}{f' · {profile}' if profile else ''}: {msg} (document {path.name})"
+
+
 def other_profiles(s: dict, profiles: list[ClaudeProfile]) -> list[ClaudeProfile]:
     cur = profile_for(s, profiles).name
     return [p for p in profiles if p.name != cur]

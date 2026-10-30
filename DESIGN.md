@@ -295,6 +295,10 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    read raw (user prompt = step 14 payload f19.f2, reply = step 15 payload f20.f1, tool name = metadata f4.f2),
    step index as the replay offset, title/cwd/busy from conversation_summaries.db, liveness = the flock on
    presence/<id>.lock, pid via /proc. Resume: `agy --conversation <id>`. Not yet: messaging in, hook events (asks).
+6d. Handoff (2026-10-30): `x` to a different agent renders a document from the hub (purpose, instructions,
+   decisions, claims, recap, open asks, the conversation) and starts the new agent with a prompt that names it;
+   the prompt's `[ctxswitch-handoff:<key>]` marker links the sessions on ingest (links table) and the new one
+   inherits active instructions and the purpose. Moves stay Claude-account-only.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 

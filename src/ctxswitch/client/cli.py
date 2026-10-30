@@ -147,13 +147,29 @@ def cmd_move(a) -> int:
     s = c.session(key, turns=0)
     if not s:
         print(f"no session {key}"); return 1
+    to, _, prof = a.to.partition(":")
+    harness = to if to in ("claude", "pi", "agy") else None
+    profile = prof or None
+    if harness is None:                                     # a claude profile name: a move between accounts
+        profile = to
+    elif harness == "claude" and profile is None and cfg.claude_profiles:
+        profile = cfg.claude_profiles[0].name if len(cfg.claude_profiles) > 1 or cfg.claude_profiles[0].name != "default" else None
     try:
         if a.end and mv.can_end_here(s):
             print("ending it first…")
             why = mv.end_and_wait(s, cfg)
             if why:
                 raise mv.CannotMove(why)
-        target, path = mv.move(s, a.to, cfg.claude_profiles, cfg.host_id)
+        if harness and not (harness == "claude" and s.get("harness") == "claude"):
+            if s.get("live_status") in LIVE:
+                raise mv.CannotMove("it's running: end it first" + ("" if a.end else " (--end, inside ctx's tmux)"))
+            if tmux.in_tmux():
+                start = lambda h, cwd, extra, p: tmux.new_agent(h, cwd, extra, profile=p, profiles=cfg.claude_profiles)
+            else:
+                start = lambda h, cwd, extra, p: "run: cd " + cwd + " && " + __import__("shlex").join(
+                    [*(mv.profile_named(p, cfg.claude_profiles).argv() if h == "claude" else [h]), *extra])
+            print(mv.handoff(s, harness, profile, cfg, c, start, full=not a.brief)); return 0
+        target, path = mv.move(s, profile, cfg.claude_profiles, cfg.host_id)
     except mv.CannotMove as e:
         print(f"cannot move: {e}" + ("" if a.end or "running" not in str(e) else " (or --end, inside ctx's tmux)")); return 1
     print(f"moved to {target.name}: {path}")
@@ -269,8 +285,9 @@ def main(argv=None) -> None:
     p.add_argument("--work", action="store_true", help="to its workstream (repo + branch): whichever session is, or next is, live on it")
     p = sub.add_parser("retire", help="retire an instruction that no longer holds (ids in `ctx show`)"); p.set_defaults(fn=cmd_retire)
     p.add_argument("key"); p.add_argument("id", type=int)
-    p = sub.add_parser("move", help="move a Claude session to another account ([[claude_profiles]]) and resume it there"); p.set_defaults(fn=cmd_move)
-    p.add_argument("key"); p.add_argument("--to", required=True, metavar="PROFILE")
+    p = sub.add_parser("move", help="send a session elsewhere: to another Claude account (a move) or another agent (a handoff)"); p.set_defaults(fn=cmd_move)
+    p.add_argument("key"); p.add_argument("--to", required=True, metavar="PROFILE|pi|agy|claude[:PROFILE]")
+    p.add_argument("--brief", action="store_true", help="handoff: the last few exchanges only, not the whole conversation")
     p.add_argument("--no-resume", action="store_true", help="move only; print the resume command")
     p.add_argument("--end", action="store_true", help="a running session in ctx's tmux: end it first (as k does), then move")
     p = sub.add_parser("reply"); p.set_defaults(fn=cmd_reply)

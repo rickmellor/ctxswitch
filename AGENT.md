@@ -44,6 +44,7 @@ src/ctxswitch/
     spool.py              drains the hook spool into the outbox as "hook" events
   hub/
     main.py               ctx-hub entry; wires the Recapper into the Starlette lifespan
+    handoff.py            handoff document + opening prompt for continuing a session in another agent; its marker links the sessions on ingest
     api.py                REST /v1/{ingest,sessions,sessions/<key>[/viewed|/messages],messages/<id>/{status,cancel},outbox,attention,hosts,health} + /v1/ws
     store.py              SQLite (WAL); schema migrations are ALTER TABLE in place
     hooks.py              hook events → permission / elicitation / prompt asks and their resolution

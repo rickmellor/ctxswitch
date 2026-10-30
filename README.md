@@ -227,7 +227,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `v` | mark the selected session viewed (it's also marked whenever you open it, on any machine) |
 | `r` | refresh now (the board also updates live over a WebSocket) |
 | `p` | pop-ups off / on for this run (`notify` sets how it starts) |
-| `x` | exchange: move the selected Claude session to the other account and resume it there (see Exchanging a session). A running one in ctx's tmux is ended first, after a y. With three or more profiles it asks which |
+| `x` | exchange: send the selected session elsewhere, from a picker. Another Claude account: a move (same transcript). Another agent: a handoff (see Exchanging a session). A running one in ctx's tmux is ended first, after a y |
 | `i` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
@@ -264,6 +264,15 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
   refuse). Press `x` again later to move it back. The session keeps its number, history, ledger and recap. One
   running in another terminal or on another host has to be quit there first, and only a session whose files are
   on this machine moves (on another host, run `ctx move` there).
+- **Handing a session to a different agent** (`x` too, picking pi, Antigravity or Claude; `ctx move <session>
+  --to agy`): no agent resumes another's transcript, so this is a handoff. The hub renders what it knows into one
+  document (what the work is for, your standing instructions, decisions, what the agent reported, the recap, open
+  questions, and the conversation as operator/agent text with tool counts), ctxswitch writes it under
+  `~/.local/state/ctxswitch/handoff/`, and starts the new agent in the same directory with an opening prompt that
+  says to read it first and carry on. The prompt carries a marker; when the new session's first exchange reaches
+  the hub, the two are linked: the new one inherits the standing instructions and the purpose, both detail panes
+  say `continues …` / `handed off to …`, and they share a workstream. What doesn't carry: tool results that
+  weren't in the text, thinking, permission state. `--brief` sends the last three exchanges instead of all.
 - **Antigravity sessions** (`agy`) are read from agy's own SQLite store (one conversation per file, protobuf
   steps read raw: the prompt, the model's reply, tool calls by name), live while agy holds the conversation's
   presence lock, busy or idle from its summary row. Enter resumes one with `agy --conversation <id>`; `n` starts
@@ -378,7 +387,7 @@ pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its o
 | `ctx send <session> [text \| -] [--buffer] [--work] [--cancel ID]` | message a session (text, stdin with `-` or no text, or the tmux paste buffer); `--work`: its workstream instead; `--cancel` withdraws a queued one |
 | `ctx retire <session> <id>` | retire an instruction that no longer holds (`ctx show` prints the ids) |
 | `ctx reply <session> [text \| -]` | answer the question it's waiting on (see Answering a question) |
-| `ctx move <session> --to <profile> [--end] [--no-resume]` | move a Claude session to another account and resume it there (`x` on the board); `--end` ends a running one in ctx's tmux first; `--no-resume` prints the resume command instead |
+| `ctx move <session> --to <profile \| pi \| agy \| claude[:profile]> [--end] [--brief] [--no-resume]` | send a session elsewhere (`x` on the board): a Claude profile name moves it between accounts; an agent name hands it off (a document plus an opening prompt; `--brief` for the last few exchanges only). `--end` ends a running one in ctx's tmux first; `--no-resume` prints the command instead |
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |

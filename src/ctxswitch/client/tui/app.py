@@ -145,9 +145,10 @@ HELP_KEYS = [
     (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
     (("k",), "k", "end the selected session's agent, after a y (it stays resumable: Enter brings it back)"),
     (("a",), "a", "answer the question it's waiting on (plain-text questions; dialogs are answered in the session)"),
-    (("x",), "x", "exchange: move the selected Claude session to the other account ([[claude_profiles]]: bedrock ⇄ max) "
-                  "and resume it there with that profile's model. A running one in ctx's tmux is ended first, after a y. "
-                  "With three or more profiles it asks which"),
+    (("x",), "x", "exchange: send the selected session elsewhere, picked from a list. To another Claude account: it moves "
+                  "(same transcript, resumed with that profile's model). To another agent (pi, Antigravity, Claude): a handoff, "
+                  "a document of what it's for, your instructions, decisions and the conversation, which the new agent reads "
+                  "first. A running one in ctx's tmux is ended first, after a y"),
     (("i",), "i", "retire one of YOUR INSTRUCTIONS that no longer holds: type its number"),
     (("w",), "w", "group the list by workstream (repo@branch across hosts), or back to a flat list"),
     (("h",), "h", "host filter: this host, all hosts, each other host"),
@@ -221,6 +222,12 @@ def row_tip(s: dict, reach: str, on_left: bool, ssh: dict, now: datetime) -> str
     if s.get("unseen"):
         lines.append(f"+{s['unseen']} exchange{'s' if s['unseen'] != 1 else ''} since you last looked")
     lines.append(f"{HARNESS_NAME.get(s.get('harness', ''), s.get('harness', ''))} on {s.get('host_id', '?')} · {fmt.repo_label(s)}")
+    if s.get("continues"):
+        lines.append(f"continues {s['continues']} (handoff)")
+    for k in s.get("continued_by") or []:
+        lines.append(f"handed off to {k}")
+    if s.get("handed_off"):
+        lines.append(f"handoff to {s['handed_off'].get('to')} started, waiting for the new session")
     return "\n".join(lines)
 
 
@@ -289,12 +296,13 @@ class Picker(ModalScreen):
     Picker > Static { width: 100%; height: auto; border: round $accent; padding: 0 1; background: $surface; }
     """
 
-    def __init__(self, options: list[tuple[str, str, str | None]]):
+    def __init__(self, options: list[tuple[str, str, str | None]], title: str = "new session: "):
         super().__init__()
         self.options = options                          # (label, harness, profile)
+        self.title_text = title
 
     def compose(self) -> ComposeResult:
-        t = Text("new session: ", style="bold")
+        t = Text(self.title_text, style="bold")
         for n, (label, _, _) in enumerate(self.options, 1):
             t.append(f"{n} ", style="bold"); t.append(f"{label}   ")
         t.append("Esc cancels", style="dim")
@@ -970,32 +978,59 @@ class CtxApp(App):
         self._show_input(f"work:{ws}", f"message to {fmt.workstream_label(ws)} (the first session live on it, any host), enter to send")
 
     def action_exchange(self) -> None:
-        """x: move the selected Claude session to another account (profile) and resume it there."""
+        """x: send the selected session elsewhere. To another Claude account: move it (same transcript). To another
+        agent (pi, Antigravity, Claude from pi…): hand it off (a document plus an opening prompt). A running
+        session in ctx's tmux is ended first, after a y."""
         s = self._selected_session()
         if not s:
             return
-        profiles = self.cfg.claude_profiles
-        if len(profiles) < 2:
-            self.notify("one claude profile only: add [[claude_profiles]] to config.toml to exchange", severity="warning"); return
+        if not tmux.in_tmux():
+            self.notify("exchange needs the tmux manager (ctx tmux)", severity="warning"); return
+        options = mv.targets(s, new_session_options(self.cfg), self.cfg.claude_profiles)
+        if not options:
+            self.notify("nowhere to send it: no other agent or claude account is installed here", severity="warning"); return
         live = s.get("live_status") in LIVE
-        try:                                            # everything but liveness: that's handled by ending it
-            mv.check({**s, "live_status": "ended"}, mv.other_profiles(s, profiles)[0].name, profiles, self.this_host)
-        except mv.CannotMove as e:
-            self.notify(str(e), severity="warning"); return
         if live and not mv.can_end_here(s):
             self.notify("it's running outside ctx's tmux (another terminal, or another host): quit it there, then x",
                         severity="warning", timeout=6); return
-        others = mv.other_profiles(s, profiles)
-        if len(others) > 1:
-            self.pending_exchange = (s, live)
-            self._show_input("exchange", f"move to which profile ({', '.join(p.name for p in others)})? enter"); return
-        to = others[0].name
+        if s.get("harness") == "claude" and s.get("host_id") != self.this_host:
+            self.notify(f"its transcript is on {s.get('host_id')}: hand off from there, or ctx move there", severity="warning"); return
+        self.push_screen(Picker(options, "send to: "), lambda choice: self._exchange_to(s, choice, live))
+
+    def _exchange_to(self, s: dict, choice: tuple[str, str | None] | None, live: bool) -> None:
+        if not choice:
+            return
+        harness, profile = choice
+        move = harness == "claude" and s.get("harness") == "claude"
+        what = f"move it to {profile}" if move else f"hand it off to {harness}{f' · {profile}' if profile else ''}"
+        if move:
+            try:
+                mv.check({**s, "live_status": "ended"}, profile, self.cfg.claude_profiles, self.this_host)
+            except mv.CannotMove as e:
+                self.notify(str(e), severity="warning"); return
         if live:
             busy = " (busy: it's working)" if s.get("live_status") == "busy" else ""
-            self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)}{busy} and move it to {to}?",
-                         lambda: self.exchange_session(s, to, end_first=True))
+            self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)}{busy} and {what}?",
+                         lambda: self.exchange_session(s, profile, True) if move else self.handoff_session(s, harness, profile, True))
+        elif move:
+            self.exchange_session(s, profile)
         else:
-            self.exchange_session(s, to)
+            self.handoff_session(s, harness, profile)
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def handoff_session(self, s: dict, harness: str, profile: str | None, end_first: bool = False) -> None:
+        try:
+            if end_first:
+                self.call_from_thread(self.notify, f"ending {fmt.one_line(fmt.display_title(s), 30)}…", timeout=4)
+                why = mv.end_and_wait(s, self.cfg)
+                if why:
+                    raise mv.CannotMove(why)
+            start = lambda h, cwd, extra, prof: tmux.new_agent(h, cwd, extra, profile=prof, profiles=self.cfg.claude_profiles)
+            msg = mv.handoff(s, harness, profile, self.cfg, self.client, start)
+        except Exception as e:                          # noqa: BLE001
+            msg = f"handoff: {e}"
+        popup_log(f"handoff {s.get('key')} -> {harness}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=8)
 
     @work(exclusive=True, group="tmux", thread=True)
     def exchange_session(self, s: dict, to: str, end_first: bool = False) -> None:
@@ -1153,13 +1188,6 @@ class CtxApp(App):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             if value.strip():
                 self.send_message(mode.split(":", 1)[1], value)
-            return
-        if mode == "exchange":
-            pend, self.pending_exchange = getattr(self, "pending_exchange", None), None
-            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
-            if pend and value.strip():
-                s, live = pend
-                self.exchange_session(s, value.strip(), end_first=live)
             return
         if mode.startswith("new:"):
             _, harness, profile = (mode.split(":", 2) + [""])[:3]
