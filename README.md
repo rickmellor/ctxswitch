@@ -221,7 +221,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
 | `a` | answer the question it's waiting on: type the answer, Enter sends (see Answering a question) |
 | `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
-| `<` `>` | make the board narrower / wider, 5 columns a press; remembered (in ~/.local/state/ctxswitch/board-width) for the next `ctx tmux` |
+| `<` `>` | make the board wider / narrower (its left edge moves the arrow's way), 5 columns a press; remembered (in ~/.local/state/ctxswitch/board-width) for the next `ctx tmux` |
 | `h` | host filter: this host → all → each other host |
 | `/` | filter by text (title, repo, key, last prompt). `Esc` clears |
 | `e` | show or hide ended sessions |

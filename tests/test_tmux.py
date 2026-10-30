@@ -169,13 +169,10 @@ def test_step_width_resizes_remembers_and_repins(server, monkeypatch, tmp_path):
     assert tm("show-options", "-v", "-t", "ctx", "@ctx_width") == "55"          # what pin_board_width holds it at
     assert tmux.WIDTH_FILE.read_text().strip() == "55"                          # and the next `ctx tmux` starts here
     assert re.search(rf'resize-pane -t "?{re.escape(board)}"? -x 55', tm("show-hooks", "-t", "ctx"))
-    for _ in range(40):                                                         # down: it stops at MIN_WIDTH
-        if tmux.step_width(board, -5) == str(tmux.MIN_WIDTH):
-            break
-    assert tm("display-message", "-p", "-t", board, "#{pane_width}") == "30"
-    for _ in range(60):                                                         # up: the left pane keeps 20 columns
-        if tmux.step_width(board, 5) == "140":
-            break
+    tm("resize-pane", "-t", board, "-x", "32")
+    assert tmux.step_width(board, -5) == "30" and tmux.saved_width() == "30"     # not 27: it stops at MIN_WIDTH
+    tm("resize-pane", "-t", board, "-x", "138")
+    assert tmux.step_width(board, 5) == "140" and tmux.saved_width() == "140"   # not 143: the left pane keeps 20
     assert tm("display-message", "-p", "-t", board, "#{pane_width}") == "140"
     assert tmux.step_width(None, 5) is None
 
@@ -439,6 +436,19 @@ def test_joining_from_outside_tmux_puts_the_board_back_then_attaches(server, mon
     monkeypatch.setattr(tmux.os, "execvp", lambda f, argv: calls.append(argv))
     tmux.bootstrap("20")
     assert [p for p in tmux.panes() if p.session == "ctx" and p.role == "tui"] and calls == [["tmux", "attach-session", "-t", "ctx"]]
+
+
+def test_ctx_tmux_starts_at_the_remembered_width_and_remembers_a_given_one(server, monkeypatch, tmp_path):
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    fake = tmp_path / "ctx"; fake.write_text("#!/bin/sh\nexec sleep 300\n"); fake.chmod(0o755)
+    monkeypatch.setattr(tmux.os.sys, "argv", [str(fake), "tmux"])
+    monkeypatch.setattr(tmux, "WIDTH_FILE", tmp_path / "w")
+    monkeypatch.setattr(tmux.os, "execvp", lambda f, argv: None)
+    tmux.save_width("45")
+    tmux.bootstrap()                                                  # no --width: the remembered one
+    assert tm("show-options", "-v", "-t", "ctx", "@ctx_width") == "45" and tmux.saved_width() == "45"
+    tmux.bootstrap("72")                                              # --width 72: used, and remembered
+    assert tm("show-options", "-v", "-t", "ctx", "@ctx_width") == "72" and tmux.saved_width() == "72"
 
 
 def test_alt_digits_go_to_the_board_only_inside_the_ctx_session(server):

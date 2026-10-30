@@ -217,6 +217,8 @@ def test_angle_keys_step_the_board(monkeypatch):
     assert called == [] and said == ["< > resize the board inside ctx tmux"]
     bound = {k.strip() for bd in tui.CtxApp.BINDINGS for k in bd.key.split(",")}
     assert {"less_than_sign", "greater_than_sign"} <= bound
+    actions = {b.key: b.action for b in tui.CtxApp.BINDINGS}
+    assert (actions["less_than_sign"], actions["greater_than_sign"]) == ("wider", "narrower")   # Rick's choice
 
 
 def test_n_offers_a_shell_but_x_never_does(monkeypatch):
