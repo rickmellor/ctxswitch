@@ -65,7 +65,8 @@ def slot_key(n: int) -> str:
 STATE_HELP = {"busy": "busy: the agent is working", "waiting": "waiting on you: a question, plan, permission prompt or dialog",
               "idle": "idle: at the prompt, your turn", "shell": "Claude Code reports a shell state",
               "unknown": "live status unknown", "ended": "ended (shown with e)"}
-HARNESS_NAME = {"claude": "Claude Code", "pi": "pi", "claude-win": "Windows-native Claude Code", "agy": "Google Antigravity"}
+HARNESS_NAME = {"claude": "Claude Code", "pi": "pi", "claude-win": "Windows-native Claude Code", "agy": "Google Antigravity",
+                "shell": "shell"}
 MSG_HELP = {"queued": "queued: waiting for its host to pick it up", "sent": "sent: written into the session",
             "delivered": "delivered: the agent is working on it", "replied": "replied: that exchange finished",
             "failed": "failed: the reason is shown; send it again", "cancelled": "cancelled"}

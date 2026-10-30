@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,7 +54,8 @@ class Pane:
     pid: int           # the pane's shell pid
     key: str           # @ctx_key or ""
     session: str       # tmux session name
-    role: str = ""     # @ctx_role: "tui" for the ctx TUI pane, "agent" for agent panes we started
+    role: str = ""     # @ctx_role: "tui" for the ctx TUI pane, "agent" for agent panes we started,
+                       # "shell" for a plain shell session's pane
     activity: int = 0  # window_activity (epoch seconds)
     cmd: str = ""      # pane_current_command
     on_screen: bool = False   # in the current window of a tmux session a client is attached to
@@ -171,9 +173,10 @@ def on_agent_exit(rc: int = 0, started: float | None = None, pane_id: str | None
 
 
 def _hand_off(mine: Pane, ps: list[Pane]) -> str:
-    """Swap the most recently active other agent pane (or a fresh shell) into ``mine``'s place; returns its id."""
+    """Swap the most recently active other session pane — an agent's or one of our shell sessions' — (or a fresh
+    shell) into ``mine``'s place; returns its id."""
     others = [p for p in ps if p.session == mine.session and p.window != mine.window and p.id != mine.id
-              and p.role != "tui" and (p.role == "agent" or p.key) and p.cmd not in SHELLS]
+              and managed(p) and (p.role == "shell" or p.cmd not in SHELLS)]
     others.sort(key=lambda p: p.activity, reverse=True)
     if others:
         repl = others[0].id
@@ -193,12 +196,15 @@ SHELLS = {"bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}
 def reap_viewer(ps: list[Pane] | None = None) -> str | None:
     """Safety net run by the TUI: if the viewer holds a pane that had an agent (tagged by ctx) but is now at a bare
     shell — an agent started by hand in the viewer, or a window from before the exit wrapper — hand the viewer to
-    the next session and close that pane."""
+    the next session and close that pane. One of our shell sessions is never reaped: at a bare prompt it is idle,
+    not dead."""
     if not in_tmux():
         return None
     ps = ps if ps is not None else panes()
     v = viewer_pane(ps)
-    if v is None or not (v.key or v.role == "agent") or v.cmd not in SHELLS:
+    if v is None or v.role == "shell":
+        return None
+    if not (v.key or v.role == "agent") or v.cmd not in SHELLS:
         return None
     repl = _hand_off(v, ps)
     _run("kill-pane", "-t", v.id, check=False)
@@ -222,6 +228,8 @@ def resume_argv(s: dict, profiles: list | None = None, extra: list[str] | None =
         return ["pi", "--session", path] if path else None
     if harness == "agy":
         return ["agy", "--conversation", sid, *(extra or [])]
+    if harness == "shell":
+        return [_ctx_bin(), "shell", "--id", sid]      # a new bash on the same transcript and history
     return None
 
 
@@ -261,8 +269,9 @@ def new_session_window(s: dict, ssh: dict[str, str] | None = None, extra: list[s
     if not os.path.isdir(cwd):
         cwd = os.path.expanduser("~")
     name = window_name(s)
+    role = "shell" if s.get("harness") == "shell" else "agent"    # a resumed shell stays a shell session, not an agent
     target_session = next((p.session for p in panes() if p.id == os.environ.get("TMUX_PANE")), SESSION)
-    pane_id = _agent_window(target_session, cwd, name, argv)
+    pane_id = _agent_window(target_session, cwd, name, argv, role=role)
     tag(pane_id, s["key"])
     ps = panes()
     return next(p for p in ps if p.id == pane_id)
@@ -287,7 +296,8 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
     elif harness in ("pi", "agy"):
         argv = [harness]
     elif harness == "shell":
-        argv = [os.environ.get("SHELL") or "bash", "-l"]     # a plain login shell, kept out of the session list by its role
+        sid = str(uuid.uuid4())                             # its session id: the collector keys it <host>/shell/<sid>
+        argv = [_ctx_bin(), "shell", "--id", sid]           # the recording bash (see ctx shell / the collector)
     else:
         return f"unknown harness {harness}"
     if not shutil.which(argv[0]) and not os.path.isabs(argv[0]):
@@ -302,10 +312,11 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
         return "no viewer pane: split the window so the TUI has a neighbour (ctx tmux)"
     target_session = next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), SESSION)
     name = f"{label}:{os.path.basename(cwd.rstrip('/')) or cwd}"[:24]
-    # no session key yet: the collector will see the transcript shortly and the pid walk maps it to this pane
     if harness == "shell":
-        pane_id = _agent_window(target_session, cwd, name, argv, role="shell")   # its role keeps it out of the session list
+        pane_id = _agent_window(target_session, cwd, name, argv, role="shell")
+        tag(pane_id, f"{_this_host()}/shell/{sid}")        # Enter and Alt+n find it before the collector reports it
     else:
+        # no session key yet: the collector will see the transcript shortly and the pid walk maps it to this pane
         pane_id = _agent_window(target_session, cwd, name, argv)
     _run("swap-pane", "-s", pane_id, "-t", viewer.id)
     if focus:
@@ -430,11 +441,17 @@ def detach() -> None:
     _run("detach-client")
 
 
+def managed(p: Pane) -> bool:
+    """A pane ctx manages: one of its agent windows, one tagged with a session key, or one of its plain shell
+    sessions (role "shell", whose foreground is bash at a prompt, so the agent rule can't cover it)."""
+    return p.role != "tui" and (p.role in ("agent", "shell") or bool(p.key))
+
+
 def agent_panes(ps: list[Pane] | None = None) -> list[Pane]:
-    """Panes in this tmux session with an agent still running in them."""
+    """Panes in this tmux session with an agent still running in them, or a shell session at its prompt."""
     ps = ps if ps is not None else panes()
     me = my_session(ps)
-    return [p for p in ps if p.session == me and p.role != "tui" and (p.role == "agent" or p.key) and p.cmd not in SHELLS]
+    return [p for p in ps if p.session == me and managed(p) and (p.role == "shell" or p.cmd not in SHELLS)]
 
 
 def agent_pane(key: str, ps: list[Pane] | None = None) -> Pane | None:
@@ -456,12 +473,14 @@ def _children(pid: int, proc: str = "/proc") -> list[int]:
 def end_agent(p: Pane, proc: str = "/proc", kill=os.kill) -> int:
     """End the agent in pane ``p`` (k): SIGTERM to the processes its wrapper started (the agent, or the ssh to it),
     so the wrapper's `ctx tmux-exit` hands the viewer on and the window closes, as when you quit it yourself. The pane
-    is marked first so that exit doesn't stop on "press Enter". Returns how many processes were signalled."""
+    is marked first so that exit doesn't stop on "press Enter". A shell session gets SIGHUP instead: interactive bash
+    ignores TERM. Returns how many processes were signalled."""
     _run("set-option", "-p", "-t", p.id, "@ctx_ending", "1", check=False)
+    sig = signal.SIGHUP if p.role == "shell" else signal.SIGTERM
     pids = _children(p.pid, proc)
     for pid in pids:
         try:
-            kill(pid, signal.SIGTERM)
+            kill(pid, sig)
         except OSError:
             pass
     return len(pids)

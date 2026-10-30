@@ -117,7 +117,7 @@ def test_new_agent_starts_in_viewer_and_is_found_by_pid(server, monkeypatch, tmp
 
 
 def test_a_shell_opens_in_the_viewer_tagged_shell(server, monkeypatch, tmp_path):
-    """n's plain shell: a window like an agent's, but its role keeps it off the session list and out of the reap."""
+    """n's plain shell: a window like an agent's, tagged as its own session and left alone by the reap."""
     ps = tmux.panes()
     viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
     monkeypatch.setenv("TMUX_PANE", tui.id)
@@ -128,7 +128,8 @@ def test_a_shell_opens_in_the_viewer_tagged_shell(server, monkeypatch, tmp_path)
     assert v.role == "shell" and v.window_name == "mgr"           # swapped into the viewer, as an agent is
     home = next(p for p in ps if p.id == viewer.id).window_name   # the shell window's own name, after the swap
     assert home.startswith("shell:") and home[len("shell:"):] in str(tmp_path)   # the dir, cut at 24 chars, as agents' are
-    assert v.id not in {p.id for p in tmux.agent_panes(ps)}        # no session behind it: not an agent pane
+    assert v.id in {p.id for p in tmux.agent_panes(ps)}           # a session of its own: the board manages it
+    assert v.key.split("/")[1] == "shell"                         # Enter and Alt+n already find it
     assert tmux.reap_viewer(ps) is None                            # its role, not its foreground, keeps the reap off it
 
 
