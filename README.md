@@ -138,7 +138,7 @@ fine. If the hub goes away, collectors queue locally and catch up when it comes 
 ## 2. Daily use: the tmux manager
 ```sh
 ctx tmux             # create or re-attach the "ctx" tmux session
-ctx tmux --width 40  # TUI width as columns (default 18%)
+ctx tmux --width 40  # TUI width as columns (default 20%)
 ```
 You get one tmux window with two panes: **the session you're working in on the left**, the **board on the
 right**. Every agent session lives in its own tmux window behind the scenes, and the board swaps whichever one

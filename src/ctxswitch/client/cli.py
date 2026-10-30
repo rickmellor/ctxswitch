@@ -248,7 +248,7 @@ def main(argv=None) -> None:
     p.add_argument("words", nargs="+"); p.add_argument("--kind", help="decision,instruction,claim,prompt (default all)")
     p.add_argument("--host"); p.add_argument("--limit", type=int, default=30)
     sub.add_parser("mcp").set_defaults(fn=cmd_mcp)
-    p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="18%", help="TUI pane width: columns or percent (default 18%%)")
+    p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux); p.add_argument("--width", default="20%", help="TUI pane width: columns or percent (default 20%%)")
     p.add_argument("--restart", action="store_true", help="restart the board (e.g. after an update); agents keep running")
     p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)
     p.add_argument("--rc", type=int, default=0); p.add_argument("--started", type=float)
