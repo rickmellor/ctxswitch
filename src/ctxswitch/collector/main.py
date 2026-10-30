@@ -24,10 +24,21 @@ from typing import Any
 import httpx
 from watchfiles import Change, awatch
 
+
+def ensure_shell_roots(roots) -> None:
+    """Create the `ctx shell` transcript directories (0700) before watching: only directories that exist when the
+    watch starts are watched, and the first shell on a host is what would otherwise create it."""
+    for r, h in roots:
+        if h == "shell":
+            try:
+                r.mkdir(parents=True, exist_ok=True, mode=0o700)
+            except OSError:
+                pass
+
 from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
-from ctxswitch.collector.liveness import read_agy_presence, read_claude_registry, read_claude_win_registry, read_pi_registry, runtime_dir
+from ctxswitch.collector.liveness import read_agy_presence, read_claude_registry, read_claude_win_registry, read_pi_registry, read_shell_registry, runtime_dir
 from ctxswitch.common.wsl import windows_pids
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import Config, data_dir, load
@@ -61,6 +72,7 @@ class Collector:
         for d in self.cfg.claude_sessions_dirs():
             live |= read_claude_registry(d, self.host_id)
         live |= read_pi_registry(runtime_dir(), self.host_id)
+        live |= read_shell_registry(runtime_dir(), self.host_id)
         for r, h in self.ix.roots:
             if h == "agy" and r.is_dir():
                 live |= read_agy_presence(r, self.host_id)
@@ -177,6 +189,7 @@ class Collector:
 
     # -- watchers -------------------------------------------------------------------------------------------------
     async def watch_loop(self) -> None:
+        ensure_shell_roots(self.ix.roots)
         roots = [str(r) for r, h in self.ix.roots if r.is_dir() and h != "claude-win"]
         if not roots:
             log.warning("no transcript roots exist: %s", [str(r) for r, _ in self.ix.roots]); return

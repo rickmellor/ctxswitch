@@ -16,6 +16,7 @@ from typing import Any, Callable
 from ctxswitch.collector.adapters import parse_json_line
 from ctxswitch.collector.adapters.claude import ClaudeParser
 from ctxswitch.collector.adapters.pi import PiParser
+from ctxswitch.collector.adapters.shell import ShellParser
 from ctxswitch.collector.adapters import agy as agy_store
 from ctxswitch.collector.adapters.agy import AgyParser
 from ctxswitch.collector.gitinfo import branch, repo_info
@@ -47,7 +48,7 @@ def session_id_from_path(path: Path, harness: str) -> str:
     stem = path.stem
     if harness == "pi" and "_" in stem:
         return stem.split("_", 1)[1]
-    return stem
+    return stem                                             # a shell transcript's stem is already its uuid
 
 
 class Indexer:
@@ -63,6 +64,8 @@ class Indexer:
             self.roots.append((Path(os.path.expanduser(r)), "claude-win"))
         for r in cfg.agy_roots:
             self.roots.append((Path(os.path.expanduser(r)), "agy"))
+        for r in cfg.shell_roots:
+            self.roots.append((Path(os.path.expanduser(r)), "shell"))
         self.live_keys: set[str] = set()         # updated by the liveness poller
         self._meta_sent: dict[str, dict] = {}
 
@@ -78,7 +81,8 @@ class Indexer:
 
     @staticmethod
     def _glob(h: str) -> str:
-        return "*.db" if h == "agy" else "*/*.jsonl"
+        # shell transcripts sit directly in their root (one file per shell), the others one slug directory down
+        return "*.db" if h == "agy" else "*.jsonl" if h == "shell" else "*/*.jsonl"
 
     def discover(self) -> list[tuple[Path, str]]:
         cutoff = time.time() - self.cfg.backfill_days * 86400
@@ -140,8 +144,11 @@ class Indexer:
         offset = rec["offset"] if rec else 0
         if st.st_size < offset:                      # truncated/rewritten: start over
             offset, rec = 0, None
-        pcls = PiParser if harness == "pi" else ClaudeParser
-        parser = pcls.from_state(rec["parser_state"], self.cfg.max_text_chars) if rec and rec["parser_state"] else pcls(self.cfg.max_text_chars)
+        # a shell's command output lives beside its transcript, in the same stem with a .out suffix
+        pcls = ShellParser if harness == "shell" else PiParser if harness == "pi" else ClaudeParser
+        args = (path.with_suffix(".out"),) if harness == "shell" else ()
+        parser = pcls.from_state(rec["parser_state"], self.cfg.max_text_chars, *args) if rec and rec["parser_state"] \
+            else pcls(self.cfg.max_text_chars, *args)
         if rec and rec["ended"] and st.st_size == rec["size"]:
             # ended and unchanged: nothing to parse, but once per collector run resend its meta (no turns, no reset),
             # so what this collector derives from its config (the account/profile name) reaches the hub for old
@@ -168,8 +175,9 @@ class Indexer:
                 parser.feed(e, pos)
             offset = pos
         key = session_key(self.host_id, harness if harness != "claude-win" else "claude-win", session_id_from_path(path, harness))
-        ended = key not in self.live_keys and (time.time() - st.st_mtime) > ENDED_AFTER_S and harness != "pi" or \
-                harness == "pi" and (time.time() - st.st_mtime) > ENDED_AFTER_S and key not in self.live_keys
+        # a live session never ends (pi and shell say so through their registry, the others through the poller's
+        # live_keys); otherwise 15 minutes of silence on the transcript is the answer
+        ended = key not in self.live_keys and (time.time() - st.st_mtime) > ENDED_AFTER_S
         if ended:
             parser.finish()
         turns = parser.drain()
