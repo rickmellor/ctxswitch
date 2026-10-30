@@ -53,12 +53,12 @@ class CollectorConfig:
 @dataclass
 class SeatConfig:
     name: str = "text"
-    # no config file (the hub container): $CTXSWITCH_SEAT_URL, else a seat on this machine
-    url: str = field(default_factory=lambda: os.environ.get("CTXSWITCH_SEAT_URL", "http://127.0.0.1:4000/v1"))
-    api_key: str = "local"
-    model: str = "saint-local-text"
-    concurrency: int = 1
-    priority: int = 10                     # lower = preferred
+    # no config file (the hub container): $CTXSWITCH_SEAT_URL / _MODEL / _API_KEY, else a seat on this machine
+    url: str = field(default_factory=lambda: os.environ.get("CTXSWITCH_SEAT_URL") or "http://127.0.0.1:4000/v1")
+    api_key: str = field(default_factory=lambda: os.environ.get("CTXSWITCH_SEAT_API_KEY") or "local")
+    model: str = field(default_factory=lambda: os.environ.get("CTXSWITCH_SEAT_MODEL") or "saint-local-text")
+    concurrency: int = 1                   # not used yet: calls run one at a time
+    priority: int = 10                     # lower = preferred; the hub uses the one seat with the lowest
     disable_thinking: bool = True          # Qwen seats: thinking eats the whole budget (spikes/SPIKES.md)
 
 

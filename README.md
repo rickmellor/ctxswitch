@@ -1,26 +1,27 @@
-# ctxswitch
+<h1 align="center">ctxswitch</h1>
 
-**Short-term memory for people who run a lot of coding agents at once.**
+<p align="center"><b>Short-term memory for people who run a lot of coding agents at once.</b></p>
+
+<p align="center">
+  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776ab?logo=python&logoColor=white">
+  <img alt="Claude Code and pi" src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20pi-d97757">
+  <img alt="tmux" src="https://img.shields.io/badge/runs%20in-tmux-5fd75f?logo=tmux&logoColor=white">
+  <img alt="local LLM" src="https://img.shields.io/badge/LLM-local%20only-8a2be2">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-agents%20can%20ask%20it-444">
+</p>
+
+<p align="center"><img src="docs/img/board.svg" alt="ctx in tmux: an agent session on the left, the ctxswitch board on the right" width="100%"></p>
 
 If you keep a dozen Claude Code and pi sessions going across a few machines, the hard part stops being the code.
 It becomes remembering, every time you switch back to one: *what was this session for, what did I tell it, what
 did I already answer, and what is it waiting on right now?* ctxswitch keeps that for you, live, and shows it
-in one narrow side panel next to whatever you are doing.
+in one narrow board next to whatever you're doing.
 
-```
-┌─ agent (left pane) ─────────────────────────┬─ ctx tui ─────────────────┐
-│                                             │ ctx · all · 4 live · 1 wait│
-│   the session you are working in            │ 1 ▶ ● zephyr-sdk  P2 carve │
-│                                             │ 2 ◆ ◐ pr-review   ◐3m      │
-│                                             │   ↳ approve the plan?      │  ← waiting on you
-│                                             │ 3 ◆ ○ benchctrl   PDU FUI  │
-│                                             │ 4 ⇢ ● devbox/vllm bench    │
-│                                             │───────────────────────────│
-│                                             │ RECAP  you owe it a y/n   │
-│                                             │ on the TLS fallback…      │
-│                                             │ LAST EXCHANGE …           │
-└─────────────────────────────────────────────┴───────────────────────────┘
-```
+Above: you're working with the OAuth session on the left (`▶`). On the right, every session on every machine,
+numbered so `Alt+N` jumps to it. Two are waiting on you, and each says for what (`↳`): a permission prompt, and a
+question the rate-limiter session asked. Selected, that one shows what it's for, what you told it ("don't touch the
+billing endpoints"), what it claims, its recap, and a message you've queued for it. The image is the real board,
+rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessions.
 
 ## What it does
 - **Watches every session on every machine.** It reads Claude Code and pi transcripts as they are written, so
@@ -35,9 +36,9 @@ in one narrow side panel next to whatever you are doing.
   told it: your standing instructions ("don't push without asking"), the choices you made, what the agent claims
   (done, tests pass, blocked) and what the session is for. Every ledger row quotes the transcript word for word.
   Both come from a *local* LLM seat. Nothing leaves your network.
-- **Switches sessions for you.** Inside tmux, Enter swaps a session into the main pane, resumes an ended one, or
-  says why it can't (running in another terminal, or on another host). `c` / `p` start a new Claude / pi session.
-  When an agent exits, the next one takes its place.
+- **Switches sessions for you.** Inside tmux, Enter (or Alt+1…9, by the row's number) swaps a session into the
+  main pane, resumes an ended one, or says why it can't (running in another terminal, or on another host). `c` /
+  `p` start a new Claude / pi session, `k` ends one. When an agent exits, the next one takes its place.
 - **Messages a session from anywhere.** `m` (or `ctx send`) types a message into a live Claude or pi session on
   any machine, or queues it for an ended one until it next runs. The board follows it from queued to delivered
   to the agent's reply. `a` (or `ctx reply`) answers the question a session is waiting on, and the ledger
@@ -52,13 +53,13 @@ in one narrow side panel next to whatever you are doing.
   standing instructions, your last prompt, the agent's last reply and any questions still open. It's shown to you, not sent to the model.
 - **One source of truth.** A central hub holds all state. Every TUI on every machine shows the same thing,
   filterable by this host, a named host or all hosts. `ctx tui` opens on this host; `h` cycles the filter
-  (the border shows which), or start with `ctx tui --all`.
+  (the header shows which), or start with `ctx tui --all`.
 
 ## How it works
 ```
  each machine                         hub (one, e.g. a docker host)          any machine
  ctx-collector ── HTTP POST ───────►  ctx-hub: SQLite + REST API   ◄──────  ctx tui / ctx ls / ctx show
-   watches ~/.claude/projects          recap tracker ──► local LLM seat
+   watches ~/.claude/projects          recap + ledger tracker ──► your local LLM
    and ~/.pi/agent/sessions            (OpenAI-compatible endpoint)
    + live-session registries
    + hook spool (Claude hooks,
@@ -73,15 +74,10 @@ in one narrow side panel next to whatever you are doing.
   [spikes/SPIKES.md](spikes/SPIKES.md).
 
 ## Status
-Working and in daily use. Phase 1 (hub, collectors, CLI/TUI on hard signals) is done, plus the tmux manager and
-LLM recaps. Phase 3 (the ledger tracker) is done. Phase 2 is done: Claude hooks and a pi extension report permission prompts and dialogs, resuming a
-session prints a briefing, Windows-native Claude sessions show up (read-only) on a WSL host, and `ctx install` /
-`ctx doctor` wire up and check a host. Cross-host resume works: Enter on another host's ended session resumes it there over ssh. Messaging works:
-send to a live session on any host, or queue for an ended one. Phase 4 is done: answer a question from the board
-(`a`, `ctx reply`), tmux pop-ups, "since you looked" and workstreams across hosts. Phase 6 is done: `ctx search`
-and an MCP server, so an agent can look up what you already decided or told another session, and message another
-session as itself. See the
-phases in [DESIGN.md](DESIGN.md).
+Working and in daily use on three machines. Phases 0–6 of [DESIGN.md](DESIGN.md) are done: the hub, collectors,
+Claude hooks and the pi extension, the board and tmux manager, the local-LLM tracker (recaps and the ledger),
+messaging (to a session, a workstream, or as an answer), cross-host resume, pop-ups, `ctx search` and the MCP
+server. Not done: Phase 7 (hub backups, token rotation, TLS) and Phase 8 (experimental drift/re-ask flags).
 
 # User guide
 
@@ -96,6 +92,8 @@ uv sync --extra test
 .venv/bin/ctx-collector --once      # index your transcripts, push them, exit
 .venv/bin/ctx ls                    # you should see your recent sessions
 ```
+Recaps and the ledger need a local LLM (see [6. The tracker](#6-the-tracker-recaps-and-ledger)); without one the
+board works on everything else.
 Put `.venv/bin` on your `PATH` (or symlink `ctx` into `~/.local/bin`) so plain `ctx` works.
 
 ### Several machines
@@ -103,7 +101,9 @@ Put `.venv/bin` on your `PATH` (or symlink `ctx` into `~/.local/bin`) so plain `
    ```sh
    cat > deploy/.env <<'ENV'                      # untracked; stays on this host
    CTXSWITCH_HUB_TOKEN=<a long random string>
-   CTXSWITCH_SEAT_URL=http://<llm-host>:4000/v1   # optional: OpenAI-compatible endpoint for recaps
+   CTXSWITCH_SEAT_URL=http://<llm-host>:4000/v1   # the tracker LLM (see 6. The tracker)
+   CTXSWITCH_SEAT_MODEL=<model name>              # optional (default saint-local-text)
+   CTXSWITCH_SEAT_API_KEY=<key>                   # optional (default "local")
    ENV
    docker compose -f deploy/compose.yml up -d --build
    ```
@@ -138,7 +138,8 @@ fine. If the hub goes away, collectors queue locally and catch up when it comes 
 
 ## 2. Daily use: the tmux manager
 ```sh
-ctx tmux             # create or re-attach the "ctx" tmux session
+ctx tmux             # create or re-attach the "ctx" tmux session (and put the board back if it's gone)
+ctx tmux --restart   # restart the board on new code; your agents keep running
 ctx tmux --width 40  # TUI width as columns or a percentage like 25% (default 60 columns)
 ```
 You get one tmux window with two panes: **the session you're working in on the left**, the **board on the
@@ -170,6 +171,8 @@ line saying what it's waiting on:
 │ └ state
 └ its number: Alt+1…9 opens it
 ```
+
+<p align="center"><img src="docs/img/legend.svg" alt="every glyph on the board, in its colours" width="70%"></p>
 
 | State | Meaning |
 |---|---|
@@ -218,6 +221,10 @@ machines match even when their remotes use different ssh aliases. A checkout wit
 that host. With `w`, the list groups sessions under one header per workstream. Select a header to list its sessions.
 
 ## 4. Keys
+`?` shows all of this on the board itself:
+
+<p align="center"><img src="docs/img/help.svg" alt="the ? help screen" width="50%"></p>
+
 | Key | Action |
 |---|---|
 | `↑` `↓` | select a session (the detail pane follows) |
@@ -243,7 +250,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 
 A confirm takes one key: `y` does it at once, any other key (Esc included) cancels.
 
-The footer shows as many keys as fit; the rest still work.
+The key bar at the bottom wraps onto as many lines as the pane needs, so every key shows.
 
 ## 5. Opening and closing sessions
 - **Sessions started by hand inside the ctx tmux session** are found automatically (by matching the agent's pid
@@ -266,17 +273,40 @@ The footer shows as many keys as fit; the rest still work.
   another terminal (`⊘`) or live on another host (`⇢`) has to be quit where it runs, and the board says so.
 - **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
 
-## 6. Recaps
-The hub writes a one-line recap per session with a **local** LLM (any OpenAI-compatible endpoint that supports
-`response_format` json_schema; set it as `[[seats]]` in the hub's config or `CTXSWITCH_SEAT_URL`). A recap is
-regenerated a few seconds after a session's latest exchange settles. It's shown as `(updating…)` until then.
-Only sessions that are live or were active in the last 7 days get one. If the endpoint is down, the board works
-as normal without recaps. Turn them off with `ctx-hub --no-recap`.
+## 6. The tracker (recaps and ledger)
+The hub reads sessions with a **local LLM**, so nothing leaves your network. Any OpenAI-compatible
+`/chat/completions` endpoint works (vLLM, LiteLLM, llama.cpp server, LM Studio …) if it honours `response_format`
+with a `json_schema`: every answer is checked against a schema.
 
-The same seat keeps each session's **ledger**. It reads every exchange you typed once, and records only what it
-can quote word for word: a row whose quote isn't in the transcript is dropped. Instructions stay in force until
-you cancel them in a prompt, or retire one: `x` on the board, or `ctx retire <session> <id>` (`ctx show` prints
-the ids). Set `[hub] ledger = false` to keep recaps without the ledger.
+**What it does with it:**
+- **Recap**: one line per session on where it stands and what it needs from you, plus a short `›` re-entry card.
+  Regenerated a few seconds after a session's latest exchange settles; shown as `(updating…)` until then.
+- **Ledger**: it reads every exchange you typed once, and records your standing instructions, the choices you
+  made, what the agent claims (done, tests pass, blocked), plain-text questions it asked, and what the session is
+  for. It records only what it can quote word for word: a row whose quote isn't in the transcript is dropped.
+  Instructions stay in force until you cancel them in a prompt or retire one (`x` on the board, or
+  `ctx retire <session> <id>`; `ctx show` prints the ids).
+- Only sessions live or active in the last `recap_days` (7) get either, and history is never re-read by the model.
+  Calls run one at a time (temperature 0.1–0.2, a few hundred tokens each). If the endpoint is down, the board
+  works as normal without them, and they catch up when it's back.
+
+**Configuring it** (on the hub):
+
+| | docker hub (`deploy/.env`) | hub with a config file (`[[seats]]`) | default |
+|---|---|---|---|
+| endpoint | `CTXSWITCH_SEAT_URL` | `url` | `http://127.0.0.1:4000/v1` |
+| model | `CTXSWITCH_SEAT_MODEL` | `model` | `saint-local-text` |
+| bearer key | `CTXSWITCH_SEAT_API_KEY` | `api_key` | `local` |
+| thinking off | (always) | `disable_thinking` | `true`: sends `chat_template_kwargs.enable_thinking = false`, which Qwen-family models need or they spend the whole budget thinking |
+
+With several `[[seats]]`, the hub uses the one with the lowest `priority`. `[hub] recap = false` (or
+`ctx-hub --no-recap`) turns the tracker off; `[hub] ledger = false` keeps recaps without the ledger. After changing
+`deploy/.env`, run `docker compose -f deploy/compose.yml up -d` again.
+
+**Is it working?** `ctx doctor` shows a `recaps` line (the endpoint, and when the last call succeeded) and a
+`ledger` line (exchanges read, sessions behind). `/v1/health` on the hub has the same, plus the model and the last
+error. After a failed call (endpoint down, or a model that returned broken JSON) the tracker waits 30 s and tries
+again, keeping the old recap meanwhile; `docker logs ctxswitch-hub` shows each `recap … failed`.
 
 ## 7. Messages
 `m` on the board, or `ctx send <session> "text"`, sends a message to a session on any host. It's typed into the
@@ -402,8 +432,11 @@ option. The ones you'll touch:
 | `[ssh]` | client only: `<host_id> = "<ssh destination>"` for resuming another host's sessions. Unlisted hosts use the host id itself (an `~/.ssh/config` alias); `""` = not reachable from here (e.g. a laptop that blocks inbound) |
 | `notify`, `notify_idle` | client: tmux pop-ups for new questions and dialogs (default on; `n` toggles it), and for an agent finishing its turn (default off) |
 | `notify_style` | client: `"popup"` (default), a box over the panes until you press a key; `"status"`, one line in the status bar for 8 s |
-| `[hub] ledger` | hub only: keep the ledger (instructions, decisions, claims) as well as recaps (default true) |
-| `[[seats]]` | hub only: the LLM endpoint for recaps and the ledger |
+| `[hub] recap`, `ledger`, `recap_days` | hub only: the tracker on/off, the ledger on/off, and how recent a session must be (defaults true, true, 7) |
+| `[[seats]]` `url`, `model`, `api_key`, `priority`, `disable_thinking` | hub only: the tracker LLM (see 6. The tracker) |
+| `CTXSWITCH_SEAT_URL`, `_MODEL`, `_API_KEY` | env, hub: the tracker LLM when there's no config file (the docker hub) |
+| `CTXSWITCH_HUB_TOKEN` | env, docker hub: the shared token (`deploy/.env`) |
+| `CTXSWITCH_CONFIG`, `CTXSWITCH_DATA` | env: another config file; another data directory (hub db, collector queue) |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
 
 ## 10. Troubleshooting
@@ -427,10 +460,11 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
 | no briefing on resume | it only shows after 15 min away. `ctx doctor` (claude hooks line should not say "SessionStart (briefing)" missing); pi needs a new pi process after `ctx install --pi` |
 | Windows sessions never go live | `ctx doctor` "claude (windows)" line: liveness needs WSL interop (`tasklist.exe`) |
-| no recaps | the hub log (`docker logs ctxswitch-hub`) shows `recap … failed` lines if the seat is unreachable |
-| a TUI change didn't show up | restart it: `q`, then `ctx tmux` |
+| no recaps | `ctx doctor` (recaps line); the hub log (`docker logs ctxswitch-hub`) shows `recap … failed` lines if the endpoint is unreachable or the model is wrong |
+| a TUI change didn't show up | `ctx tmux --restart` (`q` only detaches: the old board keeps running) |
 
 ## Tests
 ```sh
 .venv/bin/python -m pytest -q     # the tmux tests run against a private tmux server and skip if tmux is missing
+.venv/bin/python scripts/screenshots.py   # regenerate docs/img/*.svg after a change to the board
 ```

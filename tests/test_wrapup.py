@@ -387,3 +387,50 @@ def test_Q_and_M_confirm_with_one_key_too(monkeypatch):
     tui.CtxApp.action_message_buffer(b)
     assert seen[-1][0] == 'send 2 line(s) "line one line two" to it?' and sent == []
     seen[-1][1](); assert sent == [(LAP, "line one\nline two")]
+
+
+async def test_no_row_overflows_the_pane_so_none_is_hidden(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    ago = lambda m: (datetime.now(timezone.utc) - timedelta(minutes=m)).isoformat().replace("+00:00", "Z")
+    store = Store(tmp_path / "hub.db")
+    keys = [f"devbox/claude/long{i}" for i in range(5)]
+    for k in keys:
+        _session(store, k, branch_="feat/a-really-long-branch-name-here", when=ago(10))
+        store.upsert_turns(k, [{"idx": 0, "started_at": ago(12), "ended_at": ago(10), "user_text": "go", "user_origin": "human",
+                                "assistant_text": "Which one?", "tally": {}, "events": [], "complete": True, "offset_end": 1,
+                                "asks": [{"ref": "0:plain", "kind": "plain", "text": "Which one of these options? " * 4, "answered": False}]}], None)
+        store.mark_viewed(k, ago(60))                                 # +1 unseen as well as ◐ on every row
+    _live(store, "devbox", *((k, "idle") for k in keys))
+    store.db.execute("UPDATE sessions SET title=?", ("a title far too long for any narrow side pane, " * 3,))
+    cfg = Config(); cfg.hub.token = "t"; cfg.collector.host_id = "laptop"
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
+    monkeypatch.setattr(tui.CtxApp, "listen_ws", lambda self: None)
+    # the title keeps 8 columns; what gives way, in order: the repo, the host, +N, then the ◐ age
+    keeps = {34: ("cc ", False, False, False), 40: ("cc ", False, True, True), 50: ("cc·devbox ", False, True, True),
+             60: ("cc·devbox ", True, True, True), 90: ("cc·devbox ", True, True, True)}
+    for width, (where, repo, unseen, asked) in keeps.items():
+        app = tui.CtxApp(cfg, None)
+        app.client._c = TestClient(Hub(store, token="t").app(), headers=H)
+        async with app.run_test(size=(width, 50)) as pilot:
+            await pilot.pause(1)
+            t = app.query_one("#table")
+            assert t.row_count == 5 and t.virtual_size.width <= t.size.width, (width, t.virtual_size, t.get_row_at(0)[3].plain)
+            assert not t.show_horizontal_scrollbar and t.size.height == 10            # 5 rows + 5 ↳ lines, all shown
+            row = t.get_row_at(0)[3].plain.split("\n")[0][2:]                         # after the reach glyph (⇢)
+            assert row.startswith(where) and ("@feat" in row) is repo, (width, row)
+            assert row.endswith(" +1") is unseen and (" ◐" in row) is asked, (width, row)
+            assert "a title" in row and len(row) == app._label_width() - 2, (width, row)   # the title fills the rest
+
+
+def test_the_tracker_llm_is_set_by_env_without_a_config_file(monkeypatch):
+    from ctxswitch.common.config import SeatConfig
+    for v in ("CTXSWITCH_SEAT_URL", "CTXSWITCH_SEAT_MODEL", "CTXSWITCH_SEAT_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    s = SeatConfig()
+    assert (s.url, s.model, s.api_key) == ("http://127.0.0.1:4000/v1", "saint-local-text", "local")
+    monkeypatch.setenv("CTXSWITCH_SEAT_URL", "http://llm:8000/v1"); monkeypatch.setenv("CTXSWITCH_SEAT_MODEL", "qwen3-30b")
+    monkeypatch.setenv("CTXSWITCH_SEAT_API_KEY", "k")
+    s = SeatConfig()
+    assert (s.url, s.model, s.api_key) == ("http://llm:8000/v1", "qwen3-30b", "k")
+    monkeypatch.setenv("CTXSWITCH_SEAT_MODEL", "")                     # compose passes unset ones as ""
+    assert SeatConfig().model == "saint-local-text"

@@ -32,7 +32,7 @@ from textual.app import App, ComposeResult
 from textual.screen import ModalScreen, Screen
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import DataTable, Footer, Input, Static
+from textual.widgets import DataTable, Input, Static
 
 from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
@@ -178,7 +178,7 @@ def help_renderable():
     for title, rows in help_sections():
         parts.append(Text(title, style="bold"))
         g = Table.grid(padding=(0, 1), pad_edge=True)
-        g.add_column(width=9 if any(k for k, _, _ in rows) else 0, no_wrap=True); g.add_column(ratio=1)
+        g.add_column(width=10 if any(k for k, _, _ in rows) else 0, no_wrap=True); g.add_column(ratio=1)
         for k, style, words in rows:
             g.add_row(Text(k, style=style), words)
         parts += [g, Text("")]
@@ -268,16 +268,15 @@ class Confirm(ModalScreen):
 
 class Help(Screen):
     """? : the whole pane, scrollable; Esc (or ? or q) closes it."""
-    BINDINGS = [Binding("escape", "close", "close"), Binding("question_mark", "close", show=False),
+    BINDINGS = [Binding("escape", "close", show=False), Binding("question_mark", "close", show=False),
                 Binding("q", "close", show=False)]
     DEFAULT_CSS = """
     Help > VerticalScroll { padding: 0 1; }
     """
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="help"):
+        with VerticalScroll(id="help"):            # no footer: it would list the board's keys behind this screen
             yield Static(help_renderable())
-        yield Footer(compact=True, show_command_palette=False)
 
     def action_close(self) -> None:
         self.app.pop_screen()
@@ -506,7 +505,7 @@ class CtxApp(App):
         return out
 
     def _label_width(self) -> int:
-        return max(16, self.size.width - 16)          # number + glyph + age columns + paddings + scrollbar
+        return max(16, self.size.width - 17)          # number + glyph + age columns + paddings + scrollbar
 
     def render_table(self) -> None:
         t = self.query_one("#table", DataTable)
@@ -535,9 +534,8 @@ class CtxApp(App):
             asks = s.get("open_asks") or []
             when = s.get("status_since") if s.get("live_status") in LIVE else s.get("last_activity")
             style = STATE_STYLE.get(st, "")
-            where = f"{fmt.HARNESS.get(s.get('harness',''), s.get('harness',''))}·{s.get('host_id','?')}"
-            if self.host_filter:                       # host is implied by the filter
-                where = fmt.HARNESS.get(s.get("harness", ""), s.get("harness", ""))
+            harness = fmt.HARNESS.get(s.get("harness", ""), s.get("harness", ""))
+            where = harness if self.host_filter else f"{harness}·{s.get('host_id', '?')}"   # a host filter implies the host
             label = Text()
             reach = self.reach.get(s["key"], "")
             if s["key"] == self.visible_key:
@@ -546,16 +544,25 @@ class CtxApp(App):
                 label.append(tmux.REACH_GLYPH[reach] + " ", style=REACH_STYLE.get(reach, "dim"))
             if reach in ("foreign", "remote"):
                 style = (style + " dim").strip()          # can't be opened from here
+            ask_mark = f" ◐{fmt.age(asks[0].get('asked_at'), now)}" if asks else ""
+            seen_mark = f" +{s['unseen']}" if s.get("unseen") else ""   # exchanges since you last looked
+            # the title keeps 8 columns and the row never overflows (a scrollbar would hide the last row): the repo
+            # gives way first, then the host, then the +N, then the ◐ age (the age column and the ↳ line say it too)
+            fixed = width - len(label.plain) - 1 - 8      # after the glyph, the space after `where` and the title's 8
+            if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0 and where != harness:
+                where = harness
+            if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
+                seen_mark = ""
+            if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
+                ask_mark = ""
             label.append(f"{where} ", style="dim")
-            repo_w = 18 if width >= 40 else 10 if width >= 28 else 0
-            if repo_w:
+            repo_w = min(18 if width >= 40 else 10 if width >= 28 else 0,
+                         width - len(label.plain) - len(ask_mark) - len(seen_mark) - 8 - 1)
+            if repo_w >= 4:
                 label.append(fmt.one_line(fmt.repo_label(s), repo_w) + " ", style="dim" if st in ("ended", "unknown") else "")
-            rest = width - len(label.plain)
+            rest = width - len(label.plain) - len(ask_mark) - len(seen_mark)
             label.append(fmt.one_line(fmt.display_title(s) or "(no prompt yet)", max(8, rest)), style=style)
-            if asks:
-                label.append(f" ◐{fmt.age(asks[0].get('asked_at'), now)}", style="bold yellow")
-            if s.get("unseen"):                        # exchanges since you last looked
-                label.append(f" +{s['unseen']}", style="bold cyan")
+            label.append(ask_mark, style="bold yellow"); label.append(seen_mark, style="bold cyan")
             self.slots.append(s["key"])
             n = len(self.slots)
             on = waiting_on(s)

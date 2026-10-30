@@ -12,7 +12,9 @@ services:
       - ctxswitch-data:/data
     environment:
       - CTXSWITCH_HUB_TOKEN=${CTXSWITCH_HUB_TOKEN:-}
-      - CTXSWITCH_SEAT_URL=${CTXSWITCH_SEAT_URL:-}           # LLM seat for recaps, e.g. http://llm.local:4000/v1
+      - CTXSWITCH_SEAT_URL=${CTXSWITCH_SEAT_URL:-}           # tracker LLM (recaps + ledger), e.g. http://llm.local:4000/v1
+      - CTXSWITCH_SEAT_MODEL=${CTXSWITCH_SEAT_MODEL:-}       # model name at that endpoint (default saint-local-text)
+      - CTXSWITCH_SEAT_API_KEY=${CTXSWITCH_SEAT_API_KEY:-}   # its bearer key (default "local")
     command: ["sh", "-c", "exec ctx-hub --bind 0.0.0.0 --port 7433 --db /data/hub.db --token \"$CTXSWITCH_HUB_TOKEN\""]
 volumes:
   ctxswitch-data:
