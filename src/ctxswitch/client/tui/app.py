@@ -196,6 +196,32 @@ class Board(DataTable):
         self.tooltip = self.app.tip_for(key) if key else None
 
 
+KEY_NAMES = {"enter": "↵", "slash": "/", "question_mark": "?"}
+
+
+def key_bar(bindings, width: int) -> Text:
+    """The board's shown keys, wrapped onto as many lines as ``width`` needs (Textual's Footer is one line and cuts
+    off what doesn't fit). A key is never split from its label."""
+    t, used = Text(), 0
+    for b in bindings:
+        if not b.show:
+            continue
+        key, label = KEY_NAMES.get(b.key, b.key), b.description
+        n = len(key) + 1 + len(label)
+        if used and used + 1 + n > width:
+            t.append("\n"); used = 0
+        elif used:
+            t.append(" "); used += 1
+        t.append(key, style="bold cyan"); t.append(" " + label)
+        used += n
+    return t
+
+
+class KeyBar(Static):
+    def render(self) -> Text:
+        return key_bar(self.app.BINDINGS, max(10, self.content_size.width))
+
+
 class Help(Screen):
     """? : the whole pane, scrollable; Esc (or ? or q) closes it."""
     BINDINGS = [Binding("escape", "close", "close"), Binding("question_mark", "close", show=False),
@@ -223,8 +249,9 @@ class CtxApp(App):
     #filter { display: none; }                 /* in the flow above the footer, so the footer never covers it */
     #filter.visible { display: block; }
     .h { color: $text-muted; }
+    #keys { height: auto; background: $panel; padding: 0 1; }
     """
-    # one footer line in a ~40-column side pane: most-used first, short labels; the rest fall off the right edge
+    # the key bar (key_bar) wraps in the narrow pane: most-used first, short labels
     BINDINGS = [
         Binding("enter", "resume", "open", show=True), Binding("c", "new_claude", "claude"), Binding("p", "new_pi", "pi"),
         Binding("m", "message", "msg"), Binding("a", "reply", "answer"), Binding("M", "message_buffer", show=False),
@@ -273,7 +300,7 @@ class CtxApp(App):
         inp = Input(placeholder="filter sessions (title, repo, key)…", id="filter")
         inp.can_focus = False                     # only focusable while shown via "/"
         yield inp
-        yield Footer(compact=True, show_command_palette=False)
+        yield KeyBar(id="keys")
 
     def on_mount(self) -> None:
         t = self.query_one("#table", DataTable)

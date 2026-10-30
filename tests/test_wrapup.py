@@ -217,6 +217,10 @@ async def test_the_board_numbers_its_session_rows_in_the_order_shown(tmp_path, m
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
         assert joined == [1]                                              # at start: role + Alt+N bindings
+        bar = app.query_one("#keys")
+        shown = bar.render().plain
+        assert bar.size.height == len(shown.splitlines()) > 1                       # it grows to fit
+        assert all(b.description in shown for b in tui.CtxApp.BINDINGS if b.show)   # nothing cut off
         t = app.query_one("#table")
         nums = [t.get_row_at(i)[0].plain for i in range(t.row_count)]
         assert nums == [str(n) for n in range(1, 10)] + ["", ""] and app.slots[0] == "laptop/claude/s9"   # busy first; 10+ unnumbered
@@ -251,3 +255,14 @@ def test_help_documents_every_key_the_board_binds():
     text = tui.help_text()
     assert text.index("KEYS") < text.index("SESSION STATE") < text.index("RESTARTING THE BOARD")   # keys, legend, how-tos
     assert all(shown in text for _, shown, _ in tui.HELP_KEYS)
+
+
+def test_the_key_bar_wraps_without_splitting_a_key_from_its_label():
+    shown = [b for b in tui.CtxApp.BINDINGS if b.show]
+    for width in (24, 40, 58, 200):
+        lines = tui.key_bar(tui.CtxApp.BINDINGS, width).plain.splitlines()
+        assert all(len(ln) <= width for ln in lines), width
+        pairs = [f"{tui.KEY_NAMES.get(b.key, b.key)} {b.description}" for b in shown]
+        assert all(any(pr in ln for ln in lines) for pr in pairs), width              # each pair whole, on one line
+        assert " ".join(lines) == " ".join(pairs)                                       # in order, nothing else
+    assert len(tui.key_bar(tui.CtxApp.BINDINGS, 200).plain.splitlines()) == 1
