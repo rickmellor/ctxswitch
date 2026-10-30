@@ -808,14 +808,14 @@ class CtxApp(App):
             last = turns[-1]
             # "you" = the operator's last real prompt; "agent" = the newest agent text, even if a task notification
             # or peer message started the turn that produced it
-            you = next((x for x in reversed(turns) if x.get("user_origin") in ("human", "peer")), None)
+            you = next((x for x in reversed(turns) if x.get("user_origin") in ("human", "peer", "shell")), None)
             said = next((x for x in reversed(turns) if x.get("assistant_text")), None)
             t.append("LAST EXCHANGE\n", style="bold")
             if you is not None:
                 t.append(f"{fmt.who(you)} ({fmt.age(you.get('started_at'), now)}): ", style="bold")
                 t.append(fmt.one_line(you.get("user_text"), 400) + "\n")
             if said is not None:
-                t.append(f"agent ({fmt.age(said.get('ended_at') or said.get('started_at'), now)}): ", style="bold")
+                t.append(f"{fmt.replied(said)} ({fmt.age(said.get('ended_at') or said.get('started_at'), now)}): ", style="bold")
                 t.append(fmt.one_line(said.get("assistant_text"), 700) + "\n")
             tally = {k: v for k, v in (last.get("tally") or {}).items() if v}
             if tally or last.get("events"):

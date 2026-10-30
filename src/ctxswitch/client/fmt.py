@@ -134,7 +134,14 @@ def messages(s: dict, n: int = 4) -> list[dict]:
 def who(t: dict) -> str:
     """Who started a turn: you, the agent session that messaged it, or a peer / task notification."""
     o = t.get("user_origin")
+    if o == "shell":
+        return "ran"                                   # a shell session: the command you ran
     return "you" if o in ("human", None) else f"from {t['from_key']}" if t.get("from_key") else o
+
+
+def replied(t: dict) -> str:
+    """What answered a turn: the agent, or for a shell command its result (exit code and output)."""
+    return "result" if t.get("user_origin") == "shell" else "agent"
 
 
 def sender(m: dict) -> str:
@@ -281,7 +288,7 @@ def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | No
         out.append(f"    #{t['idx']} {age(t.get('started_at'), now):>5} ago [{t.get('user_origin')}]{flag}")
         out.append(f"       {who(t):<5}: {one_line(t.get('user_text'), 110)}")
         if t.get("assistant_text"):
-            out.append(f"       agent: {one_line(t.get('assistant_text'), 110)}")
+            out.append(f"       {replied(t):<5}: {one_line(t.get('assistant_text'), 110)}")
         tally = t.get("tally") or {}
         ev = t.get("events") or []
         extras = ", ".join(f"{v} {k}" for k, v in tally.items() if v) + ("; " + ", ".join(ev) if ev else "")

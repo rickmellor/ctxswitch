@@ -80,7 +80,8 @@ def _clean(raw: bytes) -> str:
     text = raw.decode("utf-8", "replace")
     text = _ESC.sub("", text)
     text = text.replace("\x07", "").replace("\x08", "")
-    lines = [ln.rsplit("\r", 1)[-1] for ln in text.split("\n")]
+    # a terminal ends lines with \r\n: drop that \r first, then a \r inside the line is an overwrite (progress bars)
+    lines = [ln.rstrip("\r").rsplit("\r", 1)[-1] for ln in text.split("\n")]
     while lines and not lines[-1].strip():
         lines.pop()
     return "\n".join(lines)

@@ -220,3 +220,14 @@ def test_a_shells_recap_prompt_says_what_it_is(tmp_path):
     store.upsert_turns(LAP, [_turn(0, "fix the parser", "Shall I split it?")], None)
     q = build_prompt(store.session(LAP))
     assert "you: fix the parser" in q and "agent: Shall I split it?" in q and "plain shell" not in q
+
+
+
+def test_show_and_the_board_word_a_shell_turn_as_ran_and_result():
+    from ctxswitch.client import fmt
+    t = {"idx": 0, "user_origin": "shell", "user_text": "make test", "assistant_text": "exit 2 · 3.1s\n2 failed",
+         "started_at": "2026-10-30T10:00:00Z", "complete": True}
+    assert (fmt.who(t), fmt.replied(t)) == ("ran", "result")
+    assert (fmt.who({"user_origin": "human"}), fmt.replied({"user_origin": "human"})) == ("you", "agent")
+    lines = fmt.show_lines({"key": "laptop/shell/x", "harness": "shell", "turns": [t], "meta": {}}, 1)
+    assert "       ran  : make test" in lines and any(ln.startswith("       result: exit 2") for ln in lines)

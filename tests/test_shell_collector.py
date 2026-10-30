@@ -326,3 +326,12 @@ def test_the_collector_creates_its_shell_root_so_the_first_shell_is_watched(tmp_
     ensure_shell_roots([(shells, "shell"), (claude, "claude")])
     assert shells.is_dir() and oct(shells.stat().st_mode & 0o777) == "0o700"
     assert not claude.exists()                                        # only shell roots: the others belong to their harness
+
+
+
+def test_a_terminals_crlf_output_keeps_its_lines(tmp_path):
+    """What tmux pipe-pane really captures: bracketed-paste toggles, \r\n line ends, a \r progress overwrite."""
+    from ctxswitch.collector.adapters.shell import output_tail
+    raw = b"\x1b[?2004l\rhello from the shell\r\nstep 1/3\rstep 3/3\r\nls: cannot access '/x': No such file\r\n\x1b[?2004h"
+    o = tmp_path / "s.out"; o.write_bytes(raw)
+    assert output_tail(o, 0, len(raw)) == "hello from the shell\nstep 3/3\nls: cannot access '/x': No such file"
