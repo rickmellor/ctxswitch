@@ -229,3 +229,25 @@ async def test_the_board_numbers_its_session_rows_in_the_order_shown(tmp_path, m
         monkeypatch.setattr(app, "open_key", opened.append)
         await pilot.press(tui.slot_key(2)); await pilot.pause(0.2)
         assert opened == [app.slots[1]]
+        await pilot.press("question_mark"); await pilot.pause(0.3)
+        assert isinstance(app.screen, tui.Help) and app.screen.size == app.size        # the whole pane
+        scroll = app.screen.query_one("#help")
+        await pilot.press("pagedown"); await pilot.pause(0.2)
+        assert scroll.scroll_y > 0                                        # it scrolls
+        await pilot.press("escape"); await pilot.pause(0.2)
+        assert not isinstance(app.screen, tui.Help)
+        await pilot.press("question_mark"); await pilot.pause(0.2); await pilot.press("q"); await pilot.pause(0.2)
+        assert not isinstance(app.screen, tui.Help) and opened == [app.slots[1]]     # q closes help, doesn't detach
+
+
+def test_help_documents_every_key_the_board_binds():
+    documented = {k for keys, _, _ in tui.HELP_KEYS for k in keys}
+    for b in tui.CtxApp.BINDINGS:
+        if str(b.action).startswith("slot("):
+            assert "slot" in documented
+        else:
+            for k in b.key.split(","):
+                assert k.strip() in documented, (k, b.action)
+    text = tui.help_text()
+    assert text.index("KEYS") < text.index("SESSION STATE") < text.index("RESTARTING THE BOARD")   # keys, legend, how-tos
+    assert all(shown in text for _, shown, _ in tui.HELP_KEYS)

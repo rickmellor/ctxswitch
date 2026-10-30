@@ -231,7 +231,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `r` | refresh now (the board also updates live over a WebSocket) |
 | `n` | pop-ups off / on for this run (`notify` sets how it starts) |
 | `x` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
-| `?` | the legend: every glyph on the board in words (`?` or Esc closes). Hovering the mouse over a row, or the top box, says the same for that row |
+| `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the top box, says that row in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
 | `Q` | quit all: end the tmux session and every agent in it, after a y/n |
 

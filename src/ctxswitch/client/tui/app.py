@@ -8,7 +8,7 @@ Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent ses
   ├ ledger of the selected session ──────────────┤
   │ state / open asks / last exchange / decisions│
   └──────────────────────────────────────────────┘
-Keys: h host filter · e toggle ended · v mark viewed · enter show/resume · c/p new claude/pi session (asks for a
+Keys: ? opens the full list (Help). h host filter · e toggle ended · v mark viewed · enter show/resume · c/p new claude/pi session (asks for a
 directory, default = selected session's) · m message the selected session · M send it the tmux paste buffer (after
 a y/n) · a answer its open question (a quick-reply message) · w group by workstream · r refresh · / filter · q quit
 Opening a session (enter) marks it viewed; the detail shows what changed since you last looked. New questions pop
@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.screen import ModalScreen
+from textual.screen import Screen
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static
@@ -73,30 +73,95 @@ ATTENTION_TIP = ("What's waiting on you, oldest first. ◐3m = how long it has w
                  "\"waiting\" = a dialog is open in it (permission, plan, …); \"idle\" = it finished its turn, your move.")
 
 
-def legend() -> Text:
-    """Every glyph on the board, from the same tables the board draws with."""
-    t = Text()
+def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
+    """Every glyph on the board as (section, [(glyph, style, words)]), from the same tables the board draws with."""
+    return [
+        ("SESSION STATE (first column)", [(g, STATE_STYLE[st], STATE_HELP[st]) for st, g in fmt.GLYPH.items()]),
+        ("ENTER (before the host)", [("▶", "bold", "it's on the left now")] +
+         [(g, REACH_STYLE.get(r, ""), tmux.REACH_HELP[r]) for r, g in tmux.REACH_GLYPH.items() if r != "none"]),
+        ("ROW", [("1", "dim", "its number: Alt+1…9 opens it from any pane of the ctx session"),
+                 ("3m", "dim", "time in this state (live), or since it was last active (ended)")] +
+         [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
+         [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
+          ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work")]),
+        ("WAITING ON YOU (top box)", [("◐3m", "bold yellow", "how long it has waited"),
+                                      ("idle", "", "it finished its turn: your move"),
+                                      ("waiting", "", "a dialog is open in it (permission, plan, …)")]),
+        ("MESSAGES", [(fmt.MSG_GLYPH[k], MSG_STYLE.get(k, "dim"), MSG_HELP[k]) for k in fmt.MSG_GLYPH]),
+        ("AGENT SAYS", [(fmt.CLAIM_GLYPH[k], CLAIM_STYLE.get(k, ""), CLAIM_HELP[k]) for k in CLAIM_HELP]),
+    ]
 
-    def section(title: str, rows: list[tuple[str, str, str]]) -> None:
+
+def legend() -> Text:
+    t = Text()
+    for title, rows in legend_sections():
         t.append(title + "\n", style="bold")
         for glyph, style, words in rows:
             t.append(f"  {glyph:<8}", style=style); t.append(words + "\n")
         t.append("\n")
-    section("SESSION STATE (first column)", [(g, STATE_STYLE[st], STATE_HELP[st]) for st, g in fmt.GLYPH.items()])
-    section("ENTER (before the host)", [("▶", "bold", "it's on the left now")] +
-            [(g, REACH_STYLE.get(r, ""), tmux.REACH_HELP[r]) for r, g in tmux.REACH_GLYPH.items() if r != "none"])
-    section("ROW", [("1", "dim", "its number: Alt+1…9 opens it from any pane of the ctx session"),
-                    ("3m", "dim", "time in this state (live), or since it was last active (ended)")] +
-            [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
-            [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
-             ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work")])
-    section("WAITING ON YOU (top box)", [("◐3m", "bold yellow", "how long it has waited"),
-                                         ("idle", "", "it finished its turn: your move"),
-                                         ("waiting", "", "a dialog is open in it (permission, plan, …)")])
-    section("MESSAGES", [(fmt.MSG_GLYPH[k], MSG_STYLE.get(k, "dim"), MSG_HELP[k]) for k in fmt.MSG_GLYPH])
-    section("AGENT SAYS", [(fmt.CLAIM_GLYPH[k], CLAIM_STYLE.get(k, ""), CLAIM_HELP[k]) for k in CLAIM_HELP])
-    t.append("? or Esc closes", style="dim")
     return t
+
+
+# the board's keys, in words: (binding keys, as shown, what it does). A test checks every binding is here.
+HELP_KEYS = [
+    (("enter",), "Enter", "open the selected session: bring it to the left pane, resume it, or say why not"),
+    (("slot",), "Alt+1…9", "open the session with that number, from any pane of the ctx session"),
+    (("c", "p"), "c / p", "start a new Claude Code / pi session (asks for a directory; default: the selected one's)"),
+    (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
+    (("W",), "W", "message the selected session's workstream: whichever session is, or next is, live on it"),
+    (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y/n"),
+    (("a",), "a", "answer the question it's waiting on (plain-text questions; dialogs are answered in the session)"),
+    (("x",), "x", "retire one of YOUR INSTRUCTIONS that no longer holds: type its number"),
+    (("w",), "w", "group the list by workstream (repo@branch across hosts), or back to a flat list"),
+    (("h",), "h", "host filter: this host, all hosts, each other host"),
+    (("slash", "escape"), "/  Esc", "filter by text (title, repo, key, last prompt); Esc clears it, or cancels an input"),
+    (("e",), "e", "show or hide ended sessions"),
+    (("v",), "v", "mark the selected session viewed (opening it does too, on any machine)"),
+    (("r",), "r", "refresh now (the board also updates live)"),
+    (("n",), "n", "pop-ups off / on for this run"),
+    (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
+    (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
+    (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y/n"),
+]
+HELP_TIPS = [
+    ("Where things are", ("Top box: what's waiting on you, oldest first. The list: every session, live ones first. Below "
+     "it: the selected session's detail (recap, what you told it, its questions and answers, messages, the last exchange).")),
+    ("Sending a message", ("m types a message into the session as a new prompt: now if it's live, else when it next runs. Its "
+     "state shows under MESSAGES (… → ✓ ↩ ✗). `ctx send --cancel <id>` withdraws a queued one.")),
+    ("Answering", ("a answers a question the agent asked in its reply. A dialog (permission, plan, AskUserQuestion, pi "
+     "prompt) waits on a keypress in its own terminal: Enter opens it.")),
+    ("Agents", ("Agents can read this board and message each other through the ctxswitch MCP tools. Their messages "
+     "say which session and host sent them, and never count as yours.")),
+    ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
+     "pane is ever gone, `ctx tmux` puts it back.")),
+    ("More", "`ctx --help`, and the README (User guide)."),
+]
+
+
+def help_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
+    """The ? screen as (section, [(key or glyph, style, words)]): keys, then every glyph, then how things work."""
+    keys = [(shown, "bold cyan", words) for _, shown, words in HELP_KEYS]
+    tips = [(title.upper(), [("", "", words)]) for title, words in HELP_TIPS]
+    return [("KEYS", keys), *legend_sections(), *tips]
+
+
+def help_renderable():
+    """Each section a two-column grid, so a wrapped line stays under its words in a narrow pane."""
+    from rich.console import Group
+    from rich.table import Table
+    parts: list = [Text.assemble(("ctxswitch help", "bold"), ("   ↑↓ PgUp PgDn scroll · Esc closes\n", "dim"))]
+    for title, rows in help_sections():
+        parts.append(Text(title, style="bold"))
+        g = Table.grid(padding=(0, 1), pad_edge=True)
+        g.add_column(width=9 if any(k for k, _, _ in rows) else 0, no_wrap=True); g.add_column(ratio=1)
+        for k, style, words in rows:
+            g.add_row(Text(k, style=style), words)
+        parts += [g, Text("")]
+    return Group(*parts)
+
+
+def help_text() -> str:
+    return "\n".join(f"{title}\n" + "\n".join(f"  {k}  {w}" for k, _, w in rows) for title, rows in help_sections())
 
 
 def row_tip(s: dict, reach: str, on_left: bool, ssh: dict, now: datetime) -> str:
@@ -131,17 +196,21 @@ class Board(DataTable):
         self.tooltip = self.app.tip_for(key) if key else None
 
 
-class Legend(ModalScreen):
-    BINDINGS = [Binding("escape", "dismiss", show=False), Binding("question_mark", "dismiss", show=False),
-                Binding("q", "dismiss", show=False)]
+class Help(Screen):
+    """? : the whole pane, scrollable; Esc (or ? or q) closes it."""
+    BINDINGS = [Binding("escape", "close", "close"), Binding("question_mark", "close", show=False),
+                Binding("q", "close", show=False)]
     DEFAULT_CSS = """
-    Legend { align: center middle; }
-    Legend > VerticalScroll { width: auto; max-width: 100%; height: auto; max-height: 100%; border: round $accent; padding: 0 1; background: $surface; }
+    Help > VerticalScroll { padding: 0 1; }
     """
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll():
-            yield Static(legend())
+        with VerticalScroll(id="help"):
+            yield Static(help_renderable())
+        yield Footer(compact=True, show_command_palette=False)
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
 
 
 class CtxApp(App):
@@ -162,7 +231,7 @@ class CtxApp(App):
         Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
-        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"), Binding("question_mark", "legend", "legend"),
+        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"), Binding("question_mark", "help", "help"),
         Binding("W", "message_work", "msg work", show=False),
         Binding("escape", "clear_filter", show=False),
         *(Binding(f"{slot_key(n)},alt+{n}", f"slot({n})", show=False) for n in range(1, SLOTS + 1)),
@@ -710,8 +779,8 @@ class CtxApp(App):
         popup_log(f"new {harness} in {cwd}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=6)
 
-    def action_legend(self) -> None:
-        self.push_screen(Legend())
+    def action_help(self) -> None:
+        self.push_screen(Help())
 
     def tip_for(self, key: str) -> str | None:
         if key.startswith("ws:"):
