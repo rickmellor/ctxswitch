@@ -479,7 +479,7 @@ def ensure_board(width: str, ctx_cmd: str, restart: bool = False) -> str:
     return "board put back on the right of the viewer window"
 
 
-def bootstrap(width: str = "20%", restart: bool = False) -> str:
+def bootstrap(width: str = "60", restart: bool = False) -> str:
     """`ctx tmux`: create (or join) the manager layout — viewer left, TUI right — and attach. Joining puts the board
     back if it's gone; ``restart`` restarts it on the installed code. Inside the ctx session it never splits the
     window you're in: that board wouldn't manage anything.
