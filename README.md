@@ -426,7 +426,7 @@ option. The ones you'll touch:
 | `[hub] url`, `token` | where collectors push and clients read; must match the hub's token |
 | `[collector] host_id` | short stable name for this machine (default: hostname) |
 | `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
-| `[[claude_profiles]]` | ways to start Claude Code, one per account: `name`, `command` (argv), `config_dir` (`CLAUDE_CONFIG_DIR`), `env`, `unset`, `model` (for new sessions and the first resume after `x`). `c` uses the first unless you prefix the directory with `name:`; Enter resumes a session under the profile its transcript lives in; `x` moves one between them; the collector watches every profile's `projects/` and `sessions/`; `ctx install --claude` hooks every profile's `settings.json` |
+| `[[claude_profiles]]` | ways to start Claude Code, one per account (a host with one account still names it, e.g. `name = "max"`, so every board labels its sessions): `name`, `command` (argv), `config_dir` (`CLAUDE_CONFIG_DIR`), `env`, `unset`, `model` (for new sessions and the first resume after `x`). `c` uses the first unless you prefix the directory with `name:`; Enter resumes a session under the profile its transcript lives in; `x` moves one between them; the collector watches every profile's `projects/` and `sessions/`; `ctx install --claude` hooks every profile's `settings.json` |
 | `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
 | `[collector] accept_messages` | deliver messages into this host's sessions (default true) |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |

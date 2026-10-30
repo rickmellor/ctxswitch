@@ -34,6 +34,7 @@ disable_thinking = true
 # Enter resumes a session under the profile its transcript lives in. Each config_dir's projects/ and sessions/ are
 # watched too, and `ctx install --claude` puts the hooks in each one's settings.json. Omit for plain `claude`.
 # `x` (or `ctx move`) moves an ended session to the other profile and resumes it with that profile's `model`.
+# A host with one account still names it (just `name = "max"`, say) so boards everywhere label its sessions.
 # [[claude_profiles]]
 # name = "bedrock"                      # the corporate account: whatever `claude` does from your shell
 # model = "opus"                        # --model for new sessions and for a session moved here

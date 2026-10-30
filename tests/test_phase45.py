@@ -423,3 +423,25 @@ def test_exchange_moves_transcript_and_sidecar_and_resumes_with_the_profiles_mod
     assert tmux.resume_argv(s, profiles, mv.resume_extra(target))[-2:] == ["--model", "opus"]
     # a new session under a profile with a model gets --model too
     assert profiles[1].argv() + ["--model", "claude-fable-5-1"] == [*profiles[1].argv(), "--model", "claude-fable-5-1"]
+
+
+def test_a_sessions_own_host_names_its_account(tmp_path):
+    from ctxswitch.client import fmt
+    from ctxswitch.collector.indexer import Indexer
+    from ctxswitch.collector.state import CollectorState
+    from ctxswitch.common.config import ClaudeProfile, CollectorConfig, profiles_matter
+    # a Max-only host: one profile, named, so profiles matter there and its collector names the account in meta
+    only_max = [ClaudeProfile(name="max", model="claude-fable-5-1")]
+    assert profiles_matter(only_max) and not profiles_matter([ClaudeProfile()])
+    cfg = CollectorConfig(claude_roots=[str(tmp_path / "claude" / "projects")], pi_roots=[], claude_win_roots=[])
+    ix = Indexer(cfg, "scrub", CollectorState(tmp_path / "c.db"), lambda k, p: None, only_max)
+    p = tmp_path / "claude" / "projects" / "-home-rick" / "s9.jsonl"
+    assert ix._profile("claude", p) == "max" and ix._profile("pi", p) == ""
+    assert Indexer(cfg, "scrub", CollectorState(tmp_path / "d.db"), lambda k, p: None)._profile("claude", p) == ""
+    # the laptop's board shows scrub's session as max, whatever the laptop's own profiles would guess from the path
+    laptop = [ClaudeProfile(name="bedrock"), ClaudeProfile(name="max", config_dir=str(tmp_path / "cm"))]
+    remote = {"harness": "claude", "host_id": "scrub", "meta": {"transcript_path": "/home/rick/.claude/projects/-home-rick/s9.jsonl", "profile": "max"}}
+    assert fmt.harness_label(remote, laptop) == "max"
+    unnamed = {**remote, "meta": {"transcript_path": remote["meta"]["transcript_path"]}}
+    assert fmt.harness_label(unnamed, laptop) == "bedrock"          # no name from its host: the local guess
+    assert fmt.harness_label(unnamed, [ClaudeProfile()]) == "cc"

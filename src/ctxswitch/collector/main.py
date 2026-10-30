@@ -41,7 +41,7 @@ class Collector:
         self.cfg, self.once = cfg, once
         self.host_id = cfg.host_id
         self.state = CollectorState(cfg.collector.queue_path or data_dir() / "collector-queue.db")
-        self.ix = Indexer(cfg.collector, self.host_id, self.state, self._emit)
+        self.ix = Indexer(cfg.collector, self.host_id, self.state, self._emit, cfg.claude_profiles)
         self._dirty = asyncio.Event()
         self._last_liveness: str | None = None
         self.spool = spool.spool_dir(cfg.collector.spool_dir)

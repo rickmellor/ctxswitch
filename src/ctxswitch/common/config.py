@@ -111,8 +111,9 @@ def profile_for(s: dict, profiles: list[ClaudeProfile]) -> ClaudeProfile:
 
 
 def profiles_matter(profiles: list[ClaudeProfile]) -> bool:
-    """Whether the board should label Claude sessions by profile: more than one, or one that isn't plain `claude`."""
-    return len(profiles) > 1 or any(p.config_dir for p in profiles)
+    """Whether Claude sessions are labelled by profile: any [[claude_profiles]] given (a Max-only host names its one
+    account "max" so other boards show it), as opposed to the implicit default."""
+    return len(profiles) > 1 or any(p.config_dir or p.name != "default" for p in profiles)
 
 
 def profile_named(name: str | None, profiles: list[ClaudeProfile]) -> ClaudeProfile | None:

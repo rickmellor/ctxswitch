@@ -94,6 +94,7 @@ class SessionMeta:
     last_activity: str = ""
     model: str = ""
     permission_mode: str = ""
+    profile: str = ""               # the [[claude_profiles]] account the transcript lives under, named by its own host
 
     @property
     def key(self) -> str:

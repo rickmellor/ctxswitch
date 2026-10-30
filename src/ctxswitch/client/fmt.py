@@ -11,8 +11,12 @@ def harness_label(s: dict, profiles: list | None = None) -> str:
     """The short harness label for a row: ``cc``/``pi``/``cw``, or for a Claude session the name of the
     [[claude_profiles]] account it runs under (``bedrock``, ``max``) when profiles are configured."""
     from ctxswitch.common.config import profile_for, profiles_matter
-    if s.get("harness") == "claude" and profiles and profiles_matter(profiles):
-        return profile_for(s, profiles).name
+    if s.get("harness") == "claude":
+        named = (s.get("meta") or {}).get("profile")        # its own host's collector named the account
+        if named:
+            return named
+        if profiles and profiles_matter(profiles):
+            return profile_for(s, profiles).name
     return HARNESS.get(s.get("harness", ""), s.get("harness", ""))
 
 

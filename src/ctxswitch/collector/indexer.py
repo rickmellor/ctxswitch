@@ -39,8 +39,9 @@ def session_id_from_path(path: Path, harness: str) -> str:
 
 
 class Indexer:
-    def __init__(self, cfg: CollectorConfig, host_id: str, state: CollectorState, emit: Emit):
+    def __init__(self, cfg: CollectorConfig, host_id: str, state: CollectorState, emit: Emit, profiles: list | None = None):
         self.cfg, self.host_id, self.state, self.emit = cfg, host_id, state, emit
+        self.profiles = profiles or []                  # this host's [[claude_profiles]]: names the account in meta
         self.roots: list[tuple[Path, str]] = []
         for r in cfg.claude_roots:
             self.roots.append((Path(os.path.expanduser(r)), "claude"))
@@ -168,5 +169,12 @@ class Indexer:
                         git_branch=pm.get("git_branch") or (branch(root) if root else ""), title=title, name=pm.get("name", ""),
                         harness_version=pm.get("harness_version", ""), started_at=pm.get("started_at") or _iso(st.st_ctime),
                         last_activity=pm.get("last_activity") or _iso(st.st_mtime), model=pm.get("model", ""),
-                        permission_mode=pm.get("permission_mode", ""))
+                        permission_mode=pm.get("permission_mode", ""), profile=self._profile(harness, path))
         return m.to_dict()
+
+    def _profile(self, harness: str, path: Path) -> str:
+        """The account a Claude transcript belongs to, by this host's own profiles (a viewer elsewhere can't tell)."""
+        from ctxswitch.common.config import profile_for, profiles_matter
+        if harness != "claude" or not profiles_matter(self.profiles):
+            return ""
+        return profile_for({"meta": {"transcript_path": str(path)}}, self.profiles).name
