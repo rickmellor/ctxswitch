@@ -189,7 +189,7 @@ line saying what it's waiting on:
 - **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
 - **MESSAGES**: what you sent it with `m` or `ctx send`, and what other agents sent it (`from <session>`), and where
   each one is (see Messages);
-- **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, numbered for `x`, with the exchange
+- **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, numbered for `i`, with the exchange
   (`#12`) they came from;
 - **AGENT SAYS**: its latest claims: `✓` done / tests pass, `✗` tests fail, `!` blocked;
 - **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
@@ -213,7 +213,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `↑` `↓` | select a session (the detail pane follows) |
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
 | `Alt+1`…`Alt+9` | open the session with that number (the list's first column; numbers follow the order shown). Works from any pane of the ctx session, agents included; outside it the key goes through as typed |
-| `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's) |
+| `c` / `p` | start a new Claude Code / pi session. You're asked for a directory (default: the selected session's). With several `[[claude_profiles]]` (accounts), `max: ~/repos/x` starts it under the `max` profile |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
@@ -225,7 +225,8 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `v` | mark the selected session viewed (it's also marked whenever you open it, on any machine) |
 | `r` | refresh now (the board also updates live over a WebSocket) |
 | `n` | pop-ups off / on for this run (`notify` sets how it starts) |
-| `x` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
+| `x` | exchange: move the selected Claude session to the other account and resume it there (see Exchanging a session). A running one in ctx's tmux is ended first, after a y. With three or more profiles it asks which |
+| `i` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
 | `k` | end the selected session's agent, after a y (see Ending a session) |
@@ -248,6 +249,19 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
 - **Sessions on another host** (`↗`) resume there over ssh, in a new window here named `<host>/<title>`, so you
   drive them from this machine. A session still live on that host stays `⇢`: quit it there first (two copies of
   one session would fork it). The window closes when the agent (or ssh) exits.
+- **Two Claude accounts** (say, corporate Bedrock and a personal Max subscription in its own config directory):
+  list them as `[[claude_profiles]]` (see 9. Configuration). Rows then show the account instead of `cc`
+  (`bedrock·laptop`, `max·laptop`). `c` takes `max: ~/repos/x` to start under the `max` profile, the window is
+  named `claude[max]:x`, and Enter resumes each session under the profile its transcript lives in. A profile's
+  `command` must be a program, not a shell alias; wrap an alias in a script.
+- **Exchanging a session between accounts** (`x`, or `ctx move <session> --to max`): when a session needs a
+  model the other account has (Fable on Max, say), select it and press `x`. If it's running in ctx's tmux, a `y`
+  ends it first (as `k` does) and the move waits for it to exit. Its transcript and sidecar directory move into
+  the other profile's config directory, the hub follows them, and it resumes in the left pane under that account
+  with the profile's `model` (the transcript remembers the old account's model id, which the new one would
+  refuse). Press `x` again later to move it back. The session keeps its number, history, ledger and recap. One
+  running in another terminal or on another host has to be quit there first, and only a session whose files are
+  on this machine moves (on another host, run `ctx move` there).
 - **Windows-native Claude sessions** (`cw`) are read-only: Enter tells you the command to run in a Windows
   terminal. They're picked up within 30 s (Windows writes don't wake the Linux file watcher).
 - **Ending a session**: `k` on its row, then `y`. It ends that agent only (its transcript stays, so it's
@@ -267,7 +281,7 @@ with a `json_schema`: every answer is checked against a schema.
 - **Ledger**: it reads every exchange you typed once, and records your standing instructions, the choices you
   made, what the agent claims (done, tests pass, blocked), plain-text questions it asked, and what the session is
   for. It records only what it can quote word for word: a row whose quote isn't in the transcript is dropped.
-  Instructions stay in force until you cancel them in a prompt or retire one (`x` on the board, or
+  Instructions stay in force until you cancel them in a prompt or retire one (`i` on the board, or
   `ctx retire <session> <id>`; `ctx show` prints the ids).
 - Only sessions live or active in the last `recap_days` (7) get either, and history is never re-read by the model.
   Calls run one at a time (temperature 0.1–0.2, a few hundred tokens each). If the endpoint is down, the board
@@ -357,6 +371,7 @@ pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its o
 | `ctx send <session> [text \| -] [--buffer] [--work] [--cancel ID]` | message a session (text, stdin with `-` or no text, or the tmux paste buffer); `--work`: its workstream instead; `--cancel` withdraws a queued one |
 | `ctx retire <session> <id>` | retire an instruction that no longer holds (`ctx show` prints the ids) |
 | `ctx reply <session> [text \| -]` | answer the question it's waiting on (see Answering a question) |
+| `ctx move <session> --to <profile> [--end] [--no-resume]` | move a Claude session to another account and resume it there (`x` on the board); `--end` ends a running one in ctx's tmux first; `--no-resume` prints the resume command instead |
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
@@ -411,6 +426,7 @@ option. The ones you'll touch:
 | `[hub] url`, `token` | where collectors push and clients read; must match the hub's token |
 | `[collector] host_id` | short stable name for this machine (default: hostname) |
 | `[collector] claude_roots`, `pi_roots` | transcript directories to watch |
+| `[[claude_profiles]]` | ways to start Claude Code, one per account: `name`, `command` (argv), `config_dir` (`CLAUDE_CONFIG_DIR`), `env`, `unset`, `model` (for new sessions and the first resume after `x`). `c` uses the first unless you prefix the directory with `name:`; Enter resumes a session under the profile its transcript lives in; `x` moves one between them; the collector watches every profile's `projects/` and `sessions/`; `ctx install --claude` hooks every profile's `settings.json` |
 | `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
 | `[collector] accept_messages` | deliver messages into this host's sessions (default true) |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |

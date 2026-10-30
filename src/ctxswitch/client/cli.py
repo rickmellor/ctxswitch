@@ -136,6 +136,34 @@ def cmd_retire(a) -> int:
     return 0 if ok else 1
 
 
+def cmd_move(a) -> int:
+    """Move a Claude session to another profile (account) and resume it: in tmux's viewer pane, else print how."""
+    from ctxswitch.client import move as mv, tmux
+    c = _client()
+    key = _resolve(c, a.key)
+    if key is None:
+        return 1
+    cfg = load()
+    s = c.session(key, turns=0)
+    if not s:
+        print(f"no session {key}"); return 1
+    try:
+        if a.end and mv.can_end_here(s):
+            print("ending it first…")
+            why = mv.end_and_wait(s, cfg)
+            if why:
+                raise mv.CannotMove(why)
+        target, path = mv.move(s, a.to, cfg.claude_profiles, cfg.host_id)
+    except mv.CannotMove as e:
+        print(f"cannot move: {e}" + ("" if a.end or "running" not in str(e) else " (or --end, inside ctx's tmux)")); return 1
+    print(f"moved to {target.name}: {path}")
+    if tmux.in_tmux() and not a.no_resume:
+        print(tmux.show(s, ssh=cfg.ssh, extra=mv.resume_extra(target)))
+    else:
+        print("run: " + mv.command_hint(s, target, cfg.claude_profiles))
+    return 0
+
+
 def _body(a) -> str:
     if a.text in ([], ["-"]):
         if sys.stdin.isatty() and not a.text:
@@ -241,6 +269,10 @@ def main(argv=None) -> None:
     p.add_argument("--work", action="store_true", help="to its workstream (repo + branch): whichever session is, or next is, live on it")
     p = sub.add_parser("retire", help="retire an instruction that no longer holds (ids in `ctx show`)"); p.set_defaults(fn=cmd_retire)
     p.add_argument("key"); p.add_argument("id", type=int)
+    p = sub.add_parser("move", help="move a Claude session to another account ([[claude_profiles]]) and resume it there"); p.set_defaults(fn=cmd_move)
+    p.add_argument("key"); p.add_argument("--to", required=True, metavar="PROFILE")
+    p.add_argument("--no-resume", action="store_true", help="move only; print the resume command")
+    p.add_argument("--end", action="store_true", help="a running session in ctx's tmux: end it first (as k does), then move")
     p = sub.add_parser("reply"); p.set_defaults(fn=cmd_reply)
     p.add_argument("key"); p.add_argument("text", nargs="*")
     sub.add_parser("hosts").set_defaults(fn=cmd_hosts)

@@ -62,8 +62,10 @@ def own_session(cfg: Config, proc: str = "/proc", pid: int | None = None) -> str
     """The key of the Claude or pi session this process runs under: the nearest ancestor with a live registry entry
     on this host. Read on every send, so a /clear or resume (a new session id, same process) is followed."""
     host = cfg.host_id
-    by_pid = {lv.pid: k for k, lv in (read_claude_registry(Path(os.path.expanduser(cfg.collector.claude_sessions_dir)), host, proc)
-                                     | read_pi_registry(runtime_dir(), host, proc)).items()}
+    live = read_pi_registry(runtime_dir(), host, proc)
+    for d in cfg.claude_sessions_dirs():
+        live |= read_claude_registry(d, host, proc)
+    by_pid = {lv.pid: k for k, lv in live.items()}
     pid = os.getppid() if pid is None else pid
     for _ in range(64):                                              # a cycle or a deep tree: give up
         if pid is None or pid <= 1:

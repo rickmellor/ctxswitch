@@ -40,6 +40,7 @@ from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
 from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
 from ctxswitch.client.launch import open_tab
+from ctxswitch.client import move as mv
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
@@ -122,17 +123,32 @@ def legend() -> Text:
     return t
 
 
+def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
+    """``"max: ~/repos/x"`` -> ("max", "~/repos/x") when ``max`` is a profile name; else (None, value). A bare
+    profile name (no directory) keeps the directory empty, which new_agent turns into ``~``."""
+    head, sep, rest = value.partition(":")
+    if sep and head.strip() in names:
+        return head.strip(), rest.strip()
+    if value.strip() in names:
+        return value.strip(), ""
+    return None, value
+
+
 # the board's keys, in words: (binding keys, as shown, what it does). A test checks every binding is here.
 HELP_KEYS = [
     (("enter",), "Enter", "open the selected session: bring it to the left pane, resume it, or say why not"),
     (("slot",), "Alt+1…9", "open the session with that number, from any pane of the ctx session"),
-    (("c", "p"), "c / p", "start a new Claude Code / pi session (asks for a directory; default: the selected one's)"),
+    (("c", "p"), "c / p", "start a new Claude Code / pi session (asks for a directory; default: the selected one's). "
+                          "With several [[claude_profiles]], 'name: directory' picks the account"),
     (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
     (("W",), "W", "message the selected session's workstream: whichever session is, or next is, live on it"),
     (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
     (("k",), "k", "end the selected session's agent, after a y (it stays resumable: Enter brings it back)"),
     (("a",), "a", "answer the question it's waiting on (plain-text questions; dialogs are answered in the session)"),
-    (("x",), "x", "retire one of YOUR INSTRUCTIONS that no longer holds: type its number"),
+    (("x",), "x", "exchange: move the selected Claude session to the other account ([[claude_profiles]]: bedrock ⇄ max) "
+                  "and resume it there with that profile's model. A running one in ctx's tmux is ended first, after a y. "
+                  "With three or more profiles it asks which"),
+    (("i",), "i", "retire one of YOUR INSTRUCTIONS that no longer holds: type its number"),
     (("w",), "w", "group the list by workstream (repo@branch across hosts), or back to a flat list"),
     (("h",), "h", "host filter: this host, all hosts, each other host"),
     (("slash", "escape"), "/  Esc", "filter by text (title, repo, key, last prompt); Esc clears it, or cancels an input"),
@@ -300,7 +316,7 @@ class CtxApp(App):
         Binding("k", "end_session", "end"), Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
-        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "retire", "retire"), Binding("question_mark", "help", "help"),
+        Binding("n", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"), Binding("question_mark", "help", "help"),
         Binding("W", "message_work", "msg work", show=False),
         Binding("escape", "clear_filter", show=False),
         *(Binding(f"{slot_key(n)},alt+{n}", f"slot({n})", show=False) for n in range(1, SLOTS + 1)),
@@ -534,7 +550,7 @@ class CtxApp(App):
             asks = s.get("open_asks") or []
             when = s.get("status_since") if s.get("live_status") in LIVE else s.get("last_activity")
             style = STATE_STYLE.get(st, "")
-            harness = fmt.HARNESS.get(s.get("harness", ""), s.get("harness", ""))
+            harness = fmt.harness_label(s, self.cfg.claude_profiles)
             where = harness if self.host_filter else f"{harness}·{s.get('host_id', '?')}"   # a host filter implies the host
             label = Text()
             reach = self.reach.get(s["key"], "")
@@ -616,7 +632,7 @@ class CtxApp(App):
         t.append(f"{ws}\n\n", style="dim")
         for s in members:
             st = fmt.session_state(s)
-            t.append(f"{fmt.state_glyph(s)} {s.get('host_id')}/{fmt.HARNESS.get(s.get('harness', ''), '')} ", style=STATE_STYLE.get(st, ""))
+            t.append(f"{fmt.state_glyph(s)} {s.get('host_id')}/{fmt.harness_label(s, self.cfg.claude_profiles)} ", style=STATE_STYLE.get(st, ""))
             t.append(f"{fmt.one_line(fmt.display_title(s), 60)}", style=STATE_STYLE.get(st, ""))
             t.append(f"  {fmt.age(s.get('status_since') or s.get('last_activity'), now)}\n", style="dim")
         self.query_one("#detail_text", Static).update(t)
@@ -749,7 +765,7 @@ class CtxApp(App):
             t.append(f"SAME WORK ELSEWHERE ({fmt.workstream_label(s.get('workstream'))})\n", style="bold")
             for x in sibs:
                 st = "ended" if x.get("ended") and x.get("live_status") not in LIVE else x.get("live_status") or "unknown"
-                t.append(f"{fmt.GLYPH.get(st, '?')} {x['host_id']}/{fmt.HARNESS.get(x['harness'], x['harness'])} ", style=STATE_STYLE.get(st, ""))
+                t.append(f"{fmt.GLYPH.get(st, '?')} {x['host_id']}/{fmt.harness_label(x, self.cfg.claude_profiles)} ", style=STATE_STYLE.get(st, ""))
                 t.append(f"{fmt.one_line(x.get('title'), 60)}")
                 t.append(f"  {fmt.age(x.get('status_since') if st in LIVE else x.get('last_activity'), now)}\n", style="dim")
                 for r in x.get("instructions") or []:      # its instructions, for context: not this session's
@@ -835,7 +851,10 @@ class CtxApp(App):
     def action_new_claude(self) -> None:
         if not tmux.in_tmux():
             self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
-        self._show_input("new:claude", "directory for the new claude session, enter to start", self._selected_cwd())
+        names = [p.name for p in self.cfg.claude_profiles]
+        others = " or ".join(f"'{n}: [path]'" for n in names[1:])
+        hint = f" ({names[0]}), or {others} for that account" if others else ""
+        self._show_input("new:claude", f"directory for the new claude session, enter to start{hint}", self._selected_cwd())
 
     def action_new_pi(self) -> None:
         if not tmux.in_tmux():
@@ -844,11 +863,16 @@ class CtxApp(App):
 
     @work(exclusive=True, group="tmux", thread=True)
     def start_agent(self, harness: str, cwd: str) -> None:
+        profile = None
         try:
-            msg = tmux.new_agent(harness, cwd)
+            if harness == "claude":
+                profile, cwd = split_profile(cwd, [p.name for p in self.cfg.claude_profiles])
+                msg = tmux.new_agent(harness, cwd, profile=profile, profiles=self.cfg.claude_profiles)
+            else:
+                msg = tmux.new_agent(harness, cwd)
         except Exception as e:                          # noqa: BLE001
             msg = f"tmux: {e}"
-        popup_log(f"new {harness} in {cwd}: {msg}")
+        popup_log(f"new {harness}{f'[{profile}]' if profile else ''} in {cwd}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=6)
 
     def action_help(self) -> None:
@@ -891,6 +915,52 @@ class CtxApp(App):
         if not ws:
             self.notify("not in a repo: no workstream to message", severity="warning"); return
         self._show_input(f"work:{ws}", f"message to {fmt.workstream_label(ws)} (the first session live on it, any host), enter to send")
+
+    def action_exchange(self) -> None:
+        """x: move the selected Claude session to another account (profile) and resume it there."""
+        s = self._selected_session()
+        if not s:
+            return
+        profiles = self.cfg.claude_profiles
+        if len(profiles) < 2:
+            self.notify("one claude profile only: add [[claude_profiles]] to config.toml to exchange", severity="warning"); return
+        live = s.get("live_status") in LIVE
+        try:                                            # everything but liveness: that's handled by ending it
+            mv.check({**s, "live_status": "ended"}, mv.other_profiles(s, profiles)[0].name, profiles, self.this_host)
+        except mv.CannotMove as e:
+            self.notify(str(e), severity="warning"); return
+        if live and not mv.can_end_here(s):
+            self.notify("it's running outside ctx's tmux (another terminal, or another host): quit it there, then x",
+                        severity="warning", timeout=6); return
+        others = mv.other_profiles(s, profiles)
+        if len(others) > 1:
+            self.pending_exchange = (s, live)
+            self._show_input("exchange", f"move to which profile ({', '.join(p.name for p in others)})? enter"); return
+        to = others[0].name
+        if live:
+            busy = " (busy: it's working)" if s.get("live_status") == "busy" else ""
+            self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)}{busy} and move it to {to}?",
+                         lambda: self.exchange_session(s, to, end_first=True))
+        else:
+            self.exchange_session(s, to)
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def exchange_session(self, s: dict, to: str, end_first: bool = False) -> None:
+        try:
+            if end_first:
+                self.call_from_thread(self.notify, f"ending {fmt.one_line(fmt.display_title(s), 30)}…", timeout=4)
+                why = mv.end_and_wait(s, self.cfg)
+                if why:
+                    raise mv.CannotMove(why)
+            target, path = mv.move(s, to, self.cfg.claude_profiles, self.this_host)
+            if tmux.in_tmux():
+                msg = f"moved to {target.name}: " + tmux.show(s, ssh=self.cfg.ssh, extra=mv.resume_extra(target))
+            else:
+                msg = f"moved to {target.name}; run: {mv.command_hint(s, target, self.cfg.claude_profiles)}"
+        except Exception as e:                          # noqa: BLE001
+            msg = f"exchange: {e}"
+        popup_log(f"exchange {s.get('key')} -> {to}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=8)
 
     def action_retire(self) -> None:
         s = self.detail if self.detail and self.detail.get("key") == self.selected else None
@@ -1030,6 +1100,13 @@ class CtxApp(App):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             if value.strip():
                 self.send_message(mode.split(":", 1)[1], value)
+            return
+        if mode == "exchange":
+            pend, self.pending_exchange = getattr(self, "pending_exchange", None), None
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            if pend and value.strip():
+                s, live = pend
+                self.exchange_session(s, value.strip(), end_first=live)
             return
         if mode.startswith("new:"):
             self.start_agent(mode.split(":", 1)[1], value)

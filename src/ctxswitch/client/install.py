@@ -182,8 +182,21 @@ def _dump(settings: dict[str, Any]) -> bytes:
     return (json.dumps(settings, indent=2, ensure_ascii=False) + "\n").encode()
 
 
-def install_claude(st: State, dry: bool, log) -> None:
-    p = claude_settings()
+def profile_settings(cfg=None) -> list[tuple[str, Path]]:
+    """(state key, settings.json) for the default Claude config and every [[claude_profiles]] config_dir, so each
+    account gets the hooks. The default keeps the historical key "claude"; others are "claude:<settings path>"."""
+    from ctxswitch.common.config import load
+    cfg = cfg or load()
+    out = [("claude", claude_settings())]
+    for pr in cfg.claude_profiles:                          # every profile's dir, the default one's (~/.claude) included
+        p = pr.home / "settings.json"
+        if p not in [x[1] for x in out]:
+            out.append((f"claude:{p}", p))
+    return out
+
+
+def install_claude(st: State, dry: bool, log, settings: Path | None = None, key: str = "claude") -> None:
+    p = settings or claude_settings()
     raw = p.read_bytes() if p.exists() else None
     cur = json.loads(raw) if raw and raw.strip() else {}
     new = merge_hooks(cur, hook_command())
@@ -191,7 +204,7 @@ def install_claude(st: State, dry: bool, log) -> None:
         log(f"claude: hooks already in {p}"); return
     if dry:
         log(f"claude: would add ctx-hook for {', '.join(hook.EVENTS)} to {p}"); return
-    rec = st.d.get("claude")
+    rec = st.d.get(key)
     if not rec or rec.get("settings") != str(p):            # first install: keep the original
         backup = None
         if raw is not None:
@@ -201,13 +214,13 @@ def install_claude(st: State, dry: bool, log) -> None:
     data = _dump(new)
     _write(p, data, mode=0o600)
     rec["written_sha"] = _sha(data)
-    st.d["claude"] = rec; st.save()
+    st.d[key] = rec; st.save()
     log(f"claude: hooks added to {p}" + (f" (backup {rec['backup']})" if rec.get("backup") else ""))
 
 
-def uninstall_claude(st: State, dry: bool, log) -> None:
-    rec = st.d.get("claude") or {}
-    p = Path(rec.get("settings") or claude_settings())
+def uninstall_claude(st: State, dry: bool, log, settings: Path | None = None, key: str = "claude") -> None:
+    rec = st.d.get(key) or {}
+    p = Path(rec.get("settings") or settings or claude_settings())
     if not p.exists():
         log(f"claude: {p} missing, nothing to do"); return
     raw = p.read_bytes()
@@ -232,7 +245,7 @@ def uninstall_claude(st: State, dry: bool, log) -> None:
         else:
             _write(p, _dump(new)); log(f"claude: removed ctx-hook entries from {p} (other changes kept)")
     if not dry:
-        st.d.pop("claude", None); st.save()
+        st.d.pop(key, None); st.save()
 
 
 # -- MCP server registration -----------------------------------------------------------------------------------
@@ -517,6 +530,8 @@ def _version(cmd: str) -> str | None:
         r = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
+    if r.returncode != 0:                                  # a crash (pi on Node 20) prints Node's own version
+        return None
     m = re.search(r"\d+\.\d+\.\d+", r.stdout + r.stderr)
     return m.group(0) if m else None
 
@@ -596,7 +611,12 @@ def doctor(cfg: Config | None = None) -> list[Check]:
         v = _version(harness)
         out.append(Check("✓" if v == VALIDATED[harness] else "!", f"{harness} version", f"{v or '?'}" +
                          ("" if v == VALIDATED[harness] else f" (payloads validated on {VALIDATED[harness]})")))
-        out.append(check())
+        if harness == "claude":
+            for key, sp_ in profile_settings(cfg):
+                name = next((pr.name for pr in cfg.claude_profiles if pr.config_dir and pr.home / "settings.json" == sp_), None)
+                out.append(_check_claude(sp_, f"claude hooks [{name}]" if name else "claude hooks"))
+        else:
+            out.append(check())
     for root in cfg.collector.claude_win_roots:
         out.append(_check_claude_win(Path(os.path.expanduser(root))))
     if State().d.get("mcp"):                                # opt-in: only checked once installed
@@ -614,22 +634,22 @@ def doctor(cfg: Config | None = None) -> list[Check]:
     return out
 
 
-def _check_claude() -> Check:
-    p = claude_settings()
+def _check_claude(p: Path | None = None, label: str = "claude hooks") -> Check:
+    p = p or claude_settings()
     try:
         hooks = json.loads(p.read_text()).get("hooks", {}) if p.exists() else {}
     except ValueError:
-        return Check("✗", "claude hooks", f"{p} is not valid JSON")
+        return Check("✗", label, f"{p} is not valid JSON")
     cmds = {ev: [h.get("command", "") for g in hooks.get(ev, []) if _ours(g) for h in g["hooks"]] for ev in hook.EVENTS}
     missing = [ev for ev, c in cmds.items() if not c]
     if not any(" brief claude" in c for c in cmds.get("SessionStart", [])):
         missing.append("SessionStart (briefing)")
     if missing:
-        return Check("✗", "claude hooks", f"missing for {', '.join(missing)}", "ctx install --claude")
+        return Check("✗", label, f"missing for {', '.join(missing)}", "ctx install --claude")
     exe = next(iter(cmds.values()))[0].split()[0]
     if not os.access(exe, os.X_OK):
-        return Check("✗", "claude hooks", f"{exe} not executable", "ctx install --claude (re-points the hooks)")
-    return Check("✓", "claude hooks", f"{len(hook.EVENTS)} events -> {exe}")
+        return Check("✗", label, f"{exe} not executable", "ctx install --claude (re-points the hooks)")
+    return Check("✓", label, f"{len(hook.EVENTS)} events -> {exe}")
 
 
 def _check_claude_win(root: Path) -> Check:
@@ -664,7 +684,8 @@ def cmd_install(a) -> int:
         write_config(a.hub, a.token, a.dry_run, log)
         install_collector(a.dry_run, not a.no_start, log)
     if claude:
-        install_claude(st, a.dry_run, log)
+        for key, p in profile_settings():
+            install_claude(st, a.dry_run, log, p, key)
     if pi:
         install_pi(st, a.dry_run, a.force, log)
     if a.mcp:
@@ -680,7 +701,11 @@ def cmd_uninstall(a) -> int:
     st, log = State(), print
     claude, pi, _ = _parts(a)
     if claude:
-        uninstall_claude(st, a.dry_run, log)
+        keys = {k for k in st.d if k == "claude" or k.startswith("claude:")}
+        for key, p in profile_settings():
+            keys.discard(key); uninstall_claude(st, a.dry_run, log, p, key)
+        for key in sorted(keys):                                # profiles since dropped from the config
+            uninstall_claude(st, a.dry_run, log, None, key)
     if pi:
         uninstall_pi(st, a.dry_run, log)
     if a.collector:                                         # only when asked: it also serves transcripts

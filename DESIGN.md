@@ -266,7 +266,7 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
 3. Tracker: extraction rows (instructions, decisions, claims, plain-text asks), reentry/purpose; scheduler.
    **Done** (2026-10-29): ledger rows with verbatim quotes, purpose + history, re-entry card, operator retire
    (`POST /v1/sessions/<key>/ledger/<id>/retire`), shown in the TUI, `ctx show` and the resume briefing.
-   Wrapped up (2026-10-29): `x` on the board and `ctx retire` retire an instruction. **Dropped**: confidence
+   Wrapped up (2026-10-29): `i` on the board (was `x` until 2026-10-30) and `ctx retire` retire an instruction. **Dropped**: confidence
    scores (a row must quote the transcript verbatim or it's discarded: that's the precision gate, and a local
    model's self-reported confidence isn't calibrated). Editing a row: dropped too (retire it and say it again).
 4. Attention events + per-host toasts; cross-host workstreams; "since you last looked".
@@ -285,6 +285,11 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    Wrapped up (2026-10-29): `ctx install --mcp` adds ctxswitch to pi-mcp-adapter's `~/.pi/agent/mcp.json`.
    **Dropped**: an FTS index (`ctx search` answers in ~0.2 s end to end over 2,354 turns / 440 sessions; revisit if
    that grows tenfold).
+6b. Accounts (2026-10-30): `[[claude_profiles]]` (Bedrock, Max): per-profile launch command, config dir, env, model;
+   rows labelled by account; `c` takes `max: dir`; Enter resumes under the transcript's profile; `x` / `ctx move`
+   moves an ended session's transcript + sidecar to the other profile and resumes it with that profile's model
+   (verified both ways on 2026-10-30: the transcript's remembered model id is the only thing the other account
+   rejects, so `--model` on the first resume is required).
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 

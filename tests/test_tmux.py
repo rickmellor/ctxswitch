@@ -397,3 +397,24 @@ def test_k_ends_just_that_agent_and_its_exit_doesnt_wait_for_enter(server, monke
     tm("set-option", "-p", "-u", "-t", p.id, "@ctx_ending")
     tmux.on_agent_exit(143, time.time(), p.id, prompt=asked.append)
     assert asked and "rc=143" in asked[0]                             # a crash still waits
+
+
+def test_x_on_a_running_session_ends_it_and_waits_for_the_registry(server, monkeypatch, tmp_path):
+    from ctxswitch.client import move as mv
+    from ctxswitch.collector.liveness import proc_start
+    from ctxswitch.common.config import Config
+    import json
+    tm("new-window", "-d", "-t", "ctx", "-n", "agent2", "sh -c 'sleep 299; sleep 299'")
+    tm("set-option", "-p", "-t", "ctx:agent2", "@ctx_key", "laptop/claude/sx")
+    monkeypatch.setenv("TMUX_PANE", tm("display-message", "-p", "-t", "ctx:mgr.0", "#{pane_id}"))
+    time.sleep(0.5)
+    pid = int(subprocess.run(["pgrep", "-f", "^sleep 299"], capture_output=True, text=True).stdout.split()[0])
+    reg = tmp_path / "sessions"; reg.mkdir()
+    (reg / f"{pid}.json").write_text(json.dumps({"pid": pid, "sessionId": "sx", "status": "idle", "procStart": proc_start(pid)}))
+    cfg = Config(); cfg.collector.host_id = "laptop"; cfg.collector.claude_sessions_dir = str(reg)
+    s = {"key": "laptop/claude/sx", "harness": "claude", "session_id": "sx", "host_id": "laptop", "live_status": "idle"}
+    assert mv.can_end_here(s)
+    assert mv.end_and_wait(s, cfg, timeout=10) is None                # the sleep died, the registry entry went stale
+    assert s["live_status"] == "ended" and proc_start(pid) is None
+    gone = {**s, "key": "laptop/claude/none", "live_status": "idle"}
+    assert not mv.can_end_here(gone) and "quit it there" in mv.end_and_wait(gone, cfg)

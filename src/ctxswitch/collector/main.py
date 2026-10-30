@@ -57,7 +57,9 @@ class Collector:
 
     # -- liveness -------------------------------------------------------------------------------------------------
     def poll_liveness(self) -> None:
-        live = read_claude_registry(Path(os.path.expanduser(self.cfg.collector.claude_sessions_dir)), self.host_id)
+        live: dict = {}
+        for d in self.cfg.claude_sessions_dirs():
+            live |= read_claude_registry(d, self.host_id)
         live |= read_pi_registry(runtime_dir(), self.host_id)
         live |= self.win_live
         self.live = live

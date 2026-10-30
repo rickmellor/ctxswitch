@@ -30,6 +30,21 @@ concurrency = 1
 priority = 10
 disable_thinking = true
 
+# Ways to start Claude Code (client + collector). `c` on the board uses the first unless you type "name: directory";
+# Enter resumes a session under the profile its transcript lives in. Each config_dir's projects/ and sessions/ are
+# watched too, and `ctx install --claude` puts the hooks in each one's settings.json. Omit for plain `claude`.
+# `x` (or `ctx move`) moves an ended session to the other profile and resumes it with that profile's `model`.
+# [[claude_profiles]]
+# name = "bedrock"                      # the corporate account: whatever `claude` does from your shell
+# model = "opus"                        # --model for new sessions and for a session moved here
+# [[claude_profiles]]
+# name = "max"                          # a personal Max subscription in its own config directory
+# command = ["claude"]                  # argv; a wrapper script works, a shell alias doesn't
+# config_dir = "~/.claude-max"          # CLAUDE_CONFIG_DIR
+# unset = ["CLAUDE_CODE_USE_BEDROCK", "AWS_PROFILE"]
+# env = {}
+# model = "claude-fable-5-1"
+
 # How this machine reaches other hosts to resume their sessions (client side). Unlisted hosts use the host id as
 # the ssh destination (an ~/.ssh/config alias); "" = not reachable from here.
 # [ssh]

@@ -6,13 +6,9 @@ import socket
 import subprocess
 
 
-def resume_command(s: dict) -> list[str] | None:
-    harness, sid = s.get("harness"), s.get("session_id")
-    if harness == "claude":
-        return ["claude", "--resume", sid]
-    if harness == "pi":
-        return ["pi", "--session", s.get("meta", {}).get("transcript_path") or s.get("transcript_path") or sid]
-    return None
+def resume_command(s: dict, profiles: list | None = None) -> list[str] | None:
+    from ctxswitch.client.tmux import resume_argv
+    return resume_argv(s, profiles)
 
 
 def windows_hint(s: dict) -> str:

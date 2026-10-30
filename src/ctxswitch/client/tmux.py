@@ -197,10 +197,18 @@ def reap_viewer(ps: list[Pane] | None = None) -> str | None:
     return repl
 
 
-def resume_argv(s: dict) -> list[str] | None:
+def _profiles() -> list:
+    from ctxswitch.common.config import load
+    return load().claude_profiles
+
+
+def resume_argv(s: dict, profiles: list | None = None, extra: list[str] | None = None) -> list[str] | None:
+    """The argv that resumes ``s`` on its own host. A Claude session resumes under the profile (account, config
+    directory) its transcript lives in, so a Max session comes back as Max. ``extra`` goes after ``--resume``."""
+    from ctxswitch.common.config import profile_for
     harness, sid = s.get("harness"), s.get("session_id")
     if harness == "claude":
-        return ["claude", "--resume", sid]
+        return [*profile_for(s, _profiles() if profiles is None else profiles).argv(), "--resume", sid, *(extra or [])]
     if harness == "pi":
         path = (s.get("meta") or {}).get("transcript_path") or s.get("transcript_path")
         return ["pi", "--session", path] if path else None
@@ -215,8 +223,9 @@ def ssh_target(host: str | None, ssh: dict[str, str]) -> str | None:
 
 
 def ssh_argv(s: dict, target: str) -> list[str] | None:
-    """Resume ``s`` on its own host over ssh. A login shell, because the agents are often only on a login PATH."""
-    argv = resume_argv(s)
+    """Resume ``s`` on its own host over ssh. A login shell, because the agents are often only on a login PATH.
+    Profiles are per machine, so the remote resumes with its own config's profile for that transcript."""
+    argv = resume_argv(s, [])
     if not argv:
         return None
     inner = f"cd {shlex.quote(s.get('cwd') or '~')} 2>/dev/null || cd; exec {shlex.join(argv)}"
@@ -229,12 +238,13 @@ def window_name(s: dict) -> str:
     return (host + (s.get("title") or s.get("session_id") or "ctx"))[:24].replace(":", "-")
 
 
-def new_session_window(s: dict, ssh: dict[str, str] | None = None) -> Pane:
+def new_session_window(s: dict, ssh: dict[str, str] | None = None, extra: list[str] | None = None) -> Pane:
     """Resume the session in a new (detached) window of the viewer's tmux session; returns its pane. A session
-    from another host is resumed there over ssh (``ssh`` = the config's [ssh] table)."""
+    from another host is resumed there over ssh (``ssh`` = the config's [ssh] table). ``extra``: more arguments
+    for a local resume (``--model`` after a move between profiles)."""
     remote = _is_remote(s, _this_host())
     target = ssh_target(s.get("host_id"), ssh or {}) if remote else None
-    argv = (ssh_argv(s, target) if target else None) if remote else resume_argv(s)
+    argv = (ssh_argv(s, target) if target else None) if remote else resume_argv(s, None, extra)
     if not argv:
         raise RuntimeError(f"cannot resume a {s.get('harness')} session" + (f" from {s.get('host_id')}" if remote else ""))
     cwd = os.path.expanduser("~") if remote else s.get("cwd") or os.path.expanduser("~")
@@ -248,12 +258,25 @@ def new_session_window(s: dict, ssh: dict[str, str] | None = None) -> Pane:
     return next(p for p in ps if p.id == pane_id)
 
 
-def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: bool = True) -> str:
-    """Start a fresh claude/pi session in a new window of this tmux session and bring it into the viewer pane."""
+def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: bool = True,
+              profile: str | None = None, profiles: list | None = None) -> str:
+    """Start a fresh claude/pi session in a new window of this tmux session and bring it into the viewer pane.
+    ``profile`` names a [[claude_profiles]] entry (default: the first); the window is named after it."""
+    from ctxswitch.common.config import profile_named
     if not in_tmux():
         return "not inside tmux"
-    argv = {"claude": ["claude"], "pi": ["pi"]}.get(harness)
-    if argv is None:
+    label = harness
+    if harness == "claude":
+        profiles = _profiles() if profiles is None else profiles
+        prof = profile_named(profile, profiles)
+        if prof is None:
+            return f"no claude profile {profile!r} (have: {', '.join(p.name for p in profiles)})"
+        argv = [*prof.argv(), *(["--model", prof.model] if prof.model else [])]
+        if len(profiles) > 1:
+            label = f"claude[{prof.name}]"
+    elif harness == "pi":
+        argv = ["pi"]
+    else:
         return f"unknown harness {harness}"
     argv = [*argv, *(extra or [])]
     cwd = os.path.expanduser(cwd.strip() or "~")
@@ -264,17 +287,18 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
     if viewer is None:
         return "no viewer pane: split the window so the TUI has a neighbour (ctx tmux)"
     target_session = next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), SESSION)
-    name = f"{harness}:{os.path.basename(cwd.rstrip('/')) or cwd}"[:24]
+    name = f"{label}:{os.path.basename(cwd.rstrip('/')) or cwd}"[:24]
     # no session key yet: the collector will see the transcript shortly and the pid walk maps it to this pane
     pane_id = _agent_window(target_session, cwd, name, argv)
     _run("swap-pane", "-s", pane_id, "-t", viewer.id)
     if focus:
         _run("select-pane", "-t", pane_id, check=False)
-    return f"new {harness} in {cwd}"
+    return f"new {label} in {cwd}"
 
 
-def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None) -> str:
-    """Bring session ``s`` into the viewer pane. Returns a short status message for the TUI."""
+def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None, extra: list[str] | None = None) -> str:
+    """Bring session ``s`` into the viewer pane. Returns a short status message for the TUI. ``extra``: arguments
+    for the resume command if one is needed (ignored when the session is already in a pane)."""
     if not in_tmux():
         return "not inside tmux"
     ps = panes()
@@ -294,7 +318,7 @@ def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None) -> str:
     if r == "none":
         return f"cannot resume a {s.get('harness')} session"
     if pane is None:
-        pane = new_session_window(s, ssh)
+        pane = new_session_window(s, ssh, extra)
         created = True
     if focus:                                           # select-pane alone doesn't change the window you're looking at
         _run("select-window", "-t", viewer.window, check=False)

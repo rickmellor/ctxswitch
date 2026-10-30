@@ -1,4 +1,5 @@
 """Quick-reply to an ask, "since you last looked", cross-host workstreams and tmux pop-ups."""
+import pytest
 import os
 import subprocess
 import time
@@ -316,3 +317,109 @@ def test_popups_toggle_off_keeps_track_of_what_was_seen(monkeypatch):
     b.attention = [a, c]
     tui.CtxApp.popup_now(b)
     assert boxes == [[c]] and seen == [("wait", ["k2"])]              # on again: only what's new since
+
+
+# -- Claude profiles (accounts) ----------------------------------------------------------------------------------
+def test_claude_profiles_launch_resume_and_are_watched(tmp_path, monkeypatch):
+    from ctxswitch.common import config as C
+    from ctxswitch.client import tmux, launch
+    from ctxswitch.client.tui.app import split_profile
+    maxdir = tmp_path / "claude-max"
+    (tmp_path / "cfg.toml").write_text(f'''
+[collector]
+claude_roots = ["{tmp_path}/claude/projects"]
+claude_sessions_dir = "{tmp_path}/claude/sessions"
+[[claude_profiles]]
+name = "bedrock"
+[[claude_profiles]]
+name = "max"
+command = ["/usr/local/bin/detribble"]
+config_dir = "{maxdir}"
+unset = ["CLAUDE_CODE_USE_BEDROCK", "AWS_PROFILE"]
+env = {{ FOO = "1" }}
+''')
+    cfg = C.load(tmp_path / "cfg.toml")
+    names = [p.name for p in cfg.claude_profiles]
+    assert names == ["bedrock", "max"]
+    assert cfg.claude_profiles[0].argv() == ["claude"]
+    assert cfg.claude_profiles[1].argv() == ["env", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "AWS_PROFILE", "FOO=1",
+                                             f"CLAUDE_CONFIG_DIR={maxdir}", "/usr/local/bin/detribble"]
+    # the profile's transcripts and registry are watched like the default ones
+    assert cfg.collector.claude_roots == [f"{tmp_path}/claude/projects", f"{maxdir}/projects"]
+    assert cfg.claude_sessions_dirs() == [tmp_path / "claude" / "sessions", maxdir / "sessions"]
+    # resume picks the profile by where the transcript lives
+    corp = {"harness": "claude", "session_id": "s1", "meta": {"transcript_path": f"{tmp_path}/claude/projects/x/s1.jsonl"}}
+    personal = {"harness": "claude", "session_id": "s2", "meta": {"transcript_path": f"{maxdir}/projects/x/s2.jsonl"}}
+    assert tmux.resume_argv(corp, cfg.claude_profiles) == ["claude", "--resume", "s1"]
+    assert tmux.resume_argv(personal, cfg.claude_profiles)[-3:] == ["/usr/local/bin/detribble", "--resume", "s2"]
+    assert tmux.resume_argv(personal, cfg.claude_profiles)[0] == "env"
+    assert launch.resume_command(personal, cfg.claude_profiles) == tmux.resume_argv(personal, cfg.claude_profiles)
+    # over ssh the remote's own config decides: a plain `claude --resume`
+    assert "exec claude --resume s2" in tmux.ssh_argv(personal, "devbox")[-1]
+    # the board's directory prompt takes "name: dir"
+    assert split_profile("max: ~/repos/x", names) == ("max", "~/repos/x")
+    assert split_profile("max", names) == ("max", "")
+    assert split_profile("~/repos/x", names) == (None, "~/repos/x")
+    assert split_profile("c:/weird", names) == (None, "c:/weird")
+    assert C.profile_named("nope", cfg.claude_profiles) is None
+    assert C.profile_named(None, cfg.claude_profiles).name == "bedrock"
+    # no [[claude_profiles]]: one default profile, nothing extra watched
+    plain = C.load(tmp_path / "missing.toml")
+    assert [p.name for p in plain.claude_profiles] == ["default"] and plain.claude_profiles[0].argv() == ["claude"]
+    assert tmux.resume_argv({"harness": "claude", "session_id": "z"}, plain.claude_profiles) == ["claude", "--resume", "z"]
+
+
+def test_new_agent_names_the_window_after_the_profile(monkeypatch):
+    from ctxswitch.client import tmux
+    from ctxswitch.common.config import ClaudeProfile
+    monkeypatch.setattr(tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tmux, "panes", lambda: [])
+    seen = {}
+    monkeypatch.setattr(tmux, "viewer_pane", lambda ps: type("P", (), {"id": "%9"})())
+    monkeypatch.setattr(tmux, "_agent_window", lambda sess, cwd, name, argv: seen.update(name=name, argv=argv) or "%10")
+    monkeypatch.setattr(tmux, "_run", lambda *a, **k: "")
+    profs = [ClaudeProfile(name="bedrock"), ClaudeProfile(name="max", config_dir="/tmp/cm")]
+    assert tmux.new_agent("claude", "/", profile="max", profiles=profs, focus=False) == "new claude[max] in /"
+    assert seen["name"].startswith("claude[max]:") and seen["argv"] == ["env", "CLAUDE_CONFIG_DIR=/tmp/cm", "claude"]
+    assert tmux.new_agent("claude", "/", profiles=profs, focus=False) == "new claude[bedrock] in /"
+    assert tmux.new_agent("claude", "/", profile="nope", profiles=profs, focus=False).startswith("no claude profile 'nope'")
+    assert tmux.new_agent("claude", "/", profiles=[ClaudeProfile()], focus=False) == "new claude in /"
+
+
+def test_exchange_moves_transcript_and_sidecar_and_resumes_with_the_profiles_model(tmp_path):
+    from ctxswitch.client import move as mv, tmux, fmt
+    from ctxswitch.common.config import ClaudeProfile
+    corp, maxd = tmp_path / "claude", tmp_path / "claude-max"
+    profiles = [ClaudeProfile(name="bedrock", config_dir=str(corp), model="opus"),
+                ClaudeProfile(name="max", config_dir=str(maxd), model="claude-fable-5-1")]
+    slug = "-home-rick-repos-x"
+    src = corp / "projects" / slug / "s1.jsonl"; src.parent.mkdir(parents=True)
+    src.write_text('{"type":"mode"}\n'); (src.parent / "s1" / "tool-results").mkdir(parents=True)
+    s = {"key": "laptop/claude/s1", "harness": "claude", "session_id": "s1", "host_id": "laptop", "live_status": "ended",
+         "cwd": "/home/rick/repos/x", "meta": {"transcript_path": str(src)}}
+    assert fmt.harness_label(s, profiles) == "bedrock" and fmt.harness_label(s, [ClaudeProfile()]) == "cc"
+    assert [p.name for p in mv.other_profiles(s, profiles)] == ["max"]
+    # refusals, in words
+    for bad, why in (({**s, "harness": "pi"}, "only Claude"), ({**s, "host_id": "devbox"}, "on devbox"),
+                     ({**s, "live_status": "idle"}, "running"), ({**s, "meta": {"transcript_path": "/nope.jsonl"}}, "not found")):
+        with pytest.raises(mv.CannotMove, match=why):
+            mv.check(bad, "max", profiles, "laptop")
+    with pytest.raises(mv.CannotMove, match="already under bedrock"):
+        mv.check(s, "bedrock", profiles, "laptop")
+    with pytest.raises(mv.CannotMove, match="no claude profile 'pro'"):
+        mv.check(s, "pro", profiles, "laptop")
+    # the move: both files go, the session now resumes under max with max's model
+    target, dst = mv.move(s, "max", profiles, "laptop")
+    assert target.name == "max" and dst == maxd / "projects" / slug / "s1.jsonl"
+    assert dst.read_text() == '{"type":"mode"}\n' and (maxd / "projects" / slug / "s1" / "tool-results").is_dir()
+    assert not src.exists() and not (corp / "projects" / slug / "s1").exists()
+    assert s["meta"]["transcript_path"] == str(dst) and fmt.harness_label(s, profiles) == "max"
+    argv = tmux.resume_argv(s, profiles, mv.resume_extra(target))
+    assert argv[-4:] == ["--resume", "s1", "--model", "claude-fable-5-1"] and f"CLAUDE_CONFIG_DIR={maxd}" in argv
+    assert mv.command_hint(s, target, profiles).startswith("cd /home/rick/repos/x && env ")
+    # and back
+    target, dst2 = mv.move(s, "bedrock", profiles, "laptop")
+    assert dst2 == src and src.exists() and not dst.exists()
+    assert tmux.resume_argv(s, profiles, mv.resume_extra(target))[-2:] == ["--model", "opus"]
+    # a new session under a profile with a model gets --model too
+    assert profiles[1].argv() + ["--model", "claude-fable-5-1"] == [*profiles[1].argv(), "--model", "claude-fable-5-1"]

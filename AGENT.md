@@ -50,13 +50,15 @@ src/ctxswitch/
     tracker/extract.py    ledger: one seat call per exchange you typed → instructions, decisions, claims, asks, purpose
     tracker/scheduler.py  the one loop that runs both (recap first)
   client/
-    cli.py                `ctx` subcommands (ls, show, send, reply, attention, hosts, tui, tmux, internal tmux-exit)
+    cli.py                `ctx` subcommands (ls, show, send, reply, move, attention, hosts, tui, tmux, internal tmux-exit)
+    move.py               move a Claude session between [[claude_profiles]] (accounts): transcript + sidecar, then resume with the profile's model
     hubclient.py          HubClient(cfg): constructed from the Config, not a URL
     tmux.py               pane discovery/tagging, swap-in, resume, agent-exit hand-off, reach classification
     tui/app.py            Textual app (the board)
     fmt.py                shared text formatting (glyphs, ages, titles), reply_target, since_viewed, workstream_label
     notify.py             tmux pop-ups: Notifier diffs the attention list per TUI
-    install.py            `ctx install` / `uninstall` / `doctor`
+    install.py            `ctx install` / `uninstall` / `doctor` (hooks go into every profile's settings.json)
+  common/config.py        ... and ClaudeProfile: `[[claude_profiles]]`, one per account; profile_for(session) by transcript path
   hook.py                 ctx-hook: Claude hook → spool file (stdlib only, runs on every hooked event)
   pi_ext/ctxswitch.ts     pi extension: live registry + UI-prompt events + message socket (symlinked into ~/.pi/agent/extensions)
 deploy/                   hub Dockerfile + compose, install-collector.sh (uv bootstrap, then `ctx install`)
