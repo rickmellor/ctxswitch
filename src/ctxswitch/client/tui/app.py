@@ -151,6 +151,7 @@ HELP_KEYS = [
                   "first. A running one in ctx's tmux is ended first, after a y"),
     (("i",), "i", "retire one of YOUR INSTRUCTIONS that no longer holds: type its number"),
     (("w",), "w", "group the list by workstream (repo@branch across hosts), or back to a flat list"),
+    (("less_than_sign", "greater_than_sign"), "< >", "narrower / wider board (5 columns a press; remembered for the next ctx tmux)"),
     (("h",), "h", "host filter: this host, all hosts, each other host"),
     (("slash", "escape"), "/  Esc", "filter by text (title, repo, key, last prompt); Esc clears it, or cancels an input"),
     (("e",), "e", "show or hide ended sessions"),
@@ -371,6 +372,7 @@ class CtxApp(App):
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
         Binding("p", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"), Binding("question_mark", "help", "help"),
         Binding("W", "message_work", "msg work", show=False),
+        Binding("less_than_sign", "narrower", show=False), Binding("greater_than_sign", "wider", show=False),
         Binding("escape", "clear_filter", show=False),
         *(Binding(f"{slot_key(n)},alt+{n}", f"slot({n})", show=False) for n in range(1, SLOTS + 1)),
     ]
@@ -545,6 +547,20 @@ class CtxApp(App):
     def action_toggle_popups(self) -> None:
         self.popups = not self.popups
         self.notify(f"pop-ups {'on' if self.popups else 'off'}", timeout=3)
+
+    def _step_width(self, delta: int) -> None:
+        """< / >: WIDTH_STEP columns narrower or wider, held on the session's @ctx_width and in
+        ~/.local/state/ctxswitch/board-width, so the next `ctx tmux` starts the board the width you left it."""
+        if not tmux.in_tmux():
+            self.notify("< > resize the board inside ctx tmux", severity="warning"); return
+        w = tmux.step_width(os.environ.get("TMUX_PANE"), delta)
+        self.notify(f"board width {w}", timeout=2)
+
+    def action_narrower(self) -> None:
+        self._step_width(-tmux.WIDTH_STEP)
+
+    def action_wider(self) -> None:
+        self._step_width(tmux.WIDTH_STEP)
 
     def status_popup(self, msg: str, ids: list[str]) -> None:
         shown = tmux.in_tmux() and tmux_popup(msg)

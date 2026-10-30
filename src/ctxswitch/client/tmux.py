@@ -11,6 +11,7 @@ session's window closes. The TUI pane carries ``@ctx_role=tui`` so the viewer wi
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -18,12 +19,18 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from ctxswitch.common.schema import LIVE
 
 TMUX = os.environ.get("CTXSWITCH_TMUX", "tmux")
 SESSION = os.environ.get("CTXSWITCH_TMUX_SESSION", "ctx")
 VIEWER_WINDOW = "mgr"
+# the board's width, remembered across runs: `<` `>` on the board and `ctx tmux --width` both write it here
+WIDTH_FILE = Path.home() / ".local/state/ctxswitch/board-width"
+DEFAULT_WIDTH = "60"
+WIDTH_STEP = 5
+MIN_WIDTH = 30
 
 
 def in_tmux() -> bool:
@@ -537,10 +544,45 @@ def pin_board_width(board: str | None) -> None:
     with its new id."""
     if not board:
         return
-    width = _run("show-options", "-v", "-t", SESSION, "@ctx_width", check=False).strip() or "60"
+    width = _run("show-options", "-v", "-t", SESSION, "@ctx_width", check=False).strip() or DEFAULT_WIDTH
     _run("resize-pane", "-t", board, "-x", width, check=False)
     for hook in ("client-attached", "client-resized"):
         _run("set-hook", "-t", SESSION, hook, f"resize-pane -t {board} -x {width}", check=False)
+
+
+def saved_width() -> str:
+    """The board width to start at: the last one set with `<` `>` or `ctx tmux --width`, else 60 columns. A stray
+    or half-written file must never stop `ctx tmux`, so anything that isn't a column count or a percentage is ignored."""
+    try:
+        width = WIDTH_FILE.read_text().strip()
+    except OSError:
+        return DEFAULT_WIDTH
+    return width if re.fullmatch(r"\d+%?", width) else DEFAULT_WIDTH
+
+
+def save_width(width: str) -> None:
+    """Remember a width for the next `ctx tmux`. Best effort: a read-only or full home changes nothing else."""
+    try:
+        WIDTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        WIDTH_FILE.write_text(width + "\n")
+    except OSError:
+        pass
+
+
+def step_width(board: str | None, delta: int) -> str | None:
+    """`<` / `>` on the board: WIDTH_STEP columns narrower or wider, remembered, and re-pinned right away.
+
+    The board never gets narrower than MIN_WIDTH, and never so wide that the viewer on its left loses its 20
+    columns. Returns the new width, so the board can say it."""
+    if not board:
+        return None
+    current = int(_run("display-message", "-p", "-t", board, "#{pane_width}").strip())
+    window = int(_run("display-message", "-p", "-t", board, "#{window_width}").strip())
+    new = min(max(MIN_WIDTH, current + delta), max(MIN_WIDTH, window - 20))
+    _run("set-option", "-t", SESSION, "@ctx_width", str(new), check=False)
+    save_width(str(new))
+    pin_board_width(board)                                        # resizes now and re-hooks the new width
+    return str(new)
 
 
 def ensure_board(width: str, ctx_cmd: str, restart: bool = False) -> str:
@@ -560,13 +602,18 @@ def ensure_board(width: str, ctx_cmd: str, restart: bool = False) -> str:
     return "board put back on the right of the viewer window"
 
 
-def bootstrap(width: str = "60", restart: bool = False) -> str:
+def bootstrap(width: str | None = None, restart: bool = False) -> str:
     """`ctx tmux`: create (or join) the manager layout — viewer left, TUI right — and attach. Joining puts the board
     back if it's gone; ``restart`` restarts it on the installed code. Inside the ctx session it never splits the
     window you're in: that board wouldn't manage anything.
 
-    ``width`` is a tmux size: a column count ("56") or a percentage ("18%").
+    ``width`` is a tmux size: a column count ("56") or a percentage ("18%"). Left out, it's the width you last set
+    (with `ctx tmux --width` or `<` `>` on the board); giving it explicitly remembers it for the next time.
     """
+    if width is None:
+        width = saved_width()
+    else:
+        save_width(width)
     ctx_cmd = shlex.join([os.path.abspath(os.sys.argv[0]), "tui"]) if os.sys.argv else "ctx tui"
     if in_tmux() and _run("display-message", "-p", "#{session_name}", check=False).strip() == SESSION:
         _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)   # what pin_board_width holds the board at

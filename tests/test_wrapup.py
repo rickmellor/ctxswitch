@@ -200,6 +200,25 @@ def test_the_board_binds_alt_digits_to_its_own_pane_in_tmux(monkeypatch):
     assert calls == [("role", "%7", "tui"), ("bind", "%7"), ("pin", "%7")]
 
 
+def test_angle_keys_step_the_board(monkeypatch):
+    """< / > on the board: 5 columns a press, and only where there's a tmux pane to resize."""
+    said, called = [], []
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tui.tmux, "step_width", lambda board, delta: (called.append((board, delta)), "65")[1])
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    b = SimpleNamespace(notify=lambda m, **k: said.append(m))
+    b._step_width = lambda delta: tui.CtxApp._step_width(b, delta)
+    tui.CtxApp.action_wider(b)
+    tui.CtxApp.action_narrower(b)
+    assert called == [("%9", 5), ("%9", -5)] and said == ["board width 65", "board width 65"]
+    called.clear(); said.clear()
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
+    tui.CtxApp.action_wider(b)
+    assert called == [] and said == ["< > resize the board inside ctx tmux"]
+    bound = {k.strip() for bd in tui.CtxApp.BINDINGS for k in bd.key.split(",")}
+    assert {"less_than_sign", "greater_than_sign"} <= bound
+
+
 def test_n_offers_a_shell_but_x_never_does(monkeypatch):
     """n ends with a plain shell even on a host with no agents installed; x (the exchange picker) never sees it."""
     real = tui.new_session_options

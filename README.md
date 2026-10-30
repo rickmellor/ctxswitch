@@ -221,6 +221,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
 | `a` | answer the question it's waiting on: type the answer, Enter sends (see Answering a question) |
 | `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
+| `<` `>` | make the board narrower / wider, 5 columns a press; remembered (in ~/.local/state/ctxswitch/board-width) for the next `ctx tmux` |
 | `h` | host filter: this host → all → each other host |
 | `/` | filter by text (title, repo, key, last prompt). `Esc` clears |
 | `e` | show or hide ended sessions |
@@ -391,7 +392,7 @@ pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its o
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
-| `ctx tmux [--width N\|N%] [--restart]` | the manager. Joining an existing one puts the board back if its pane is gone (the agents never go with it); `--restart` restarts the board in place, e.g. after an update. Inside the ctx session it never splits the window you're in |
+| `ctx tmux [--width N\|N%] [--restart]` | the manager (`--width` also becomes the remembered width). Joining an existing one puts the board back if its pane is gone (the agents never go with it); `--restart` restarts the board in place, e.g. after an update. Inside the ctx session it never splits the window you're in |
 | `ctx search <words> [--kind K,K] [--host H] [--limit N]` | every session's decisions (answered questions too), instructions, agent claims and your own prompts that contain all the words, newest first; kinds `decision`, `instruction`, `claim`, `prompt` |
 | `ctx install [--claude --pi --collector --mcp] [--hub URL --token T] [--dry-run]` | wire this machine up (above) |
 | `ctx uninstall [--claude --pi --collector --mcp]` | undo it (the collector and MCP only when named) |
