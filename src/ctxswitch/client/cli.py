@@ -11,6 +11,7 @@
   ctx mcp                                an MCP server on stdio (read-only) for agents: sessions, ledgers, search
   ctx tui                                the board (narrow; built for a tmux side pane)
   ctx tmux [--width 18%|40]             create/attach the tmux manager: session left, ctx tui right
+  ctx shell [--id ID]                   a bash whose commands show on the board (started by n → shell)
   ctx install / uninstall [--claude --pi --collector]   wire this host up (hooks, pi extension, collector unit)
   ctx doctor                             check this host's wiring, one line per check
   ctx hub / ctx collector                run the services (same as ctx-hub / ctx-collector)
@@ -261,6 +262,11 @@ def cmd_tmux_exit(a) -> int:
         return 1
 
 
+def cmd_shell(a) -> int:
+    from ctxswitch.shell import run
+    run(a.id)                                             # never returns
+
+
 def cmd_tui(a) -> int:
     from ctxswitch.client.tui.app import run
     run(load(), host=_host_arg(a))
@@ -302,6 +308,8 @@ def main(argv=None) -> None:
     p.add_argument("--restart", action="store_true", help="restart the board (e.g. after an update); agents keep running")
     p = sub.add_parser("tmux-exit", help="(internal) run by agent windows when the agent exits"); p.set_defaults(fn=cmd_tmux_exit)
     p.add_argument("--rc", type=int, default=0); p.add_argument("--started", type=float)
+    p = sub.add_parser("shell", help="a bash whose commands show on the board (started by n → shell)"); p.set_defaults(fn=cmd_shell)
+    p.add_argument("--id", default=None, help="session id to record under (default: a new uuid4)")
     from ctxswitch.client.install import add_parsers
     add_parsers(sub)
     p = sub.add_parser("hub"); p.set_defaults(fn=lambda a: __import__("ctxswitch.hub.main", fromlist=["main"]).main())
