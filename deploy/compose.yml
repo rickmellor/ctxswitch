@@ -11,7 +11,7 @@ services:
     volumes:
       - ctxswitch-data:/data
     environment:
-      - CTXSWITCH_HUB_TOKEN=${CTXSWITCH_HUB_TOKEN:-}
+      - CTXSWITCH_HUB_TOKEN=${CTXSWITCH_HUB_TOKEN:?is missing - put it in deploy/.env or the hub runs with no auth}
       - CTXSWITCH_SEAT_URL=${CTXSWITCH_SEAT_URL:-}           # tracker LLM (recaps + ledger), e.g. http://llm.local:4000/v1
       - CTXSWITCH_SEAT_MODEL=${CTXSWITCH_SEAT_MODEL:-}       # model name at that endpoint (default saint-local-text)
       - CTXSWITCH_SEAT_API_KEY=${CTXSWITCH_SEAT_API_KEY:-}   # its bearer key (default "local")
