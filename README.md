@@ -215,7 +215,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `↑` `↓` | select a session (the detail pane follows) |
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
 | `Alt+1`…`Alt+9` | open the session with that number (the list's first column; numbers follow the order shown). Works from any pane of the ctx session, agents included; outside it the key goes through as typed |
-| `n` | new session: a one-key picker (Claude Code per `[[claude_profiles]]` account, pi, Antigravity; only what's installed), then a directory (default: the selected session's). For Claude, `max: ~/repos/x` also picks the account |
+| `n` | new session: a one-key picker (Claude Code per `[[claude_profiles]]` account, pi, Antigravity or a plain shell; only what's installed), then a directory (default: the selected session's). For Claude, `max: ~/repos/x` also picks the account |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |

@@ -131,10 +131,10 @@ def agent_cmd(argv: list[str]) -> list[str]:
     return ["sh", "-c", script]
 
 
-def _agent_window(target_session: str, cwd: str, name: str, argv: list[str]) -> str:
+def _agent_window(target_session: str, cwd: str, name: str, argv: list[str], role: str = "agent") -> str:
     pane_id = _run("new-window", "-d", "-t", target_session + ":", "-c", cwd, "-n", name, "-P", "-F", "#{pane_id}",
                    *agent_cmd(argv)).strip()
-    set_role(pane_id, "agent")
+    set_role(pane_id, role)
     _run("set-option", "-w", "-t", pane_id, "allow-rename", "off", check=False)
     return pane_id
 
@@ -144,11 +144,12 @@ def on_agent_exit(rc: int = 0, started: float | None = None, pane_id: str | None
     in (or a fresh shell); then return so the pane's process ends and its now-lone window closes.
 
     A failed or very short run (rc != 0, or under 5 s — e.g. a bad --resume) waits for Enter first so the error
-    stays readable.
+    stays readable. A plain shell's exit code is just its last command's, so it never pauses.
     """
     pane_id = pane_id or os.environ.get("TMUX_PANE")
     asked = _run("display-message", "-p", "-t", pane_id or "", "#{@ctx_ending}", check=False).strip() == "1"
-    if not asked and (rc != 0 or (started is not None and time.time() - started < 5)):   # k ended it: no pause
+    role = _run("display-message", "-p", "-t", pane_id or "", "#{@ctx_role}", check=False).strip()
+    if not asked and role != "shell" and (rc != 0 or (started is not None and time.time() - started < 5)):   # k ended it: no pause
         try:
             prompt(f"[agent exited rc={rc}] press Enter to close ")
         except EOFError:
@@ -278,6 +279,8 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
             label = f"claude[{prof.name}]"
     elif harness in ("pi", "agy"):
         argv = [harness]
+    elif harness == "shell":
+        argv = [os.environ.get("SHELL") or "bash", "-l"]     # a plain login shell, kept out of the session list by its role
     else:
         return f"unknown harness {harness}"
     if not shutil.which(argv[0]) and not os.path.isabs(argv[0]):
@@ -293,7 +296,10 @@ def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: boo
     target_session = next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), SESSION)
     name = f"{label}:{os.path.basename(cwd.rstrip('/')) or cwd}"[:24]
     # no session key yet: the collector will see the transcript shortly and the pid walk maps it to this pane
-    pane_id = _agent_window(target_session, cwd, name, argv)
+    if harness == "shell":
+        pane_id = _agent_window(target_session, cwd, name, argv, role="shell")   # its role keeps it out of the session list
+    else:
+        pane_id = _agent_window(target_session, cwd, name, argv)
     _run("swap-pane", "-s", pane_id, "-t", viewer.id)
     if focus:
         _run("select-pane", "-t", pane_id, check=False)
@@ -522,6 +528,21 @@ def bind_slot_keys(board: str | None, n: int = 9) -> None:
              f"send-keys -t {board} M-{k}", f"send-keys M-{k}", check=False)
 
 
+def pin_board_width(board: str | None) -> None:
+    """Keep the board ``@ctx_width`` wide (the width `ctx tmux` split it at) when a client attaches or resizes.
+
+    tmux created the session detached (80x24) and split it at ``-l width``; when a wide terminal then attaches it
+    rescales both panes proportionally, so a 270-column client leaves the board ~155 wide. The hooks re-assert the
+    width on every attach/resize. Called by the board at start with its own pane id, so a restarted board re-pins
+    with its new id."""
+    if not board:
+        return
+    width = _run("show-options", "-v", "-t", SESSION, "@ctx_width", check=False).strip() or "60"
+    _run("resize-pane", "-t", board, "-x", width, check=False)
+    for hook in ("client-attached", "client-resized"):
+        _run("set-hook", "-t", SESSION, hook, f"resize-pane -t {board} -x {width}", check=False)
+
+
 def ensure_board(width: str, ctx_cmd: str, restart: bool = False) -> str:
     """The ctx session's board pane: put back on the right of the viewer window if it's gone (closed, crashed: the
     agents stay, but nothing manages them), restarted in place with ``restart`` (new code). '' if nothing changed."""
@@ -548,6 +569,7 @@ def bootstrap(width: str = "60", restart: bool = False) -> str:
     """
     ctx_cmd = shlex.join([os.path.abspath(os.sys.argv[0]), "tui"]) if os.sys.argv else "ctx tui"
     if in_tmux() and _run("display-message", "-p", "#{session_name}", check=False).strip() == SESSION:
+        _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)   # what pin_board_width holds the board at
         said = ensure_board(width, ctx_cmd, restart)
         _run("select-window", "-t", f"{SESSION}:{VIEWER_WINDOW}", check=False)
         return said or "the board is already running (window mgr); --restart restarts it"
@@ -557,9 +579,11 @@ def bootstrap(width: str = "60", restart: bool = False) -> str:
         return "split: TUI on the right"
     has = subprocess.run([TMUX, "has-session", "-t", SESSION], capture_output=True).returncode == 0
     if has:
+        _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)
         ensure_board(width, ctx_cmd, restart)
     else:
         _run("new-session", "-d", "-s", SESSION, "-n", VIEWER_WINDOW, "-c", os.path.expanduser("~"))
+        _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)
         _run("split-window", "-h", "-l", width, "-t", f"{SESSION}:{VIEWER_WINDOW}", "-c", os.getcwd(), ctx_cmd)
         _run("set-option", "-t", SESSION, "allow-rename", "off", check=False)
         _run("select-pane", "-t", f"{SESSION}:{VIEWER_WINDOW}.0", check=False)

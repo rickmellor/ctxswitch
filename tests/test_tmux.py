@@ -116,6 +116,50 @@ def test_new_agent_starts_in_viewer_and_is_found_by_pid(server, monkeypatch, tmp
     assert tmux.viewer_pane().key == "laptop/pi/new1"
 
 
+def test_a_shell_opens_in_the_viewer_tagged_shell(server, monkeypatch, tmp_path):
+    """n's plain shell: a window like an agent's, but its role keeps it off the session list and out of the reap."""
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    monkeypatch.setenv("SHELL", "/bin/sh")                        # deterministic: not whatever the runner logs in with
+    assert tmux.new_agent("shell", str(tmp_path)) == f"new shell in {tmp_path}"
+    ps = tmux.panes()
+    v = tmux.viewer_pane(ps)
+    assert v.role == "shell" and v.window_name == "mgr"           # swapped into the viewer, as an agent is
+    home = next(p for p in ps if p.id == viewer.id).window_name   # the shell window's own name, after the swap
+    assert home.startswith("shell:") and home[len("shell:"):] in str(tmp_path)   # the dir, cut at 24 chars, as agents' are
+    assert v.id not in {p.id for p in tmux.agent_panes(ps)}        # no session behind it: not an agent pane
+    assert tmux.reap_viewer(ps) is None                            # its role, not its foreground, keeps the reap off it
+
+
+def test_a_shell_exit_never_pauses(server, monkeypatch):
+    """A shell's exit code is just its last command's: it must not stop the viewer with "press Enter"."""
+    viewer, tui = sorted((p for p in tmux.panes() if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    tmux.set_role(tui.id, "tui")
+    tmux.set_role(viewer.id, "shell")
+    asked = []
+    assert tmux.on_agent_exit(1, time.time(), viewer.id, prompt=asked.append).startswith("swapped")
+    assert asked == []
+    tm("set-option", "-p", "-u", "-t", viewer.id, "@ctx_role")     # an agent that died badly still waits
+    tmux.on_agent_exit(1, time.time(), viewer.id, prompt=asked.append)
+    assert asked and "rc=1" in asked[0]
+
+
+def test_the_board_pins_its_width_on_attach(server):
+    board = tm("display-message", "-p", "-t", "ctx:mgr.1", "#{pane_id}")
+    tmux.pin_board_width(None)                                     # no board pane: nothing resized or hooked
+    assert "resize-pane" not in tm("show-hooks", "-t", "ctx")
+    tm("set-option", "-t", "ctx", "@ctx_width", "30")              # the width `ctx tmux` split at
+    tmux.pin_board_width(board)
+    assert tm("display-message", "-p", "-t", board, "#{pane_width}") == "30"
+    hooks = tm("show-hooks", "-t", "ctx")
+    assert "client-attached" in hooks and re.search(rf'resize-pane -t "?{re.escape(board)}"? -x 30', hooks)  # tmux quotes the id
+    tm("set-option", "-u", "-t", "ctx", "@ctx_width")
+    tmux.pin_board_width(board)                                    # an old session that never recorded one
+    assert tm("display-message", "-p", "-t", board, "#{pane_width}") == "60"
+
+
 def test_agent_exit_swaps_next_session_in_and_closes_its_window(server, monkeypatch, tmp_path):
     """End to end: the wrapper around a real (fake) agent runs `ctx tmux-exit` against this private server."""
     import sys

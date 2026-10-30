@@ -190,13 +190,28 @@ def test_the_board_binds_alt_digits_to_its_own_pane_in_tmux(monkeypatch):
     calls = []
     monkeypatch.setattr(tui.tmux, "set_role", lambda p, r: calls.append(("role", p, r)))
     monkeypatch.setattr(tui.tmux, "bind_slot_keys", lambda p: calls.append(("bind", p)))
+    monkeypatch.setattr(tui.tmux, "pin_board_width", lambda p: calls.append(("pin", p)))
     monkeypatch.setenv("TMUX_PANE", "%7")
     monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
     tui.CtxApp.join_tmux(None)
     assert calls == []
     monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
     tui.CtxApp.join_tmux(None)
-    assert calls == [("role", "%7", "tui"), ("bind", "%7")]
+    assert calls == [("role", "%7", "tui"), ("bind", "%7"), ("pin", "%7")]
+
+
+def test_n_offers_a_shell_but_x_never_does(monkeypatch):
+    """n ends with a plain shell even on a host with no agents installed; x (the exchange picker) never sees it."""
+    real = tui.new_session_options
+    monkeypatch.setattr(tui, "new_session_options", lambda cfg: [("pi", "pi", None)])
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    given = []
+    b = SimpleNamespace(cfg=Config(), notify=lambda m, **k: None, _picked=lambda choice: None,
+                        push_screen=lambda screen, cb: given.append(screen.options))
+    tui.CtxApp.action_new_session(b)
+    assert given == [[("pi", "pi", None), ("shell", "shell", None)]]
+    have = real(Config(), which=lambda c: f"/usr/bin/{c}")        # the real one: x and the mv targets read it too
+    assert ("shell", "shell", None) not in have and [o[1] for o in have] == ["claude", "pi", "agy"]
 
 
 async def test_the_board_numbers_its_session_rows_in_the_order_shown(tmp_path, monkeypatch):

@@ -138,8 +138,8 @@ def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
 HELP_KEYS = [
     (("enter",), "Enter", "open the selected session: bring it to the left pane, resume it, or say why not"),
     (("slot",), "Alt+1…9", "open the session with that number, from any pane of the ctx session"),
-    (("n",), "n", "new session: pick Claude Code (one entry per account), pi or Antigravity, then a directory "
-                  "(default: the selected session's). For Claude, 'max: directory' also picks the account"),
+    (("n",), "n", "new session: pick Claude Code (one entry per account), pi or Antigravity or a plain shell, then a "
+                  "directory (default: the selected session's). For Claude, 'max: directory' also picks the account"),
     (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
     (("W",), "W", "message the selected session's workstream: whichever session is, or next is, live on it"),
     (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
@@ -521,6 +521,7 @@ class CtxApp(App):
         if tmux.in_tmux():
             tmux.set_role(os.environ.get("TMUX_PANE"), "tui")   # lets an exiting agent recognise the viewer window
             tmux.bind_slot_keys(os.environ.get("TMUX_PANE"))     # Alt+1…9 from any pane of the ctx session
+            tmux.pin_board_width(os.environ.get("TMUX_PANE"))    # keep our width when a wider terminal attaches
 
     def action_slot(self, n: int) -> None:
         """Alt+N: open the session numbered N on the board, as Enter on its row does."""
@@ -902,12 +903,10 @@ class CtxApp(App):
         return (s or {}).get("cwd") or os.path.expanduser("~")
 
     def action_new_session(self) -> None:
-        """n: pick the agent (Claude per account, pi, Antigravity), then the directory."""
+        """n: pick the agent (Claude per account, pi, Antigravity, or a plain shell), then the directory."""
         if not tmux.in_tmux():
             self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
-        options = new_session_options(self.cfg)
-        if not options:
-            self.notify("no agent found on PATH (claude, pi, agy)", severity="warning"); return
+        options = [*new_session_options(self.cfg), ("shell", "shell", None)]   # the shell is here only, not in x's list
         self.push_screen(Picker(options), self._picked)
 
     def _picked(self, choice: tuple[str, str | None] | None) -> None:
@@ -920,6 +919,8 @@ class CtxApp(App):
             others = [p.name for p in self.cfg.claude_profiles if p.name != profile]
             if others:
                 hint = f", or '{others[0]}: [path]' for that account"
+        if harness == "shell":
+            self._show_input(f"new:{harness}:", "directory for the new shell, enter to start", self._selected_cwd()); return
         self._show_input(f"new:{harness}:{profile or ''}", f"directory for the new {what} session, enter to start{hint}", self._selected_cwd())
 
     @work(exclusive=True, group="tmux", thread=True)
