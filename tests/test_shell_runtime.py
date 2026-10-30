@@ -16,6 +16,7 @@ import pytest
 
 from ctxswitch.collector.liveness import proc_start
 
+
 def bash_ok() -> bool:
     """PS0 and EPOCHREALTIME, which the rcfile records with, need bash 4.4+."""
     p = shutil.which("bash")

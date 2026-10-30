@@ -9,12 +9,12 @@ import uuid
 
 import pytest
 from starlette.testclient import TestClient
+from test_phase45 import _ask, _session, _turn
 
 from ctxswitch.client import fmt, tmux
 from ctxswitch.hub.api import Hub
 from ctxswitch.hub.store import Store
 from ctxswitch.hub.tracker.recap import build_prompt
-from test_phase45 import _ask, _session, _turn
 
 needs_tmux = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
 H = {"Authorization": "Bearer t"}
@@ -46,7 +46,7 @@ def server(monkeypatch):
         return real(args, **kw)
     monkeypatch.setattr(tmux.subprocess, "run", run)
     monkeypatch.setattr(tmux, "_this_host", lambda: "laptop")
-    monkeypatch.setattr(tmux, "_ssh", lambda: {})
+    monkeypatch.setattr(tmux, "_ssh", dict)
     tm("new-session", "-d", "-s", "ctx", "-n", "mgr", "-x", "160", "-y", "40")
     tm("split-window", "-h", "-l", "50", "-t", "ctx:mgr")
     yield
@@ -110,7 +110,7 @@ def test_a_shell_at_its_prompt_is_a_live_session_the_reap_leaves_alone(server, m
 def test_k_hangs_up_a_shell_but_terminates_an_agent(server, monkeypatch, tmp_path):
     """Interactive bash ignores TERM, so a shell session gets SIGHUP; an agent keeps the wrapper's SIGTERM."""
     seen = []
-    kill = lambda pid, sig: seen.append(sig)                     # noqa: E731
+    kill = lambda pid, sig: seen.append(sig)
     monkeypatch.setattr(tmux, "_ctx_bin", lambda: fake_ctx(tmp_path, "exec bash --norc -i"))
     sh = tmux._agent_window("ctx", str(tmp_path), "sh1", [tmux._ctx_bin(), "shell", "--id", "abc"], role="shell")
     ag = tmux._agent_window("ctx", str(tmp_path), "ag1", ["sleep", "300"])

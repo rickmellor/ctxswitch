@@ -123,7 +123,7 @@ class ShellParser:
                 "outstart": {str(k): v for k, v in self._outstart.items()}, "bad": self.bad_lines}
 
     @classmethod
-    def from_state(cls, st: dict[str, Any], max_text: int = 4000, out_path: Path | None = None) -> "ShellParser":
+    def from_state(cls, st: dict[str, Any], max_text: int = 4000, out_path: Path | None = None) -> ShellParser:
         p = cls(max_text, out_path)
         p.meta = st["meta"]; p._n = st["n"]; p.bad_lines = st["bad"]
         p._open = {int(k): (v[0], v[1]) for k, v in st.get("open", {}).items()}
