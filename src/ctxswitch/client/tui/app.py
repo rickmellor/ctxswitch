@@ -2,9 +2,10 @@
 
 Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent sessions), stacked vertically:
 
-  ┌ attention: what needs you, oldest wait first ┐
-  ├ sessions (host filter: this | all | <host>) ─┤
-  │ ◐  3m cc·laptop ctxswitch@main  title…       │
+  ┌ ctx · <host filter> · N live · N waiting on you ┐
+  ├ sessions, numbered, in the order they joined ─┤
+  │ 1 ◐  3m cc·laptop ctxswitch@main  title…      │
+  │   ↳ what it's waiting on                      │
   ├ ledger of the selected session ──────────────┤
   │ state / open asks / last exchange / decisions│
   └──────────────────────────────────────────────┘
@@ -69,8 +70,28 @@ MSG_HELP = {"queued": "queued: waiting for its host to pick it up", "sent": "sen
             "failed": "failed: the reason is shown; send it again", "cancelled": "cancelled"}
 CLAIM_HELP = {"done": "the agent says it's done", "tests_pass": "it says tests pass", "tests_fail": "it says tests fail",
               "blocked": "it says it's blocked"}
-ATTENTION_TIP = ("What's waiting on you, oldest first. ◐3m = how long it has waited. A question shows its text; "
-                 "\"waiting\" = a dialog is open in it (permission, plan, …); \"idle\" = it finished its turn, your move.")
+SUMMARY_TIP = ("The host filter (h), how many sessions are live, and how many are waiting on you. A waiting session's row "
+               "says what it's waiting on (↳); ○ idle ones finished their turn: your move.")
+
+
+def waiting_on(s: dict) -> str | None:
+    """What a waiting session waits on, for the line under its row: its open question, or the dialog it has up.
+    None unless it's waiting (an ended one's stale question isn't waiting on you)."""
+    if fmt.session_state(s) != "waiting":
+        return None
+    asks = s.get("open_asks") or []
+    if asks:
+        a = asks[0]
+        return a.get("text") if a.get("kind") in ("plain", "text") else f"{a.get('kind')}: {a.get('text')}"
+    return "a dialog is open in it" if s.get("live_status") == "waiting" else None
+
+
+def summary_line(sessions: list[dict], host: str | None) -> Text:
+    live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
+    waiting = sum(1 for x in sessions if fmt.session_state(x) == "waiting")
+    t = Text.assemble(("ctx", "bold"), f" · {host or 'all'} · {live} live")
+    t.append(f" · {waiting} waiting on you" if waiting else " · nothing waiting", style="bold yellow" if waiting else "dim")
+    return t
 
 
 def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
@@ -84,9 +105,8 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
          [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
          [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
           ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work")]),
-        ("WAITING ON YOU (top box)", [("◐3m", "bold yellow", "how long it has waited"),
-                                      ("idle", "", "it finished its turn: your move"),
-                                      ("waiting", "", "a dialog is open in it (permission, plan, …)")]),
+        ("WAITING ON YOU", [("↳", "yellow", "under a waiting row: the question it asked, or the dialog it has up"),
+                            ("2 waiting", "bold yellow", "the header: how many sessions wait on you (and how many are live)")]),
         ("MESSAGES", [(fmt.MSG_GLYPH[k], MSG_STYLE.get(k, "dim"), MSG_HELP[k]) for k in fmt.MSG_GLYPH]),
         ("AGENT SAYS", [(fmt.CLAIM_GLYPH[k], CLAIM_STYLE.get(k, ""), CLAIM_HELP[k]) for k in CLAIM_HELP]),
     ]
@@ -124,8 +144,9 @@ HELP_KEYS = [
     (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y/n"),
 ]
 HELP_TIPS = [
-    ("Where things are", ("Top box: what's waiting on you, oldest first. The list: every session, live ones first. Below "
-     "it: the selected session's detail (recap, what you told it, its questions and answers, messages, the last exchange).")),
+    ("Where things are", ("The header: how many sessions are live and how many wait on you. The list: every session, "
+     "in the order it joined (so its number stays put); a waiting one says what it's waiting on (↳). Below it: the "
+     "selected session's detail (recap, what you told it, its questions and answers, messages, the last exchange).")),
     ("Sending a message", ("m types a message into the session as a new prompt: now if it's live, else when it next runs. Its "
      "state shows under MESSAGES (… → ✓ ↩ ✗). `ctx send --cancel <id>` withdraws a queued one.")),
     ("Answering", ("a answers a question the agent asked in its reply. A dialog (permission, plan, AskUserQuestion, pi "
@@ -241,8 +262,7 @@ class Help(Screen):
 
 class CtxApp(App):
     CSS = """
-    #attention { height: auto; max-height: 6; border: round $warning; padding: 0 1; }
-    #attention.empty { border: round $surface; color: $text-muted; }
+    #summary { height: 1; padding: 0 1; background: $panel; }
     #body { height: 1fr; }
     #table { height: auto; max-height: 50%; }
     #detail { height: 1fr; border-top: solid $surface; padding: 0 1; }
@@ -284,6 +304,8 @@ class CtxApp(App):
         self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
         self.pending_rules: tuple[str, list[int]] | None = None   # (session key, row ids by number) x retires one of
         self.slots: list[str] = []                   # session keys by their row number, for Alt+N
+        self.pins: dict[str, int] = {}               # session key -> its place in the list, fixed when it joined
+        self.next_pin = 0
         self.detail: dict | None = None              # the session shown in the detail pane
         self.group_ws = False                        # w: rows grouped under workstream headers
         self.notifier = Notifier(cfg.notify_idle)
@@ -293,7 +315,7 @@ class CtxApp(App):
         self.settling = False
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="attention")
+        yield Static("", id="summary")
         with Vertical(id="body"):
             yield Board(id="table", cursor_type="row", zebra_stripes=True, show_header=False)
             yield VerticalScroll(Static("", id="detail_text"), id="detail")
@@ -306,8 +328,7 @@ class CtxApp(App):
         t = self.query_one("#table", DataTable)
         t.add_columns("#", " ", "age", "session")
         self.title = "ctxswitch"
-        self.query_one("#attention", Static).border_title = "ctxswitch"
-        self.query_one("#attention", Static).tooltip = ATTENTION_TIP
+        self.query_one("#summary", Static).tooltip = SUMMARY_TIP
         self.join_tmux()
         t.focus()
         self.refresh_data()
@@ -345,8 +366,7 @@ class CtxApp(App):
         self.sessions = sessions
         live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
         self.sub_title = f"{self.host_filter or 'all'} · {live} live"
-        self.query_one("#attention", Static).border_title = f"ctx · {self.host_filter or 'all'} · {live} live"
-        self.render_attention(attention)
+        self.query_one("#summary", Static).update(summary_line(sessions, self.host_filter))
         self.popup(attention)
         self.render_table()
         self.render_detail()
@@ -369,24 +389,6 @@ class CtxApp(App):
                 await asyncio.sleep(5)
 
     # -- rendering ------------------------------------------------------------------------------------------------
-    def render_attention(self, items: list[dict]) -> None:
-        w = self.query_one("#attention", Static)
-        now = datetime.now(timezone.utc)
-        if not items:
-            w.update(Text("nothing needs you", style="dim")); w.add_class("empty"); return
-        w.remove_class("empty")
-        width = max(20, self.size.width - 4)
-        t = Text()
-        for i in items[:4]:
-            head = f"◐{fmt.age(i.get('asked_at'), now):>5} "
-            t.append(head, style="bold yellow")
-            label = f"{fmt.one_line(i.get('title'), 18)}: " + (fmt.one_line(i['text'], 200) if i["item"] == "ask" else i["item"])
-            t.append(fmt.one_line(label, width - len(head)) + "\n")
-        if len(items) > 4:
-            t.append(f"… {len(items) - 4} more", style="dim")
-        t.rstrip()
-        w.update(t)
-
     def popup(self, attention: list[dict]) -> None:
         """Pops up SETTLE_S after a change, from the attention list as it is then: a session reports "waiting" a moment
         before its question's text arrives, and the box should show the question."""
@@ -459,11 +461,21 @@ class CtxApp(App):
         if not shown:
             self.notify(msg, timeout=8)                 # outside tmux (or tmux refused): the TUI's own toast
 
+    def _pin(self) -> list[dict]:
+        """The list in pinned order: a session keeps the place it got when it joined (new ones go last), so its
+        number only moves when one above it leaves (ended and hidden, gone, or another host on h). A leaver that
+        comes back joins at the end."""
+        members = [s for s in self.sessions if self.show_ended or fmt.session_state(s) != "ended"]
+        keys = {s["key"] for s in members}
+        self.pins = {k: v for k, v in self.pins.items() if k in keys}
+        for s in members:                               # the hub's order seeds a first load
+            if s["key"] not in self.pins:
+                self.pins[s["key"]] = self.next_pin; self.next_pin += 1
+        return sorted(members, key=lambda s: self.pins[s["key"]])
+
     def _visible(self) -> list[dict]:
         out = []
-        for s in self.sessions:
-            if not self.show_ended and fmt.session_state(s) == "ended":
-                continue
+        for s in self._pin():
             if self.text_filter:
                 hay = " ".join([fmt.display_title(s), s.get("key", ""), fmt.repo_label(s), (s.get("last_turn") or {}).get("user_text") or ""]).lower()
                 if self.text_filter.lower() not in hay:
@@ -483,7 +495,7 @@ class CtxApp(App):
         visible = self._visible()
         rows = 0
         self.slots = []                                 # session keys by their number (Alt+N), in the order shown
-        if self.group_ws:                              # groups in the order of their most urgent member
+        if self.group_ws:                              # groups in the order of their first member (pinned order)
             order: dict = {}
             for s in visible:
                 order.setdefault(s.get("workstream"), []).append(s)
@@ -524,8 +536,12 @@ class CtxApp(App):
                 label.append(f" +{s['unseen']}", style="bold cyan")
             self.slots.append(s["key"])
             n = len(self.slots)
+            on = waiting_on(s)
+            if on:                                     # what it's waiting on, under its own row
+                label.append("\n↳ " + fmt.one_line(on, max(8, width - 2)), style="yellow")
             t.add_row(Text(str(n) if n <= SLOTS else "", style="dim"), Text(fmt.state_glyph(s), style=style),
-                      Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"])
+                      Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"], height=2 if on else 1)
+            rows += 1 if on else 0
             rows += 1
         t.styles.height = max(1, rows)                # grow with the list, up to the max-height cap
         if prev and (prev in [s["key"] for s in visible] or prev.startswith("ws:")):

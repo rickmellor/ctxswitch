@@ -124,6 +124,11 @@ Greenfield repo: `~/repos/ctxswitch`.
   `tool_use_id`, the ref the transcript later gives the same ask (which then answers it); a permission Notification
   within 30 s of a question/plan ask is dropped, which also removes the duplicate `[permission]` line 2.1.280 showed.
   Needs `ctx install` re-run on each host (done on all three).
+- 2026-10-29 (board): the attention box above the list is gone: its items were the list's ◐ and ○ rows again.
+  A waiting row carries what it waits on (`↳`, its open question or dialog) and the header counts them. The list is
+  in **pinned order**: a session keeps the place it got when it joined (the hub's order seeds a first load), so its
+  number (Alt+N) only moves when one above leaves; a leaver that comes back joins last. Pop-ups still read the hub's
+  attention list (unchanged).
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
 
 ## Design principles

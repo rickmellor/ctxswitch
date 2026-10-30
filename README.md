@@ -9,12 +9,12 @@ in one narrow side panel next to whatever you are doing.
 
 ```
 ┌─ agent (left pane) ─────────────────────────┬─ ctx tui ─────────────────┐
-│                                             │ ◐ 3m  pr-review  approve? │  ← waiting on you
-│   the session you are working in            │───────────────────────────│
-│                                             │ ▶ ● zephyr-sdk   P2 carve │
-│                                             │ ◆ ○ benchctrl    PDU FUI  │
-│                                             │ ↻ – ctxswitch    footer   │
-│                                             │ ⇢ ● devbox/vllm   bench    │
+│                                             │ ctx · all · 4 live · 1 wait│
+│   the session you are working in            │ 1 ▶ ● zephyr-sdk  P2 carve │
+│                                             │ 2 ◆ ◐ pr-review   ◐3m      │
+│                                             │   ↳ approve the plan?      │  ← waiting on you
+│                                             │ 3 ◆ ○ benchctrl   PDU FUI  │
+│                                             │ 4 ⇢ ● devbox/vllm bench    │
 │                                             │───────────────────────────│
 │                                             │ RECAP  you owe it a y/n   │
 │                                             │ on the TLS fallback…      │
@@ -28,8 +28,9 @@ in one narrow side panel next to whatever you are doing.
 - **Tracks the human↔agent conversation, not the code.** For each session it keeps your last prompt, the agent's
   last reply, the questions it asked and your verbatim answers, the plan approvals, a tool tally, and whether it
   is busy, idle, waiting on you or ended.
-- **Puts what needs you on top.** An attention strip lists open questions, plan approvals, permission prompts
-  ("allow Bash: rm -rf build") and pi confirm dialogs, oldest wait first. Each one clears itself when you answer.
+- **Says what's waiting on you.** A session waiting on a question, plan approval, permission prompt ("allow Bash:
+  rm -rf build") or pi confirm dialog says so under its row, and the header counts them. Each clears itself when
+  you answer.
 - **Writes a one-line recap per session**, so you know what matters right now, and keeps a ledger of what you
   told it: your standing instructions ("don't push without asking"), the choices you made, what the agent claims
   (done, tests pass, blocked) and what the session is for. Every ledger row quotes the transcript word for word.
@@ -150,20 +151,24 @@ Move focus between the panes with tmux's prefix + arrow (or the mouse, if tmux m
 ## 3. Reading the board
 From top to bottom:
 
-**Attention strip.** Up to four things that need you, oldest first: questions the agent asked, plan approvals
-and sessions sitting idle at a prompt. "nothing needs you" when it's empty. The border shows the current host
-filter and how many sessions are live.
+**Header.** One line: the host filter (`h`), how many sessions are live, and how many are waiting on you.
 
-**Session list.** One row per session, live ones first:
+**Session list.** One row per session, numbered. A session keeps the place it had when it joined the list (new
+ones go at the bottom), so its number, and the Alt+N that opens it, stays put while sessions change state. Numbers
+only close up when a session above leaves the list: it ends (and ended ones are hidden), the hub drops it, or `h`
+or `/` filters it out. One that leaves and comes back joins at the bottom. A session waiting on you gets a second
+line saying what it's waiting on:
 ```
-●  3m ◆ cc·laptop zephyr-sdk@feat/x  P2 carve: interface review ◐4m
-│  │  │ │        │                   │                          └ an open question, and how long it has waited
-│  │  │ │        │                   └ title (or your last prompt)
-│  │  │ │        └ repo@branch (hidden when the pane is very narrow)
-│  │  │ └ harness·host (cc = Claude Code, pi = pi, cw = Windows Claude; host is dropped when filtered to one)
-│  │  └ what Enter can do (below)
-│  └ time in the current state (live) or since last activity (ended)
-└ state
+2 ◐  3m ◆ cc·laptop zephyr-sdk@feat/x  P2 carve: interface review ◐4m
+  ↳ approve the plan?
+│ │  │  │ │        │                   │                          └ an open question, and how long it has waited
+│ │  │  │ │        │                   └ title (or your last prompt)
+│ │  │  │ │        └ repo@branch (hidden when the pane is very narrow)
+│ │  │  │ └ harness·host (cc = Claude Code, pi = pi, cw = Windows Claude; host is dropped when filtered to one)
+│ │  │  └ what Enter can do (below)
+│ │  └ time in the current state (live) or since last activity (ended)
+│ └ state
+└ its number: Alt+1…9 opens it
 ```
 
 | State | Meaning |
@@ -231,7 +236,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `r` | refresh now (the board also updates live over a WebSocket) |
 | `n` | pop-ups off / on for this run (`notify` sets how it starts) |
 | `x` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
-| `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the top box, says that row in words |
+| `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
 | `Q` | quit all: end the tmux session and every agent in it, after a y/n |
 

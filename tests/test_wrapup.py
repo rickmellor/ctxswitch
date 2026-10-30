@@ -207,6 +207,9 @@ async def test_the_board_numbers_its_session_rows_in_the_order_shown(tmp_path, m
         store.upsert_turns(k, [{"idx": 0, "started_at": "2026-10-29T10:00:00Z", "ended_at": "2026-10-29T10:00:00Z", "user_text": "go",
                                 "user_origin": "human", "assistant_text": "", "tally": {}, "asks": [], "events": [], "complete": True, "offset_end": 1}], None)
     _live(store, "laptop", (LAP, "idle"), ("laptop/claude/s9", "busy"), *((x, "idle") for x in extra)); _live(store, "devbox", (DEV, "idle"))
+    store.upsert_turns(DEV, [{"idx": 1, "started_at": "2026-10-29T10:01:00Z", "ended_at": "2026-10-29T10:01:00Z", "user_text": "go on",
+                              "user_origin": "human", "assistant_text": "Ship it?", "tally": {}, "events": [], "complete": True, "offset_end": 9,
+                              "asks": [{"ref": "1:plain", "kind": "plain", "text": "Ship it?", "answered": False}]}], None)
     cfg = Config(); cfg.hub.token = "t"; cfg.collector.host_id = "laptop"
     monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
     app = tui.CtxApp(cfg, None)
@@ -217,6 +220,11 @@ async def test_the_board_numbers_its_session_rows_in_the_order_shown(tmp_path, m
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
         assert joined == [1]                                              # at start: role + Alt+N bindings
+        assert not app.query("#attention") and "1 waiting on you" in app.query_one("#summary").render().plain
+        t = app.query_one("#table")
+        i = t.get_row_index(DEV)
+        assert t.rows[t.coordinate_to_cell_key((i, 0)).row_key].height == 2 and "↳ Ship it?" in t.get_row_at(i)[3].plain
+        assert all(t.rows[t.coordinate_to_cell_key((j, 0)).row_key].height == 1 for j in range(t.row_count) if j != i)
         bar = app.query_one("#keys")
         shown = bar.render().plain
         assert bar.size.height == len(shown.splitlines()) > 1                       # it grows to fit
@@ -266,3 +274,35 @@ def test_the_key_bar_wraps_without_splitting_a_key_from_its_label():
         assert all(any(pr in ln for ln in lines) for pr in pairs), width              # each pair whole, on one line
         assert " ".join(lines) == " ".join(pairs)                                       # in order, nothing else
     assert len(tui.key_bar(tui.CtxApp.BINDINGS, 200).plain.splitlines()) == 1
+
+
+# -- one list, pinned order (no separate attention box) ----------------------------------------------------------
+def _row(key, st="idle", **kw):
+    return {"key": key, "live_status": st, **kw}
+
+
+def test_a_session_keeps_its_place_until_one_above_it_leaves():
+    b = SimpleNamespace(sessions=[_row("a", "busy"), _row("b"), _row("c")], show_ended=False, pins={}, next_pin=0)
+    order = lambda: [s["key"] for s in tui.CtxApp._pin(b)]
+    assert order() == ["a", "b", "c"]                                 # a first load keeps the hub's order
+    b.sessions = [_row("c", "busy"), _row("b", "waiting"), _row("a")]          # the hub re-sorts as states change
+    assert order() == ["a", "b", "c"]                                 # the list doesn't
+    b.sessions = [_row("d", "busy"), *b.sessions]
+    assert order() == ["a", "b", "c", "d"]                            # a newcomer joins at the end
+    b.sessions = [_row("a"), _row("b", "ended", ended=True), _row("c"), _row("d")]
+    assert order() == ["a", "c", "d"]                                 # b ended (hidden): the ones below it move up
+    b.show_ended = True
+    assert order() == ["a", "c", "d", "b"]                            # shown again: it rejoined, at the end
+    b.sessions = [_row("c"), _row("d"), _row("b")]
+    assert order() == ["c", "d", "b"] and "a" not in b.pins           # gone from the hub: forgotten
+
+
+def test_a_waiting_row_says_what_it_waits_on():
+    assert tui.waiting_on({"open_asks": [{"kind": "plain", "text": "Ship it?"}]}) == "Ship it?"
+    assert tui.waiting_on({"open_asks": [{"kind": "permission", "text": "allow Bash: rm x"}]}) == "permission: allow Bash: rm x"
+    assert tui.waiting_on({"open_asks": [], "live_status": "waiting"}) == "a dialog is open in it"
+    assert tui.waiting_on({"open_asks": [], "live_status": "idle"}) is None
+    assert tui.waiting_on({"open_asks": [{"kind": "plain", "text": "old?"}], "live_status": "ended", "ended": True}) is None   # stale
+    rows = [_row("a", "busy"), _row("b", "waiting"), _row("c", open_asks=[{"kind": "plain", "text": "?"}]), _row("e", "ended", ended=True)]
+    assert tui.summary_line(rows, "laptop").plain == "ctx · laptop · 3 live · 2 waiting on you"
+    assert tui.summary_line(rows[:1], None).plain == "ctx · all · 1 live · nothing waiting"
