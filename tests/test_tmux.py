@@ -320,3 +320,44 @@ def test_on_screen_is_the_window_being_looked_at_and_open_switches_to_it(server,
         assert tmux.on_screen_keys(sessions=[s, v]) == {s["key"]}
     finally:
         client.kill()
+
+
+def test_a_missing_board_is_put_back_and_restart_respawns_it(server, monkeypatch):
+    board = lambda: [p for p in tmux.panes() if p.session == "ctx" and p.role == "tui"]
+    assert board() == []                                              # the fixture's panes are untagged: no board
+    tm("new-session", "-d", "-s", "elsewhere"); tm("set-option", "-p", "-t", "elsewhere", "@ctx_role", "tui")
+    tm("select-pane", "-t", "ctx:mgr.0")                              # the viewer is the active pane
+    assert tmux.ensure_board("20", "sleep 300").startswith("board put back")   # another session's board isn't ours
+    (b,) = board()
+    mgr = [p for p in tmux.panes() if p.window_name == "mgr"]
+    assert b.window == mgr[0].window and b.index == max(p.index for p in mgr)        # on the right of the viewer window
+    assert tmux.ensure_board("20", "sleep 300") == "" and len(board()) == 1          # there: left alone
+    pid = b.pid
+    assert tmux.ensure_board("20", "sleep 301", restart=True) == "board restarted"
+    (b2,) = board()
+    assert b2.id == b.id and b2.pid != pid                                            # same pane, new process
+    tm("new-window", "-d", "-t", "ctx", "-n", "other"); tm("kill-window", "-t", "ctx:mgr")    # the last window would end the server
+    assert tmux.ensure_board("20", "sleep 300").startswith("board put back")         # no viewer window: a new one
+    (b3,) = board()
+    assert b3.window_name == "mgr"
+
+
+def test_ctx_tmux_inside_the_session_restores_the_board_not_a_split_here(server, monkeypatch, tmp_path):
+    monkeypatch.setenv("TMUX_PANE", tm("display-message", "-p", "-t", "ctx:mgr.0", "#{pane_id}"))
+    tm("new-window", "-t", "ctx", "-n", "agentwin")                   # you're in another window of the ctx session
+    before = {p.id for p in tmux.panes() if p.window_name == "agentwin"}
+    fake = tmp_path / "ctx"; fake.write_text("#!/bin/sh\nexec sleep 300\n"); fake.chmod(0o755)
+    monkeypatch.setattr(tmux.os.sys, "argv", [str(fake), "tmux"])
+    assert tmux.bootstrap("20").startswith("board put back")
+    assert {p.id for p in tmux.panes() if p.window_name == "agentwin"} == before     # not split into this window
+    assert "already running" in tmux.bootstrap("20")
+
+
+def test_joining_from_outside_tmux_puts_the_board_back_then_attaches(server, monkeypatch, tmp_path):
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    fake = tmp_path / "ctx"; fake.write_text("#!/bin/sh\nexec sleep 300\n"); fake.chmod(0o755)
+    monkeypatch.setattr(tmux.os.sys, "argv", [str(fake), "tmux"])
+    calls = []
+    monkeypatch.setattr(tmux.os, "execvp", lambda f, argv: calls.append(argv))
+    tmux.bootstrap("20")
+    assert [p for p in tmux.panes() if p.session == "ctx" and p.role == "tui"] and calls == [["tmux", "attach-session", "-t", "ctx"]]

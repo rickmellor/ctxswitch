@@ -231,7 +231,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `n` | pop-ups off / on for this run (`notify` sets how it starts) |
 | `x` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `?` | the legend: every glyph on the board in words (`?` or Esc closes). Hovering the mouse over a row, or the top box, says the same for that row |
-| `q` | detach: close your terminal, keep everything running |
+| `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
 | `Q` | quit all: end the tmux session and every agent in it, after a y/n |
 
 The footer shows as many keys as fit; the rest still work.
@@ -332,7 +332,7 @@ pop-up when an agent finishes its turn as well. Outside tmux the TUI shows its o
 | `ctx attention [--all]` | what needs you, oldest wait first |
 | `ctx hosts` | collectors the hub knows, and when each last checked in |
 | `ctx tui [--host H \| --all]` | the board without tmux |
-| `ctx tmux [--width N\|N%]` | the manager |
+| `ctx tmux [--width N\|N%] [--restart]` | the manager. Joining an existing one puts the board back if its pane is gone (the agents never go with it); `--restart` restarts the board in place, e.g. after an update. Inside the ctx session it never splits the window you're in |
 | `ctx search <words> [--kind K,K] [--host H] [--limit N]` | every session's decisions (answered questions too), instructions, agent claims and your own prompts that contain all the words, newest first; kinds `decision`, `instruction`, `claim`, `prompt` |
 | `ctx install [--claude --pi --collector --mcp] [--hub URL --token T] [--dry-run]` | wire this machine up (above) |
 | `ctx uninstall [--claude --pi --collector --mcp]` | undo it (the collector and MCP only when named) |
@@ -410,6 +410,7 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | no pop-ups | the TUI runs in tmux and `notify` is on; `~/.local/state/ctxswitch/popup.log` lists each one sent. Check `tmux display-popup -E 'read -n1'` shows a box (tmux 3.2+) |
 | two sessions on one repo aren't grouped | different branches, or no remote (a remote-less checkout only matches itself). pi: the branch is read from the checkout's HEAD |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
+| the agents are in tmux but there's no board | its pane was closed or crashed: `ctx tmux` (from anywhere) puts it back on the right of the `mgr` window |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
 | no briefing on resume | it only shows after 15 min away. `ctx doctor` (claude hooks line should not say "SessionStart (briefing)" missing); pi needs a new pi process after `ctx install --pi` |
 | Windows sessions never go live | `ctx doctor` "claude (windows)" line: liveness needs WSL interop (`tasklist.exe`) |

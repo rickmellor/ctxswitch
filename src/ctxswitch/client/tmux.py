@@ -451,18 +451,43 @@ def on_screen_keys(ps: list[Pane] | None = None, sessions: list[dict] | None = N
     return out
 
 
-def bootstrap(width: str = "18%") -> str:
-    """`ctx tmux`: create (or join) the manager layout — viewer left, TUI right — and attach.
+def ensure_board(width: str, ctx_cmd: str, restart: bool = False) -> str:
+    """The ctx session's board pane: put back on the right of the viewer window if it's gone (closed, crashed: the
+    agents stay, but nothing manages them), restarted in place with ``restart`` (new code). '' if nothing changed."""
+    boards = [p for p in panes() if p.session == SESSION and p.role == "tui"]
+    if boards:
+        if not restart:
+            return ""
+        _run("respawn-pane", "-k", "-t", boards[0].id, ctx_cmd)
+        return "board restarted"
+    target = f"{SESSION}:{VIEWER_WINDOW}"
+    if _run("list-windows", "-t", SESSION, "-F", "#{window_name}", check=False).split().count(VIEWER_WINDOW) == 0:
+        _run("new-window", "-d", "-t", SESSION, "-n", VIEWER_WINDOW, "-c", os.path.expanduser("~"))
+    pid = _run("split-window", "-d", "-f", "-h", "-l", width, "-t", target, "-P", "-F", "#{pane_id}", "-c", os.getcwd(), ctx_cmd).strip()
+    set_role(pid, "tui")
+    return "board put back on the right of the viewer window"
+
+
+def bootstrap(width: str = "18%", restart: bool = False) -> str:
+    """`ctx tmux`: create (or join) the manager layout — viewer left, TUI right — and attach. Joining puts the board
+    back if it's gone; ``restart`` restarts it on the installed code. Inside the ctx session it never splits the
+    window you're in: that board wouldn't manage anything.
 
     ``width`` is a tmux size: a column count ("56") or a percentage ("18%").
     """
     ctx_cmd = shlex.join([os.path.abspath(os.sys.argv[0]), "tui"]) if os.sys.argv else "ctx tui"
+    if in_tmux() and _run("display-message", "-p", "#{session_name}", check=False).strip() == SESSION:
+        said = ensure_board(width, ctx_cmd, restart)
+        _run("select-window", "-t", f"{SESSION}:{VIEWER_WINDOW}", check=False)
+        return said or "the board is already running (window mgr); --restart restarts it"
     if in_tmux():
         _run("split-window", "-h", "-l", width, "-c", os.getcwd(), ctx_cmd)
         _run("select-pane", "-t", "{left}", check=False)
         return "split: TUI on the right"
     has = subprocess.run([TMUX, "has-session", "-t", SESSION], capture_output=True).returncode == 0
-    if not has:
+    if has:
+        ensure_board(width, ctx_cmd, restart)
+    else:
         _run("new-session", "-d", "-s", SESSION, "-n", VIEWER_WINDOW, "-c", os.path.expanduser("~"))
         _run("split-window", "-h", "-l", width, "-t", f"{SESSION}:{VIEWER_WINDOW}", "-c", os.getcwd(), ctx_cmd)
         _run("set-option", "-t", SESSION, "allow-rename", "off", check=False)
