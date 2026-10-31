@@ -63,6 +63,10 @@ class Turn:
     tally: ToolTally = field(default_factory=ToolTally)
     asks: list[Ask] = field(default_factory=list)
     events: list[str] = field(default_factory=list)   # "compaction", "api_error", "slash_command:/x", "branch" …
+    usage: dict | None = None       # {"input","output","cache_read","cache_creation"}, summed over the turn's
+                                    # assistant entries; None when the harness reports none (shell, agy)
+    model: str = ""                 # model of the turn's last assistant entry (pi: "provider/model"); "" unknown
+    cost_usd: float | None = None   # a harness-billed cost (pi prices its cloud providers itself); else None
     complete: bool = False          # the harness closed the turn, or a later prompt exists, or the session ended
     offset_end: int = 0             # byte offset after the last entry consumed; the replay/idempotence key
 
@@ -95,6 +99,15 @@ class SessionMeta:
     model: str = ""
     permission_mode: str = ""
     profile: str = ""               # the [[claude_profiles]] account the transcript lives under, named by its own host
+    # a Claude session a pool job launched (collector/jobs.py reads the saint-agent ledger):
+    # empty/None for every other session.
+    parent_key: str = ""            # f"{host}/claude/{launching session}", "" when the ledger doesn't name one
+    job: str = ""                   # ledger job id, "sa-…"
+    job_status: str = ""            # "running" until an end line exists, then its status
+    job_brief: str = ""             # basename of the brief the job was given
+    job_dur_s: int | None = None
+    job_turns: int | None = None
+    job_tokens: dict | None = None  # the end line's tokens, the same four keys as Turn.usage
 
     @property
     def key(self) -> str:
@@ -126,6 +139,23 @@ def question_text(questions: Any) -> str:
     """An AskUserQuestion ask's text, the same from its transcript tool_use and its PreToolUse hook."""
     qs = [q.get("question", "") if isinstance(q, dict) else q for q in questions or []]
     return trim(" | ".join(q for q in qs if isinstance(q, str) and q) or "(question)", 600)
+
+
+USAGE_KEYS = ("input", "output", "cache_read", "cache_creation")
+
+
+def add_usage(turn: "Turn", src: dict, map_: tuple[tuple[str, str], ...]) -> None:
+    """Add one assistant entry's token counts onto the turn's usage, creating the dict on first use.
+
+    ``src`` is the entry's usage object; ``map_`` pairs its key names with ours (the harnesses name them
+    differently). Anything that isn't an int counts 0.
+    """
+    if turn.usage is None:
+        turn.usage = dict.fromkeys(USAGE_KEYS, 0)
+    for dst, src_key in map_:
+        v = src.get(src_key)
+        if isinstance(v, int):
+            turn.usage[dst] += v
 
 
 def trim(text: str, cap: int) -> str:

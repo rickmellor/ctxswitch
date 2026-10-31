@@ -6,7 +6,8 @@ pi 1.2.0 and 1.4.0: 1.4.0 adds ``compaction``, ``custom`` and ``context_edit`` e
 
   session                 header: id, cwd, timestamp, version
   message/user            content: [{type:text}] (or str)
-  message/assistant       content: text | thinking | toolCall(name, arguments); message.model, stopReason
+  message/assistant       content: text | thinking | toolCall(name, arguments); message.model, .provider,
+                          .usage {input,output,cacheRead,cacheWrite,cost.total}, stopReason
   message/toolResult      toolName, isError
   message/system, message/bashExecution, custom_message, custom, model_change, thinking_level_change,
   compaction, context_edit
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ctxswitch.common.schema import Ask, Turn, trim
+from ctxswitch.common.schema import Ask, Turn, add_usage, trim
 
 EDIT_TOOLS = {"edit", "write", "multi_edit", "notebook_edit"}
 READ_TOOLS = {"read", "grep", "find", "ls", "glob", "fetch", "web_search", "brave-search", "mcp__brave_search"}
@@ -139,9 +140,19 @@ class PiParser:
                 return
         cur = self._cur
         if role == "assistant":
-            model = m.get("model")
+            model, provider = m.get("model"), m.get("provider")
             if isinstance(model, str) and model:
-                self.meta["model"] = f"{m.get('provider','')}/{model}".strip("/")
+                # pi names the provider that served the model; "anthropic" is the plain Claude case
+                cur.model = model if provider in ("", None, "anthropic") else f"{provider}/{model}"
+                self.meta["model"] = f"{provider or ''}/{model}".strip("/")
+            u = m.get("usage")
+            if isinstance(u, dict):
+                add_usage(cur, u, (("input", "input"), ("output", "output"),
+                                   ("cache_read", "cacheRead"), ("cache_creation", "cacheWrite")))
+                cost = (u.get("cost") or {}).get("total") if isinstance(u.get("cost"), dict) else None
+                # pi prices its cloud providers itself; 0 (a local run) is not a price
+                if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
+                    cur.cost_usd = (cur.cost_usd or 0.0) + float(cost)
             for c in m.get("content") or []:
                 if not isinstance(c, dict):
                     continue

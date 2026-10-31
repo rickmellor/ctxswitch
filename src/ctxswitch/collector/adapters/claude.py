@@ -4,7 +4,7 @@ Entry types that matter (surveyed across 2.1.128–2.1.312 files, see DESIGN.md)
   user        human prompt (content: str | [{type:text}]) or tool results (content: [{type:tool_result}]);
               isMeta + origin.kind=peer = message from another session; isSidechain = subagent traffic (skipped);
               isCompactSummary = compaction summary injected as a user entry.
-  assistant   content blocks text / tool_use; message.model.
+  assistant   content blocks text / tool_use; message.model, message.usage (tokens per request, summed onto the turn).
   system      subtype turn_duration (the harness closed the turn), compact_boundary, api_error, away_summary,
               local_command, scheduled_task_fire.
   ai-title / custom-title / agent-name / permission-mode   session metadata.
@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ctxswitch.common.schema import PLAN_ASK, Ask, ToolTally, Turn, question_text, trim
+from ctxswitch.common.schema import PLAN_ASK, Ask, ToolTally, Turn, add_usage, question_text, trim
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "ToolSearch"}
@@ -227,6 +227,12 @@ class ClaudeParser:
             self._open(e, "", "unknown", offset_end)
         cur = self._cur
         assert cur is not None
+        if isinstance(msg.get("usage"), dict):
+            add_usage(cur, msg["usage"], (("input", "input_tokens"), ("output", "output_tokens"),
+                                          ("cache_read", "cache_read_input_tokens"),
+                                          ("cache_creation", "cache_creation_input_tokens")))
+        if isinstance(model, str) and model:
+            cur.model = model
         content = msg.get("content")
         if isinstance(content, str):
             if content.strip():

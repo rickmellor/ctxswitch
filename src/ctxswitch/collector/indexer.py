@@ -20,6 +20,7 @@ from ctxswitch.collector.adapters.shell import ShellParser
 from ctxswitch.collector.adapters import agy as agy_store
 from ctxswitch.collector.adapters.agy import AgyParser
 from ctxswitch.collector.gitinfo import branch, repo_info
+from ctxswitch.collector.jobs import Jobs
 from ctxswitch.common.wsl import wsl_path
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import CollectorConfig
@@ -68,6 +69,7 @@ class Indexer:
             self.roots.append((Path(os.path.expanduser(r)), "shell"))
         self.live_keys: set[str] = set()         # updated by the liveness poller
         self._meta_sent: dict[str, dict] = {}
+        self.jobs = Jobs()                       # saint-agent pool jobs: which Claude sessions are one (collector/jobs.py)
 
     # -- discovery ----------------------------------------------------------------------------------------------
     def harness_for(self, path: Path) -> str | None:
@@ -268,6 +270,13 @@ class Indexer:
                         harness_version=pm.get("harness_version", ""), started_at=pm.get("started_at") or _iso(st.st_ctime),
                         last_activity=pm.get("last_activity") or _iso(st.st_mtime), model=pm.get("model", ""),
                         permission_mode=pm.get("permission_mode", ""), profile=self._profile(harness, path))
+        if harness == "claude":                    # a session saint-agent launched hangs under its parent, with its job
+            job = self.jobs.for_session(m.session_id, cwd, pm.get("started_at"))
+            if job:
+                parent = job["parent_session"]
+                m.parent_key = session_key(self.host_id, "claude", parent) if parent else ""
+                m.job, m.job_status, m.job_brief = job["job"], job["job_status"], job["job_brief"]
+                m.job_dur_s, m.job_turns, m.job_tokens = job["job_dur_s"], job["job_turns"], job["job_tokens"]
         return m.to_dict()
 
     def _profile(self, harness: str, path: Path) -> str:
