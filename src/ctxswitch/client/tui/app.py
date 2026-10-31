@@ -131,6 +131,8 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
                    ("cloud $1.23", "dim", ("the detail pane's SPEND section: what this session's own turns cost at Bedrock "
                                            "on-demand rates (`bedrock-spend` has the bill)")),
                    ("local $0.48", "dim", "what it ran on the local box, estimated from its energy use (SAINT)"),
+                   ("$244 left", "yellow", ("the header: what's left of the month's budget (the real bill, from "
+                                            "bedrock-spend); the line turns yellow at 75% used, red at 90%")),
                    ("$", "bold cyan", "the Spend screen: today, 7 and 30 days by account and model, then every pool job")]),
         ("MESSAGES", [(fmt.MSG_GLYPH[k], MSG_STYLE.get(k, "dim"), MSG_HELP[k]) for k in fmt.MSG_GLYPH]),
         ("AGENT SAYS", [(fmt.CLAIM_GLYPH[k], CLAIM_STYLE.get(k, ""), CLAIM_HELP[k]) for k in CLAIM_HELP]),

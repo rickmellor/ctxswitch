@@ -207,7 +207,7 @@ class LegendApp(App):
 
 async def legend_svg() -> None:
     app = LegendApp()
-    async with app.run_test(size=(80, 50)) as pilot:
+    async with app.run_test(size=(80, 72)) as pilot:
         await pilot.pause(0.3)
         (OUT / "legend.svg").write_text(app.export_screenshot(title="ctx · the board's glyphs"))
 

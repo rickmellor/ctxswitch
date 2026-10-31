@@ -487,6 +487,16 @@ rate is shown as tokens, never as `$0`.
 These are estimates at list rates, not the bill: `bedrock-spend` (hsp-arch-tools) has the real Bedrock bill, and
 a Max subscription is flat-rate, so its figure is "what this would cost at API rates".
 
+**Monthly budget.** The real bill against the account's limit shows too. The collector on the host with a ccwb
+token runs `bedrock-spend /quota/current-month --json` (the limit) and `bedrock-spend --json` (the month's bill)
+every 15 minutes, never opening a browser, and pushes the result; the hub keeps the latest per account. The header
+adds what's left (`· $244 left`, the account with the least) and the whole line turns yellow at 75% used and red at
+90%. The Spend screen gets a BUDGET section: `bedrock: $2255.58 of $2500.00 this month (90.2% used) · $244.42 left
+· ends today · blocks at the limit · as of 3m ago`, marked `(stale)` once the figure is over two hours old (a
+lapsed token: run `bedrock-spend` once by hand to sign in). `[collector] budget_cmd` names the tool (looked up on
+PATH, then in `~/bin` and `~/.local/bin`; `""` turns the poll off), `budget_every` the interval in seconds and
+`budget_account` the `[[claude_profiles]]` account it belongs to. A host without the tool runs no poll.
+
 **Local.** The hub asks SAINT's `/usage/v1` (hybrid-usage/1) for the window: tokens, requests and SAINT's energy
 estimate. The "if cloud" figure prices those tokens at `[hub] local_price_as` (default `claude-opus-5-5`); per
 job, the estimate is the job's tokens × the window's energy per token, the energy shared out by the tokens.
