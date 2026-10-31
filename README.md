@@ -287,6 +287,28 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
   another terminal (`⊘`) or live on another host (`⇢`) has to be quit where it runs, and the board says so.
 - **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
 
+### Shell sessions
+- **`n` → shell** (the last choice on its list) opens a plain bash in the left pane, in a directory you pick (default:
+  the selected session's). It's a session like the agents: numbered on the list, harness `sh`, Enter or `Alt+N`
+  bring it back, `k` ends it (SIGHUP), and it's grouped by workstream (the repo + branch of its directory).
+- It's `ctx shell [--id ID]` underneath: bash with ctxswitch's rcfile, which first sources your `~/.bashrc`.
+- What's recorded, per command: the command line, its directory, when it ran, how long, its exit code, and the
+  last 20 lines (at most 2000 characters) of what it printed. tmux copies the pane's output; terminal colour
+  codes are stripped. The files are `~/.local/state/ctxswitch/shells/<id>.jsonl` (the transcript),
+  `<id>.out` (the raw pane output, reset when it passes 16 MiB), and `<id>.history` (its own history file).
+  All 0600.
+- A command that starts with a space is not recorded at all (nor its output tail), like bash's `ignorespace`:
+  use it for anything secret. `exit` isn't recorded either. Repeated commands are each recorded (its rcfile
+  turns off `ignoredups`).
+- On the board each command is an exchange: `ran: <command>` and `result: exit <code> · <time>`, plus the
+  output tail. The hub's recap describes what you were doing ("last make test failed with exit 2…"). The
+  ledger skips shells.
+- Shells don't take messages: `m` says so, and the hub refuses them from anyone, including agents. An idle
+  shell is never listed as waiting on you (it's idle at its prompt nearly all the time).
+- An ended shell shows `↻`: Enter starts a new bash with the same id, in its last directory, with its history,
+  and it carries on as the same session.
+- Needs bash 4.4 or newer. zsh isn't supported yet.
+
 ## 6. The tracker (recaps and ledger)
 The hub reads sessions with a **local LLM**, so nothing leaves your network. Any OpenAI-compatible
 `/chat/completions` endpoint works (vLLM, LiteLLM, llama.cpp server, LM Studio …) if it honours `response_format`
