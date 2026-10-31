@@ -120,14 +120,35 @@ class Hub:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         host = req.query_params.get("host") or None
         live = req.query_params.get("live") in ("1", "true")
-        return JSONResponse({"change": self.store.change, "sessions": self.store.sessions(host, include_ended=not live)})
+        rows = self.store.sessions(host, include_ended=not live)
+        self._price_jobs(rows)
+        return JSONResponse({"change": self.store.change, "sessions": rows})
 
     async def session(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         s = self.store.session(req.path_params["key"], turns=int(req.query_params.get("turns", "50")))
         if s:
             self._add_local(s)
+            self._price_jobs([s])
         return JSONResponse(s) if s else JSONResponse({"error": "not found"}, 404)
+
+    def _price_jobs(self, rows: list[dict[str, Any]]) -> None:
+        """A pool job's local cost estimate: its tokens (the ledger's count, else its turns') × SAINT's energy per token
+        over the last 30 days. ``spend.local_usd`` is None when SAINT has nothing to say."""
+        jobs = [r for r in rows if r.get("job") and isinstance(r.get("spend"), dict)]
+        if not jobs:
+            return
+        rate = None
+        if self.saint is not None and self.saint.url:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            w = self.saint.window(_minus(now, 30), now)
+            totals = (w or {}).get("totals") or w or {}
+            energy, tokens = totals.get("energy_cost_usd"), tok_total(totals.get("tokens_by_type") or totals.get("total_tokens") or 0)
+            if isinstance(energy, (int, float)) and tokens:
+                rate = float(energy) / tokens
+        for r in jobs:
+            t = tok_total((r.get("meta") or {}).get("job_tokens") or {}) or r["spend"].get("tokens") or 0
+            r["spend"]["local_usd"] = round(rate * t, 6) if rate is not None and t else None
 
     def _add_local(self, s: dict[str, Any]) -> None:
         """What SAINT says this session cost it, when the session is one SAINT could have run and there's an endpoint

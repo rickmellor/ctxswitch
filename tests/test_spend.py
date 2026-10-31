@@ -173,6 +173,8 @@ def _corpus(store):
     store.upsert_turns(CHILD, [_turn(0, model="saint/saint-auto", usage=_u(i=200_000))], None)
     _sess(store, PI)
     store.upsert_turns(PI, [_turn(0, model="saint/saint-auto", usage=_u(i=400_000), cost=0.5)], None)
+    _sess(store, "laptop/pi/x2")                                           # a local model pi did not price: tokens, no $
+    store.upsert_turns("laptop/pi/x2", [_turn(0, model="saint/saint-auto", usage=_u(i=200_000))], None)
     _sess(store, SH)
     store.upsert_turns(SH, [_turn(0, model="", usage=None)], None)
     _sess(store, OLD, profile="bedrock", when="2026-01-01T10:00:00Z")
@@ -189,10 +191,12 @@ def test_spend_totals_the_window_by_account_and_model(tmp_path):
     c = _hub(store, saint=_saint(_window_totals()))
     body = c.get("/v1/spend", params={"from": DAY, "to": NEXT}).json()
     assert body["window"] == {"from": DAY, "to": NEXT}
-    # opus turn 4.4+22, sonnet turn 1.1, pi's own 0.50; the saint/saint-auto turn and the shell add tokens, no $
+    # opus turn 4.4+22, sonnet turn 1.1, pi's own 0.50; pi's unpriced saint turn and the shell add tokens, no $;
+    # CHILD is a pool job: its turns ran locally, so nothing of it is cloud
     assert body["cloud"]["usd"] == pytest.approx(27.5 + 0.5)
     assert body["cloud"]["tokens"] == _u(i=2_100_000, o=1_000_000)
-    assert [a["account"] for a in body["cloud"]["by_account"]] == ["bedrock", "pi", "max"]     # by $, then tokens
+    assert [a["account"] for a in body["cloud"]["by_account"]] == ["bedrock", "pi"]            # by $, then tokens
+    assert body["cloud"]["by_account"][1]["sessions"] == 2 and "local-pool" not in [a["account"] for a in body["cloud"]["by_account"]]
     assert body["cloud"]["by_account"][0]["usd"] == pytest.approx(27.5) and body["cloud"]["by_account"][0]["sessions"] == 1
     assert {m["model"]: m["priced"] for m in body["cloud"]["by_model"]}["saint/saint-auto"] is False
     assert body["unpriced_models"] == ["saint/saint-auto"]
@@ -283,8 +287,14 @@ def test_session_rows_carry_the_link_and_their_spend(tmp_path):
     assert (rows[CHILD]["parent_key"], rows[CHILD]["job"], rows[CHILD]["job_status"], rows[CHILD]["job_brief"]) == \
            (P, "sa-2-j1", "running", "")
     assert rows[P]["children"] == 1 and rows[CHILD]["children"] == 0
-    assert rows[CHILD]["spend"]["usd"] == pytest.approx(1.1 + 5.5) and rows[CHILD]["spend"]["tokens"] == 2_000_000
-    assert rows[CHILD]["spend"]["account"] == "max" and rows[CHILD]["spend"]["unpriced"] is False
+    # a pool job's turns ran on the local seats whatever model the worker reported: no cloud dollars, a local estimate
+    assert rows[CHILD]["spend"]["usd"] is None and rows[CHILD]["spend"]["tokens"] == 2_000_000
+    assert rows[CHILD]["spend"]["account"] == "local-pool" and rows[CHILD]["spend"]["unpriced"] is False
+    assert rows[CHILD]["spend"]["local"] is True and rows[CHILD]["spend"]["local_usd"] is None    # no SAINT here
+    rate = _hub(store, saint=_saint({"energy_cost_usd": 2.0, "requests": 1, "tokens_by_type": _u(i=20_000_000)}))
+    rows = {r["key"]: r for r in rate.get("/v1/sessions", headers=H).json()["sessions"]}
+    assert rows[CHILD]["spend"]["local_usd"] == pytest.approx(2.0 * 2_000_000 / 20_000_000)      # its turns' tokens × $/token
+    assert rows[P]["spend"].get("local_usd") is None                                            # not a job
     assert rows[P]["spend"] == {"usd": None, "tokens": 0, "by_type": _u(), "model": "", "account": "default",
                                 "unpriced": False}
     one = _hub(store).get(f"/v1/sessions/{P}", headers=H).json()

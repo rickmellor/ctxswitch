@@ -219,7 +219,11 @@ def spend_report(store, frm: str, to: str, host: str | None, prices: dict[str, d
     seen: dict[str, set[str]] = {}                  # account -> session keys: a session on two models counts once
     sessions: list[dict[str, Any]] = []
     by_key: dict[str, dict[str, Any]] = {}
+    job_tok: dict[str, int] = {}                    # a pool job's turns ran locally: tokens for its job row, no cloud $
     for r in rows:
+        if r["job"]:
+            job_tok[r["key"]] = job_tok.get(r["key"], 0) + tok_total(r["tokens"])
+            continue
         harness = r["harness"]
         account = (r["meta"].get("profile") or "default") if harness == "claude" else (harness or "default")
         s = usage_spend(r["tokens"], r["model"], r["reported"], prices, account, r.get("priced"))   # pi-priced turns once
@@ -254,10 +258,13 @@ def spend_report(store, frm: str, to: str, host: str | None, prices: dict[str, d
     local = _local(saint, frm, to, price_as, table)
     saint_jobs = local.pop("_jobs", [])
     jobs = []
+    seen_jobs: set[str] = set()
     for r in rows:
-        if not r["job"]:
+        if not r["job"] or r["key"] in seen_jobs:    # one job row per session (its rows are per model)
             continue
-        t = tok_total(r["meta"].get("job_tokens") or {})
+        seen_jobs.add(r["key"])
+        t = tok_total(r["meta"].get("job_tokens") or {}) or job_tok.get(r["key"], 0)   # the ledger's count, else its turns'
+
         jobs.append({"job": r["job"], "key": r["key"], "parent_key": r["parent_key"],
                      "parent_title": _title(store, r["parent_key"]), "status": r["job_status"],
                      "brief": r["job_brief"], "started_at": r["started_at"] or "", "dur_s": r["meta"].get("job_dur_s"),

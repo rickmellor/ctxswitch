@@ -586,6 +586,8 @@ class Store:
         """The window's cloud token total by type, over the same rows."""
         tokens = {t: 0 for t in TOKEN_TYPES}
         for r in self.usage_window(frm, to, host):
+            if r["job"]:                                 # a pool job's turns are local, not cloud
+                continue
             for t in TOKEN_TYPES:
                 tokens[t] += r["tokens"][t]
         return {"tokens": tokens}
@@ -628,8 +630,12 @@ class Store:
         """What this session's turns cost at the hub's rates (hub/spend.py). usd is null when its model has no rate or
         it turned over no tokens: an unpriced model contributes tokens, never $0. ``local`` is SAINT's, filled in by
         the API for a single session."""
-        from ctxswitch.hub.spend import usage_spend
+        from ctxswitch.hub.spend import tok_total, usage_spend
         harness = d.get("harness") or ""
+        if d.get("job"):                                # a pool job ran on the local seats whatever model it reports:
+            tokens = u["tokens"]                        # never cloud dollars; the API adds its local estimate
+            return {"usd": None, "tokens": tok_total(tokens), "by_type": dict(tokens), "model": u["model"],
+                    "account": "local-pool", "unpriced": False, "local": True}
         account = ((d.get("meta") or {}).get("profile") or "default") if harness == "claude" else (harness or "default")
         return usage_spend(u["tokens"], u["model"], u["reported"], self.prices, account=account, priced=u["priced"])
 
