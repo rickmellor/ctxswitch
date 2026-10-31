@@ -17,6 +17,8 @@
                                      messages only with agents=1)
   POST /v1/messages/{id}/status      collector report {host_id, status: sent|failed, error}
   GET  /v1/attention?host=
+  GET  /v1/spend?from=ISO&to=ISO&host=    what the window cost: cloud turns priced per account / model, SAINT's local
+                                     energy, one row per pool job, the top sessions (hub/spend.py)
   GET  /v1/health
   WS   /v1/ws                      server pushes {"change": N} whenever the store changes
 Auth: ``Authorization: Bearer <token>`` when hub.token is set (collectors and clients share it).
@@ -27,6 +29,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
+from datetime import timedelta
 from typing import Any
 
 from starlette.applications import Starlette
@@ -37,16 +41,26 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
+from ctxswitch.hub.spend import SaintUsage, iso_instant, spend_report, tok_total, utc
 from ctxswitch.hub.store import NOT_DELIVERABLE, REPLYABLE, SEARCH_KINDS, Store
 
 log = logging.getLogger("ctxswitch.hub")
 MAX_BODY = 20000                                     # characters in one message
 OUTBOX_WAIT = 25.0                                   # seconds a collector's long-poll may hang
+SPEND_DEFAULT_DAYS = 1                               # /v1/spend with no "from"
+LOCAL_HARNESSES = ("claude", "pi")                   # a session of these can have run on SAINT, so ask SAINT
 
 
 class Hub:
-    def __init__(self, store: Store, token: str = ""):
+    def __init__(self, store: Store, token: str = "", saint: SaintUsage | None = None,
+                 prices: dict[str, dict[str, float]] | None = None, price_as: str = "claude-opus-5-5"):
+        """``saint``: the SAINT usage endpoint for local energy (None or an empty url: no local numbers at all).
+        ``prices``: [hub.prices] rates, which the store also needs to price the rows it lists."""
         self.store, self.token = store, token
+        self.saint = saint
+        self.prices = prices or {}
+        self.price_as = price_as
+        store.prices = self.prices
         self.hooks = HookApplier(store)
         self.recap_status: dict[str, Any] | None = None      # set by the Recapper: {seat, last_ok, last_error, error_at}
         self.ledger_status: dict[str, Any] | None = None     # set by the Extractor: {extracted, dropped, backlog, ...}
@@ -111,7 +125,43 @@ class Hub:
     async def session(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         s = self.store.session(req.path_params["key"], turns=int(req.query_params.get("turns", "50")))
+        if s:
+            self._add_local(s)
         return JSONResponse(s) if s else JSONResponse({"error": "not found"}, 404)
+
+    def _add_local(self, s: dict[str, Any]) -> None:
+        """What SAINT says this session cost it, when the session is one SAINT could have run and there's an endpoint
+        to ask. None everywhere else: 'we didn't ask' isn't 'it cost nothing'."""
+        spend = s.get("spend")
+        if not isinstance(spend, dict):
+            return
+        spend["local"] = None
+        saint = self.saint
+        if saint is None or not saint.url or s.get("harness") not in LOCAL_HARNESSES or not s.get("session_id"):
+            return
+        data = saint.session(s["session_id"])
+        if not data:
+            return
+        totals = data.get("totals") or data
+        energy = totals.get("energy_cost_usd")
+        tokens = tok_total(totals.get("tokens_by_type") or totals.get("tokens") or totals.get("total_tokens") or 0)
+        spend["local"] = {"energy_usd": round(float(energy), 6) if isinstance(energy, (int, float)) else None,
+                          "tokens": int(tokens or 0), "requests": int(totals.get("requests") or 0)}
+
+    async def spend(self, req: Request) -> Response:
+        """GET /v1/spend?from=ISO&to=ISO[&host=]: the window's cost. Turns count by when they started; the window's
+        right edge is exclusive. Both default: the last day up to now."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        p = req.query_params
+        to = iso_instant(p.get("to")) if p.get("to") else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if not to:
+            return JSONResponse({"error": "to must be an ISO timestamp"}, 400)
+        frm = iso_instant(p.get("from")) if p.get("from") else _minus(to, SPEND_DEFAULT_DAYS)
+        if not frm:
+            return JSONResponse({"error": "from must be an ISO timestamp"}, 400)
+        if frm >= to:
+            return JSONResponse({"error": "from must be before to"}, 400)
+        return JSONResponse(spend_report(self.store, frm, to, p.get("host") or None, self.prices, self.saint, self.price_as))
 
     async def brief(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
@@ -301,7 +351,14 @@ class Hub:
             Route("/v1/messages/{id:int}/status", self.message_status, methods=["POST"]),
             Route("/v1/outbox", self.outbox),
             Route("/v1/attention", self.attention),
+            Route("/v1/spend", self.spend),
             Route("/v1/search", self.search),
             Route("/v1/health", self.health),
             WebSocketRoute("/v1/ws", self.ws),
         ])
+
+
+def _minus(iso: str, days: int) -> str:
+    """``iso`` minus N days, still an ISO instant (for the default /v1/spend window)."""
+    d = utc(iso) - timedelta(days=days)
+    return d.strftime("%Y-%m-%dT%H:%M:%SZ")
