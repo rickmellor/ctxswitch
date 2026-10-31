@@ -259,7 +259,7 @@ async def test_the_board_numbers_its_session_rows_in_the_order_shown(tmp_path, m
         assert not app.query("#attention") and "1 waiting on you" in app.query_one("#summary").render().plain
         t = app.query_one("#table")
         i = t.get_row_index(DEV)
-        assert t.rows[t.coordinate_to_cell_key((i, 0)).row_key].height == 2 and "↳ Ship it?" in t.get_row_at(i)[3].plain
+        assert t.rows[t.coordinate_to_cell_key((i, 0)).row_key].height == 2 and "└ Ship it?" in t.get_row_at(i)[3].plain
         assert all(t.rows[t.coordinate_to_cell_key((j, 0)).row_key].height == 1 for j in range(t.row_count) if j != i)
         bar = app.query_one("#keys")
         shown = bar.render().plain

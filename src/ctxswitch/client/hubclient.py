@@ -54,6 +54,14 @@ class HubClient:
             raise ValueError(_error(r))
         return r.json()["results"]
 
+    def spend(self, frm: str, to: str, host: str | None = None) -> dict[str, Any]:
+        """What everything cost between two ISO instants: cloud by account and model, SAINT's local energy estimate,
+        the pool jobs, the dearest sessions. An older hub has no such route: ValueError."""
+        r = self._c.get("/v1/spend", params={"from": frm, "to": to} | ({"host": host} if host else {}))
+        if r.status_code != 200:
+            raise ValueError(_error(r))
+        return r.json()
+
     def viewed(self, key: str, at: str) -> None:
         self._c.post(f"/v1/sessions/{key}/viewed", json={"at": at}).raise_for_status()
 
