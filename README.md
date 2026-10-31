@@ -288,7 +288,7 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
 - **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
 
 ### Shell sessions
-- **`n`** (the last choice on its list) opens a plain bash in the left pane, in a directory you pick (default:
+- **`n` → shell** (the last choice on its list) opens a plain bash in the left pane, in a directory you pick (default:
   the selected session's). It's a session like the agents: numbered on the list, harness `sh`, Enter or `Alt+N`
   bring it back, `k` ends it (SIGHUP), and it's grouped by workstream (the repo + branch of its directory).
 - It's `ctx shell [--id ID]` underneath: bash with ctxswitch's rcfile, which first sources your `~/.bashrc`.
