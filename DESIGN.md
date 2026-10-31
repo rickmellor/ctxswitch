@@ -141,8 +141,9 @@ Greenfield repo: `~/repos/ctxswitch`.
   has the real Bedrock bill; a Max subscription is flat-rate, so its figure is "what this would cost at API rates"). A
   model with no rate contributes tokens, never $0. Local spend is SAINT's energy estimate from `/usage/v1` plus an
   "if this had run in the cloud" upper bound (the window's tokens priced at `[hub] local_price_as`, default
-  `claude-opus-5-5`); per job, the estimate is the job's tokens × the window's energy per token. The waiting line under a
-  row moved to `└`, so `↳` means "subordinate" everywhere.
+  `claude-opus-5-5`); per job, the estimate is the job's tokens × the window's energy per token, and a job's own turns are local
+  whatever model the worker reports (never cloud dollars). The waiting line under a row moved to `└`, so `↳` means
+  "subordinate" everywhere.
 
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is

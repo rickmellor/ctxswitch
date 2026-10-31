@@ -466,10 +466,11 @@ pi has no MCP of its own. Where [pi-mcp-adapter](https://github.com/nicobailon/p
 there; the original is backed up 0600 under `~/.local/state/ctxswitch/backup/`). `ctx uninstall --mcp` removes just
 that entry. Any other MCP client works the same way.
 
-## 11. Spend
-The header's second line says what today costs: `today $12.40 · cloud $11.10 · local $1.30`. With more than one
-cloud account the cloud figure carries them in brackets, by `[[claude_profiles]]` name (`cloud $11.10 (bedrock
-$9.8 · max $1.3)`); with SAINT unreachable it reads `local —` and the cloud figures stand alone.
+## 9. Spend
+The header's second line says what today costs: `today $12.40 · cloud 11.10 · local 1.30`. With more than one
+cloud account the cloud figure carries them in brackets, by `[[claude_profiles]]` name (`cloud 11.10 (bedrock 9.80
+· max 1.30)`), when the pane is wide enough for them; with SAINT unreachable it reads `local —` and the cloud
+figures stand alone.
 
 `$` opens the Spend screen: Today / 7 days / 30 days, each with the cloud total split by account and by model,
 the local half (SAINT's energy and the "if this had run in the cloud" figure), the pool jobs with their estimates,
@@ -489,10 +490,11 @@ a Max subscription is flat-rate, so its figure is "what this would cost at API r
 **Local.** The hub asks SAINT's `/usage/v1` (hybrid-usage/1) for the window: tokens, requests and SAINT's energy
 estimate. The "if cloud" figure prices those tokens at `[hub] local_price_as` (default `claude-opus-5-5`); per
 job, the estimate is the job's tokens × the window's energy per token, the energy shared out by the tokens.
-`[hub] usage_url` points the hub elsewhere (`""` turns local numbers off); when SAINT is unreachable the board
-shows `local —` and the cloud figures stand alone.
+A pool job's own exchanges count as local too, whatever model name the worker reports: they ran on the pool, so
+they never add to the cloud figure. `[hub] usage_url` points the hub elsewhere (`""` turns local numbers off); when
+SAINT is unreachable the board shows `local —` and the cloud figures stand alone.
 
-## 9. Configuration
+## 10. Configuration
 `~/.config/ctxswitch/config.toml` (or `$CTXSWITCH_CONFIG`). [config.example.toml](config.example.toml) has every
 option. The ones you'll touch:
 
@@ -519,7 +521,7 @@ option. The ones you'll touch:
 | `CTXSWITCH_CONFIG`, `CTXSWITCH_DATA` | env: another config file; another data directory (hub db, collector queue) |
 | `CTXSWITCH_TMUX_SESSION` | env: tmux session name for the manager (default `ctx`) |
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broken), with the fix underneath.
 
 | Symptom | Check |
