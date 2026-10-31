@@ -431,3 +431,22 @@ def test_the_header_drops_the_account_brackets_before_it_drops_a_figure():
     assert fmt.header_spend(two) == full and fmt.header_spend(two, len(full)) == full
     assert fmt.header_spend(two, len(full) - 1) == "today $12.40 · cloud 12.40 · local 0.48"   # too narrow: the brackets go, the figures stay
     assert fmt.header_spend(two, 20) == "today $12.40 · cloud 12.40 · local 0.48"
+
+
+async def test_the_detail_card_reads_recap_spend_session_last_exchange_then_the_rest(monkeypatch):
+    """Coming back to a session, the card leads with what's going on, then what it costs, where it is and what was
+    last said; the asks, messages, rules and history follow."""
+    turn = {"idx": 0, "started_at": "2026-10-30T09:00:00Z", "ended_at": "2026-10-30T09:01:00Z", "user_text": "ship it",
+            "user_origin": "human", "assistant_text": "Shipped.", "tally": {}, "asks": [], "events": [], "complete": True}
+    detail = {**_sess(P1, spend={"usd": 1.23, "tokens": 2_400_000, "model": "claude-opus-5-5", "account": "bedrock"}),
+              "children_keys": [], "turns": [turn], "recap": "Shipping the release.", "purpose": "the 2.4 release",
+              "cwd": "/home/me/webapp",
+              "asks": [{"ref": "0:plain", "kind": "plain", "text": "Tag it?", "answered": False, "asked_at": "2026-10-30T09:01:00Z"}]}
+    app = _board(monkeypatch, [detail], reports={})
+    app.client.detail = {P1: detail}
+    async with app.run_test(size=(70, 40)) as pilot:
+        await pilot.pause(1)
+        t = app.query_one("#detail_text").render().plain
+        order = ["RECAP", "SPEND", "/home/me/webapp", "for: the 2.4 release", "LAST EXCHANGE", "WAITING ON YOU"]
+        at = [t.find(x) for x in order]
+        assert -1 not in at and at == sorted(at), dict(zip(order, at))

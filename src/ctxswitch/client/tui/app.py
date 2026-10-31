@@ -869,6 +869,30 @@ class CtxApp(App):
         st = fmt.session_state(s)
         t = Text()
         t.append(f"{fmt.state_glyph(s)} {fmt.display_title(s) or '-'}\n", style="bold")
+        turns = s.get("turns", [])
+        # the card reads top-down by what you need on coming back: what's going on, what it costs, where it is,
+        # the last exchange, then everything else
+        if s.get("recap"):
+            stale = s.get("recap_anchor") != _anchor(s)
+            t.append("RECAP" + (" (updating…)" if stale else "") + "\n", style="bold")
+            t.append(s["recap"] + "\n", style="cyan")
+            for line in (s.get("reentry") or "").splitlines():
+                t.append(f"› {line}\n")
+            t.append("\n")
+        kids = kids if kids is not None else self._kids(s)   # load_detail fetched them with the session
+        line = fmt.spend_line(s, kids or None)
+        if line or kids:
+            t.append("SPEND\n", style="bold")
+            t.append((line or f"{len(kids)} pool jobs") + "\n", style="dim")
+        if kids:
+            t.append("POOL JOBS\n", style="bold")
+            for j in kids[:6]:
+                t.append(f"↳ {fmt.one_line(fmt.job_label(j) or j.get('job') or '?', 110)}", style="dim")
+                t.append(f" {fmt.cost_mark(j).strip() or '—'}\n")
+            if len(kids) > 6:
+                t.append(f"… {len(kids) - 6} more\n", style="dim")
+        if line or kids:
+            t.append("\n")
         t.append(f"{st} {fmt.age(s.get('status_since') or s.get('last_activity'), now)}", style=STATE_STYLE.get(st, ""))
         t.append(f" · {s.get('turn_count')} exch · {fmt.age(s.get('started_at'), now)} old", style="dim")
         if s.get("last_viewed_at"):
@@ -884,24 +908,29 @@ class CtxApp(App):
         t.append(f"{s.get('cwd') or '-'}\n", style="dim")
         model = (s['meta'].get('model') or '').rsplit('/', 1)[-1]
         t.append(f"{model} {s['meta'].get('permission_mode') or ''}\n", style="dim")
-        kids = kids if kids is not None else self._kids(s)   # load_detail fetched them with the session
-        line = fmt.spend_line(s, kids or None)
-        if line or kids:
-            t.append("SPEND\n", style="bold")
-            t.append((line or f"{len(kids)} pool jobs") + "\n", style="dim")
-        if kids:
-            t.append("POOL JOBS\n", style="bold")
-            for j in kids[:6]:
-                t.append(f"↳ {fmt.one_line(fmt.job_label(j) or j.get('job') or '?', 110)}", style="dim")
-                t.append(f" {fmt.cost_mark(j).strip() or '—'}\n")
-            if len(kids) > 6:
-                t.append(f"… {len(kids) - 6} more\n", style="dim")
-        if line or kids:
-            t.append("\n")
         if s.get("purpose"):
             t.append("for: ", style="bold")
             t.append(s["purpose"] + "\n")
         t.append("\n")
+        if turns:
+            last = turns[-1]
+            # "you" = the operator's last real prompt; "agent" = the newest agent text, even if a task notification
+            # or peer message started the turn that produced it
+            you = next((x for x in reversed(turns) if x.get("user_origin") in ("human", "peer", "shell")), None)
+            said = next((x for x in reversed(turns) if x.get("assistant_text")), None)
+            t.append("LAST EXCHANGE\n", style="bold")
+            if you is not None:
+                t.append(f"{fmt.who(you)} ({fmt.age(you.get('started_at'), now)}): ", style="bold")
+                t.append(fmt.one_line(you.get("user_text"), 400) + "\n")
+            if said is not None:
+                t.append(f"{fmt.replied(said)} ({fmt.age(said.get('ended_at') or said.get('started_at'), now)}): ", style="bold")
+                t.append(fmt.one_line(said.get("assistant_text"), 700) + "\n")
+            tally = {k: v for k, v in (last.get("tally") or {}).items() if v}
+            if tally or last.get("events"):
+                t.append("  " + ", ".join(f"{v} {k}" for k, v in tally.items()) + ("  " + " ".join(last.get("events", [])) if last.get("events") else "") + "\n", style="dim")
+            if not last.get("complete"):
+                t.append(f"  working on a {last.get('user_origin')} turn…\n" if last.get("user_origin") != "human" else "  (in progress)\n", style="green")
+            t.append("\n")
         new = fmt.since_viewed(s)
         if new:
             t.append(f"SINCE YOU LOOKED ({fmt.age(s.get('last_viewed_at'), now)} ago)\n", style="bold cyan")
@@ -942,14 +971,6 @@ class CtxApp(App):
                 t.append(f"{fmt.MSG_GLYPH['queued']} ", style=MSG_STYLE.get("queued", "dim"))
                 t.append(fmt.one_line(m["body"], 160) + "\n")
             t.append(f"  {fmt.WORK_NOTE}\n\n", style="dim")
-        turns = s.get("turns", [])
-        if s.get("recap"):
-            stale = s.get("recap_anchor") != _anchor(s)
-            t.append("RECAP" + (" (updating…)" if stale else "") + "\n", style="bold")
-            t.append(s["recap"] + "\n", style="cyan")
-            for line in (s.get("reentry") or "").splitlines():
-                t.append(f"› {line}\n")
-            t.append("\n")
         rules = fmt.instructions(s)
         if rules:
             t.append("YOUR INSTRUCTIONS\n", style="bold")
@@ -965,25 +986,6 @@ class CtxApp(App):
                 kind = r["extra"].get("claim", "other")
                 t.append(f"{fmt.CLAIM_GLYPH.get(kind, '·')} {fmt.one_line(r['text'], 160)}", style=CLAIM_STYLE.get(kind, ""))
                 t.append(f"  #{r['turn_idx']}\n", style="dim")
-            t.append("\n")
-        if turns:
-            last = turns[-1]
-            # "you" = the operator's last real prompt; "agent" = the newest agent text, even if a task notification
-            # or peer message started the turn that produced it
-            you = next((x for x in reversed(turns) if x.get("user_origin") in ("human", "peer", "shell")), None)
-            said = next((x for x in reversed(turns) if x.get("assistant_text")), None)
-            t.append("LAST EXCHANGE\n", style="bold")
-            if you is not None:
-                t.append(f"{fmt.who(you)} ({fmt.age(you.get('started_at'), now)}): ", style="bold")
-                t.append(fmt.one_line(you.get("user_text"), 400) + "\n")
-            if said is not None:
-                t.append(f"{fmt.replied(said)} ({fmt.age(said.get('ended_at') or said.get('started_at'), now)}): ", style="bold")
-                t.append(fmt.one_line(said.get("assistant_text"), 700) + "\n")
-            tally = {k: v for k, v in (last.get("tally") or {}).items() if v}
-            if tally or last.get("events"):
-                t.append("  " + ", ".join(f"{v} {k}" for k, v in tally.items()) + ("  " + " ".join(last.get("events", [])) if last.get("events") else "") + "\n", style="dim")
-            if not last.get("complete"):
-                t.append(f"  working on a {last.get('user_origin')} turn…\n" if last.get("user_origin") != "human" else "  (in progress)\n", style="green")
             t.append("\n")
         decided = fmt.decisions(s)
         if decided:

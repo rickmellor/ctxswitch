@@ -187,10 +187,15 @@ and time instead. The waiting line under a row now starts `└`, so `↳` means 
 | `↗` | it ended on another host: resumes it there over ssh, in a new window here (see `[ssh]`) |
 | `⇢` | can't: it's live on another host, or there's no ssh route to it. The detail pane says which and what to run |
 
-**Detail pane** for the selected session:
-- the title, state and age, number of exchanges, and when you last looked (`seen 2h`);
-- what Enter will do with it, the session key, repo, working directory, model and permission mode;
+**Detail pane** for the selected session, most useful first:
+- its title;
+- **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
+- **SPEND**: what its own turns cost (see Spend), and under it **POOL JOBS**, the jobs it launched with their
+  estimates;
+- the state and age, number of exchanges, and when you last looked (`seen 2h`); what Enter will do with it, the
+  session key, repo, working directory, model and permission mode;
 - **for:** what the session is for (from the tracker; it changes only when your goal does);
+- **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
 - **SINCE YOU LOOKED**: what's new since you last opened it (on any machine): how many exchanges, and the
   decisions, claims and instructions they added. Not shown before you've opened it once. The list row's `+N` is
   the same count;
@@ -198,13 +203,11 @@ and time instead. The waiting line under a row now starts `└`, so `↳` means 
   Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
   input), `prompt` (a pi dialog), `plain` (its reply ended in a question), `text` (the tracker read a question
   in its reply). Underneath: `a = answer it here`, or why you have to answer in the session;
-- **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
 - **MESSAGES**: what you sent it with `m` or `ctx send`, and what other agents sent it (`from <session>`), and where
   each one is (see Messages);
 - **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, numbered for `i`, with the exchange
   (`#12`) they came from;
 - **AGENT SAYS**: its latest claims: `✓` done / tests pass, `✗` tests fail, `!` blocked;
-- **LAST EXCHANGE**: your last prompt and the agent's last reply, plus a tool tally for that turn;
 - **DECISIONS**: the questions it asked and the answers you gave, verbatim, plus the choices the tracker read from
   your prompts;
 - **SAME WORK ELSEWHERE**: other sessions on the same repo and branch, on any host (live, or active in the last
