@@ -159,6 +159,16 @@ line saying what it's waiting on:
 
 <p align="center"><img src="docs/img/legend.svg" alt="every glyph on the board, in its colours" width="70%"></p>
 
+### Pool jobs under their session
+A `saint-agent` worker run shows under the session that launched it, indented, with `↳` (the return arrow). It's
+a session like any other (Enter opens it, `k` ends it), but it isn't numbered: `Alt+N` skips it.
+Its row reads the brief's file name, the job's status (`running`, `ok`, `error:…`, `no-commit`…), its turn count,
+and its estimated local cost (`~$0.03`): the energy SAINT reports for the window, shared out by the tokens the job used.
+The link is the saint-agent ledger: `saint-agent` writes a line to `~/.claude/saint-agent-ledger.jsonl` when a job
+starts (the worker's session id and the parent's `CLAUDE_CODE_SESSION_ID`) and one when it ends, and the collector
+on that host reads it. Older ledger lines (before 2026-10-30) have no session id and are matched by work directory
+and time instead. The waiting line under a row now starts `└`, so `↳` means "subordinate".
+
 | State | Meaning |
 |---|---|
 | `●` green | busy: the agent is working |
@@ -456,6 +466,32 @@ pi has no MCP of its own. Where [pi-mcp-adapter](https://github.com/nicobailon/p
 there; the original is backed up 0600 under `~/.local/state/ctxswitch/backup/`). `ctx uninstall --mcp` removes just
 that entry. Any other MCP client works the same way.
 
+## 11. Spend
+The header's second line says what today costs: `today $12.40 · cloud $11.10 · local $1.30`. With more than one
+cloud account the cloud figure carries them in brackets, by `[[claude_profiles]]` name (`cloud $11.10 (bedrock
+$9.8 · max $1.3)`); with SAINT unreachable it reads `local —` and the cloud figures stand alone.
+
+`$` opens the Spend screen: Today / 7 days / 30 days, each with the cloud total split by account and by model,
+the local half (SAINT's energy and the "if this had run in the cloud" figure), the pool jobs with their estimates,
+and the top sessions. `ctx spend [--days N] [--json]` prints the same; `ctx show` and the detail pane carry a
+spend line per session.
+
+**Cloud.** Token counts come from the transcripts: Claude Code writes `usage` on every reply, and pi records its
+usage and, for cloud providers, its own cost, which is used as is. The tokens are priced at Bedrock on-demand
+rates per million (in / out / cache write / cache read): Opus 5.5 4.4 / 22 / 5.5 / 0.22; Fable 5.1 11 / 55 /
+13.75 / 0.275; Sonnet 5 2.2 / 11 / 2.75 / 0.22; Haiku 4.5 1.1 / 5.5 / 1.375 / 0.11. That's the built-in table:
+what ccwb billed on 2026-10-30. `[hub.prices]` in the hub's config overrides or adds a model. A model with no
+rate is shown as tokens, never as `$0`.
+
+These are estimates at list rates, not the bill: `bedrock-spend` (hsp-arch-tools) has the real Bedrock bill, and
+a Max subscription is flat-rate, so its figure is "what this would cost at API rates".
+
+**Local.** The hub asks SAINT's `/usage/v1` (hybrid-usage/1) for the window: tokens, requests and SAINT's energy
+estimate. The "if cloud" figure prices those tokens at `[hub] local_price_as` (default `claude-opus-5-5`); per
+job, the estimate is the job's tokens × the window's energy per token, the energy shared out by the tokens.
+`[hub] usage_url` points the hub elsewhere (`""` turns local numbers off); when SAINT is unreachable the board
+shows `local —` and the cloud figures stand alone.
+
 ## 9. Configuration
 `~/.config/ctxswitch/config.toml` (or `$CTXSWITCH_CONFIG`). [config.example.toml](config.example.toml) has every
 option. The ones you'll touch:
@@ -474,6 +510,9 @@ option. The ones you'll touch:
 | `notify`, `notify_idle` | client: tmux pop-ups for new questions and dialogs (default on; `n` toggles it), and for an agent finishing its turn (default off) |
 | `notify_style` | client: `"popup"` (default), a box over the panes until you press a key; `"status"`, one line in the status bar for 8 s |
 | `[hub] recap`, `ledger`, `recap_days` | hub only: the tracker on/off, the ledger on/off, and how recent a session must be (defaults true, true, 7) |
+| `[hub] usage_url` | hub only: SAINT's `/usage/v1` endpoint for the local half of `ctx spend` (default: the lowest-priority seat's box, its usage API; `""` turns local numbers off) |
+| `[hub] local_price_as` | hub only: the model the "if this had run in the cloud" figure prices local tokens at (default `claude-opus-5-5`) |
+| `[hub.prices]` | hub only: rates per million tokens (in / out / cache write / cache read) that override or extend the built-in Bedrock table, one table per model |
 | `[[seats]]` `url`, `model`, `api_key`, `priority`, `disable_thinking` | hub only: the tracker LLM (see 6. The tracker) |
 | `CTXSWITCH_SEAT_URL`, `_MODEL`, `_API_KEY` | env, hub: the tracker LLM when there's no config file (the docker hub) |
 | `CTXSWITCH_HUB_TOKEN` | env, docker hub: the shared token (`deploy/.env`) |
