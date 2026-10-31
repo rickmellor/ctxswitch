@@ -237,7 +237,7 @@ def test_spend_lines_reads_a_report_as_the_screen_shows_it():
     assert "7 days    $9.48   cloud 9.00" in text and "30 days   —" in text
     assert "local 0.48 energy · 17.3M tok · 342 requests" in text
     assert "POOL JOBS (1)" in text and "sa-20261030-1412-j1" in text and "OAuth login" in text
-    assert "72 turns" in text and "7m" in text and "900k tok" in text and "~0.03" in text and "if-cloud 1.40" in text
+    assert "72 turns" in text and "7m" in text and "900k tok" in text and "~$0.03 local" in text and "$1.40 if cloud" in text
     assert "SESSIONS (1)" in text and "$1.23" in text and P1 in text
     assert "rates: config" in text and "bedrock-spend" in text and "energy estimate from SAINT" in text
     down = rep(0.0, [], [], [], local={"energy_usd": None, "if_cloud_usd": None, "tokens": 0, "requests": 0,
