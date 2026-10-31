@@ -395,7 +395,6 @@ def test_a_jobs_cost_mark_prefers_its_local_estimate_and_shows_zero_as_zero():
 
 async def test_a_nested_job_row_has_no_waiting_line_or_marks(tmp_path, monkeypatch):
     """A pool job under its parent is one line: its asks and unseen count belong to the job, not to you."""
-    from types import SimpleNamespace
     from ctxswitch.client.tui import app as tui
     from ctxswitch.common.config import Config
     parent = {"key": "laptop/claude/p", "host_id": "laptop", "harness": "claude", "live_status": "busy", "status_since": "2026-10-30T10:00:00Z",

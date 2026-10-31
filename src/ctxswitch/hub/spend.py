@@ -17,7 +17,7 @@ Every fetch has a 5 s timeout and a 60 s cache; an unreachable SAINT costs the r
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 TOKEN_TYPES = ("input", "output", "cache_read", "cache_creation")
@@ -51,8 +51,7 @@ def norm_model(s: str) -> str:
             break
     if m.endswith(":0"):                             # "…-v1:0" (Bedrock's inference-profile suffix)
         m = m[:-2]
-    if m.endswith("-v1"):
-        m = m[:-3]
+    m = m.removesuffix("-v1")
     return m
 
 

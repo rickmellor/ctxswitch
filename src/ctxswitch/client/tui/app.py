@@ -118,16 +118,16 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
          [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
          [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
           ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work"),
-          ("↳", "dim", "a pool job launched by the session above (indented under it): its brief, how it ended, its "
-                       "turns. It has no number: Alt+N never opens one."),
+          ("↳", "dim", ("a pool job launched by the session above (indented under it): its brief, how it ended, its "
+                        "turns. It has no number: Alt+N never opens one.")),
           ("~$0.03", "dim", "a job's estimated local cost (energy); the Spend screen ($) has the rest")]),
-        ("WAITING ON YOU", [("└", "yellow", "under a waiting row: what it's waiting on — the question it asked, or the "
-                                            "dialog it has up"),
+        ("WAITING ON YOU", [("└", "yellow", ("under a waiting row: what it's waiting on — the question it asked, or the "
+                                             "dialog it has up")),
                             ("2 waiting", "bold yellow", "the header: how many sessions wait on you (and how many are live)")]),
-        ("SPEND", [("today $4.12", "dim", "the header's second line: what has gone since midnight here — cloud (with the "
-                                          "accounts in brackets), and SAINT's local energy estimate (— when it has none)"),
-                   ("cloud $1.23", "dim", "the detail pane's SPEND section: what this session's own turns cost at Bedrock "
-                                          "on-demand rates (`bedrock-spend` has the bill)"),
+        ("SPEND", [("today $4.12", "dim", ("the header's second line: what has gone since midnight here — cloud (with the "
+                                           "accounts in brackets), and SAINT's local energy estimate (— when it has none)")),
+                   ("cloud $1.23", "dim", ("the detail pane's SPEND section: what this session's own turns cost at Bedrock "
+                                           "on-demand rates (`bedrock-spend` has the bill)")),
                    ("local $0.48", "dim", "what it ran on the local box, estimated from its energy use (SAINT)"),
                    ("$", "bold cyan", "the Spend screen: today, 7 and 30 days by account and model, then every pool job")]),
         ("MESSAGES", [(fmt.MSG_GLYPH[k], MSG_STYLE.get(k, "dim"), MSG_HELP[k]) for k in fmt.MSG_GLYPH]),

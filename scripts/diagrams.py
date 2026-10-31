@@ -171,8 +171,8 @@ def row() -> None:
 
     items = [(col, t, c, name, what) for col, t, c, _, name, what in segs] + [
         (2, "└", YELLOW, "what it's waiting on", "under a waiting row: its question, or the dialog it has up"),
-        (2, "↳", ORANGE, "pool job", "a job this session launched (saint-agent), nested under it with its "
-                                     "brief, how it ended and its local cost estimate")]
+        (2, "↳", ORANGE, "pool job", ("a job this session launched (saint-agent), nested under it with its "
+                                      "brief, how it ended and its local cost estimate"))]
     for n, (col, t, c, name, what) in enumerate(items, 1):
         c = TEXT if c == DIM else c
         if n <= len(segs):
