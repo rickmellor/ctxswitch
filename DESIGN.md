@@ -130,6 +130,20 @@ Greenfield repo: `~/repos/ctxswitch`.
   number (Alt+N) only moves when one above leaves; a leaver that comes back joins last. Pop-ups still read the hub's
   attention list (unchanged).
 - 2026-10-28: seat calls use `chat_template_kwargs.enable_thinking=false` + `response_format` json_schema (see spikes/SPIKES.md).
+- 2026-10-30 (spend + pool jobs): a `saint-agent` worker is a child of the session that launched it, linked from the
+  saint-agent ledger (`~/.claude/saint-agent-ledger.jsonl`: a `start` line with the worker's session id and the parent's
+  `CLAUDE_CODE_SESSION_ID`, then an `end` line) rather than from SAINT headers alone, which carry tokens but not who
+  launched what. Older ledger lines have no session id and are matched by work directory and time (the child
+  transcript's cwd == workdir, its first entry inside the job's window). Spend is deterministic: token counts read from
+  the transcripts (Claude Code writes `usage` on every reply; pi records usage and, for cloud providers, its own cost,
+  which wins) × a rate table in USD per million — the built-in table is the Bedrock on-demand rates ccwb billed on
+  2026-10-30, `[hub.prices]` overrides or adds — and every figure is labelled an estimate, not the bill (`bedrock-spend`
+  has the real Bedrock bill; a Max subscription is flat-rate, so its figure is "what this would cost at API rates"). A
+  model with no rate contributes tokens, never $0. Local spend is SAINT's energy estimate from `/usage/v1` plus an
+  "if this had run in the cloud" upper bound (the window's tokens priced at `[hub] local_price_as`, default
+  `claude-opus-5-5`); per job, the estimate is the job's tokens × the window's energy per token, and a job's own turns are local
+  whatever model the worker reports (never cloud dollars). The waiting line under a row moved to `└`, so `↳` means
+  "subordinate" everywhere.
 
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is
