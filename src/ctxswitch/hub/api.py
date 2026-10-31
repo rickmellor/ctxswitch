@@ -326,9 +326,11 @@ class Hub:
 
     async def health(self, req: Request) -> Response:
         auth = self._authorized(req.headers)                 # unauthenticated callers don't learn the seat
+        budgets = ({a: {k: b.get(k) for k in ("remaining_usd", "pct_used", "as_of")}
+                    for a, b in self.store.budgets().items()} if auth else None)
         return JSONResponse({"ok": True, "change": self.store.change, "hosts": len(self.store.hosts()),
                              "auth": auth, "recap": self.recap_status if auth else None,
-                             "ledger": self.ledger_status if auth else None})
+                             "ledger": self.ledger_status if auth else None, "budget": budgets})
 
     async def ws(self, ws: WebSocket) -> None:
         if not self._authorized(ws.headers) and ws.query_params.get("token") != self.token:

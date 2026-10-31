@@ -35,6 +35,9 @@ pi_roots = ["~/.pi/agent/sessions"]
 backfill_days = 30
 accept_messages = true                # deliver `m` / `ctx send` messages into this host's live sessions
 max_text_chars = 4000
+# budget_cmd = "bedrock-spend"          # the monthly budget, read with this host's ccwb token; "" disables it (a host without the tool runs no poll)
+# budget_every = 900                    # seconds between polls
+# budget_account = "bedrock"            # which [[claude_profiles]] account this budget belongs to
 
 # Hub only: the tracker LLM (recaps + ledger), an OpenAI-compatible /chat/completions endpoint with json_schema
 # response_format. The hub uses the seat with the lowest priority; calls run one at a time. Thinking must be off on

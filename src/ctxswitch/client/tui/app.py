@@ -75,7 +75,8 @@ MSG_HELP = {"queued": "queued: waiting for its host to pick it up", "sent": "sen
 CLAIM_HELP = {"done": "the agent says it's done", "tests_pass": "it says tests pass", "tests_fail": "it says tests fail",
               "blocked": "it says it's blocked"}
 SUMMARY_TIP = ("The host filter (h), how many sessions are live, and how many are waiting on you, and what today has cost"
-               " ($ for the rest). A waiting session's row says what it's waiting on (└); ○ idle ones finished their turn:"
+               " ($ for the rest), with what's left of the month's budget (the line turns yellow as it runs down, red"
+               " near the limit). A waiting session's row says what it's waiting on (└); ○ idle ones finished their turn:"
                " your move. A pool job it launched is nested under it (↳), with its local cost estimate.")
 
 
@@ -101,9 +102,10 @@ def summary_line(sessions: list[dict], host: str | None) -> Text:
 
 def summary_text(sessions: list[dict], host: str | None, spend: dict | None = None, width: int = 10_000) -> Text:
     """The header's two lines: who's on the board, and what today has cost (fitted to the pane: the per-account
-    brackets are the first thing to go)."""
+    brackets are the first thing to go, the month's budget tag next). The second line goes yellow as the month's
+    budget runs down and red once it's nearly gone."""
     t = summary_line(sessions, host)
-    t.append("\n" + fmt.header_spend(spend, width), style="dim")
+    t.append("\n" + fmt.header_spend(spend, width), style=fmt.budget_style((spend or {}).get("budget")))
     return t
 
 

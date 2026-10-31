@@ -66,9 +66,10 @@ def read_budget(cmd: str, account: str, run=subprocess.run) -> dict[str, Any] | 
             p = run(argv, capture_output=True, text=True, timeout=60, env=env)
         except Exception as e:                          # noqa: BLE001 - a missing tool, a timeout, anything
             _budget_once(f"{what}: {e.__class__.__name__}"); return None
-        if isinstance(p, int) or int(getattr(p, "returncode", 0) or 0):
-            _budget_once(f"{what}: exit {getattr(p, 'returncode', p)}"); return None
-        out = getattr(p, "stdout", "") or ""
+        code = p if isinstance(p, int) else int(getattr(p, "returncode", 0) or 0)
+        if code:
+            _budget_once(f"{what}: exit {code}"); return None
+        out = "" if isinstance(p, int) else (getattr(p, "stdout", "") or "")
         try:
             d = json.loads(out.decode() if isinstance(out, bytes) else out)
         except (ValueError, TypeError):
@@ -77,10 +78,13 @@ def read_budget(cmd: str, account: str, run=subprocess.run) -> dict[str, Any] | 
             _budget_once(f"{what}: not a JSON object"); return None
         docs.append(d)
     quota, bill = docs
-    if not isinstance(bill.get("cost_usd"), (int, float)) or not isinstance(quota.get("monthly_cost_limit_usd"), (int, float)):
+    if not isinstance(bill.get("cost_usd"), (int, float)) or "monthly_cost_limit_usd" not in quota:
         _budget_once("no cost_usd / monthly_cost_limit_usd in its output")
         return None
-    limit, spent = float(quota["monthly_cost_limit_usd"]), float(bill["cost_usd"])
+    # a null limit is a real answer (no monthly cap set): the month's bill still shows, with nothing to compare it to
+    lim = quota["monthly_cost_limit_usd"]
+    limit = float(lim) if isinstance(lim, (int, float)) else None
+    spent = float(bill["cost_usd"])
     return {"account": account, "month": bill.get("month") or "", "limit_usd": limit, "spent_usd": spent,
             "remaining_usd": round(max(0.0, limit - spent), 6) if limit else None,
             "pct_used": round(spent / limit * 100, 1) if limit else None,

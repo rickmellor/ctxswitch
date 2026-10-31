@@ -224,18 +224,62 @@ def spend_line(s: dict, children: list | None = None) -> str:
     return " · ".join(parts)
 
 
+def budget_line(b: dict, now: datetime | None = None) -> str:
+    """One account's month against its real limit, as its own quota API states it: the bill, how far in, what's left,
+    how long the month has, what happens at the limit, and how old the number is."""
+    now = now or datetime.now(timezone.utc)
+    acct, cur = b.get("account") or "?", b.get("currency") or "USD"
+    spent, limit, left = b.get("spent_usd"), b.get("limit_usd"), b.get("remaining_usd")
+    pct = b.get("pct_used")
+    head = f"{acct}: {money(spent)} of {money(limit)} this month" + (f" ({pct:.1f}% used)" if pct is not None else "")
+    as_of = parse_iso(b.get("as_of"))
+    seen = f"as of {age(b.get('as_of'), now)} ago" + (" (stale)" if as_of and (now - as_of).total_seconds() > 2 * 3600 else "")
+    parts = [head, f"{money(left)} left" if left is not None else "no limit set", _month_left(b.get("expires_at"), now),
+             "blocks at the limit" if b.get("enforcement") == "block" else "alerts at the limit", seen]
+    return " · ".join(p for p in parts if p) + (f" ({cur})" if cur != "USD" else "")
+
+
+def _month_left(expires_at: str | None, now: datetime) -> str:
+    """How much month the limit counts: "3 days left", or "ends today" inside a day."""
+    d = parse_iso(expires_at)
+    if d is None:
+        return ""
+    days = (d - now).days if d > now else 0
+    return "ends today" if days < 1 else f"{days} day{'s' if days != 1 else ''} left"
+
+
+def budget_style(budgets: dict | None) -> str:
+    """How the header's second line is painted: the worst account decides it — dim under 75% used, yellow from 75,
+    red from 90 (the limit is a wall there, so the board should look like one)."""
+    pct = max([b.get("pct_used") or 0 for b in (budgets or {}).values()], default=0)
+    return "bold red" if pct >= 90 else "yellow" if pct >= 75 else "dim"
+
+
+def header_budget(budgets: dict | None) -> str:
+    """The header's short budget tag — the account with the least left, whole dollars: " · $244 left". "" when no
+    host has pushed a budget."""
+    left = [(b.get("remaining_usd"), b) for b in (budgets or {}).values() if b.get("remaining_usd") is not None]
+    if not left:
+        return ""
+    return f" · ${int(min(left, key=lambda x: x[0])[0])} left"
+
+
 def header_spend(rep: dict | None, width: int = 10_000) -> str:
     """The header's second line: what today has cost, cloud and local, the accounts in brackets when there's more than
-    one and they fit in ``width`` (the pane's); the brackets go first, so the total, cloud and local always show."""
+    one and they fit in ``width`` (the pane's); the brackets go first, then the month's budget tag, so the total,
+    cloud and local always show."""
     if not rep:
         return "today —"
     cloud, loc = rep.get("cloud") or {}, rep.get("local") or {}
     head, tail = f"today {money(rep.get('total_usd'))} · cloud {_num(cloud.get('usd'))}", f" · local {_num(loc.get('energy_usd'))}"
     accts = cloud.get("by_account") or []
     brackets = " (" + " · ".join(f"{a.get('account') or 'default'} {_num(a.get('usd'))}" for a in accts) + ")" if len(accts) > 1 else ""
-    if brackets and len(head) + len(brackets) + len(tail) <= width:
-        return head + brackets + tail
-    return head + tail
+    tag = header_budget(rep.get("budget"))
+    if len(head) + len(tail) + len(tag) > width:            # too tight even with nothing extra: the month's tag goes too
+        return head + tail
+    if brackets and len(head) + len(brackets) + len(tail) + len(tag) <= width:
+        return head + brackets + tail + tag
+    return head + tail + tag
 
 
 def pool_job_lines(children: list, n: int = 6) -> list[str]:
@@ -265,6 +309,12 @@ def spend_lines(reports: dict[str, dict | None]) -> list[str]:
         models = [m for m in cloud.get("by_model") or [] if not m.get("priced", True)]
         if models:
             out.append(f"{'':<9} unpriced: " + " · ".join(f"{m['model']} {tokens_short(m.get('tokens'))} tok" for m in models))
+        out.append("")
+    budgets = next((r.get("budget") or {} for r in reports.values() if r and r.get("budget")), {})
+    if budgets:                                        # the real bill and limit, from the account's own quota API
+        out.append("BUDGET")
+        now = datetime.now(timezone.utc)
+        out += [f"  {budget_line(b, now)}" for _, b in sorted(budgets.items())]
         out.append("")
     wide = max(reports.values(), key=lambda r: len((r or {}).get("jobs") or []), default=None) or {}
     jobs = wide.get("jobs") or []
