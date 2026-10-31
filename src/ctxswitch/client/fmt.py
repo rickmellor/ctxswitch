@@ -269,10 +269,11 @@ def spend_lines(reports: dict[str, dict | None]) -> list[str]:
     wide = max(reports.values(), key=lambda r: len((r or {}).get("jobs") or []), default=None) or {}
     jobs = wide.get("jobs") or []
     out.append(f"POOL JOBS ({len(jobs)})" if jobs else "POOL JOBS")
-    for j in jobs[:15]:
-        out.append(f"  {j.get('job','?'):<26} {one_line(j.get('parent_title'), 20):<20} {one_line(j.get('status') or '?', 14):<14}"
-                   f" {j.get('turns') if j.get('turns') is not None else '-':>4} turns {_dur(j.get('dur_s')):>6}"
-                   f"  {tokens_short(j.get('tokens')):>7} tok ~{_num(j.get('local_usd'))} if-cloud {_num(j.get('if_cloud_usd'))}")
+    for j in jobs[:15]:                              # two lines each: who and how it ended, then what it cost (a 60-column pane)
+        out.append(f"  {j.get('job', '?')}  {one_line(j.get('parent_title'), 24)}  {one_line(j.get('status') or '?', 22)}".rstrip())
+        turns = j.get("turns") if j.get("turns") is not None else "-"
+        out.append(f"      {turns} turns · {_dur(j.get('dur_s'))} · {tokens_short(j.get('tokens'))} tok · "
+                   f"~{money(j.get('local_usd'))} local · {money(j.get('if_cloud_usd'))} if cloud")
     wide2 = max(reports.values(), key=lambda r: len((r or {}).get("sessions") or []), default=None) or {}
     sess = wide2.get("sessions") or []
     out.append(f"\nSESSIONS ({len(sess)})" if sess else "\nSESSIONS")
