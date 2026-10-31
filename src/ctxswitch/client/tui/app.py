@@ -3,9 +3,11 @@
 Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent sessions), stacked vertically:
 
   ┌ ctx · <host filter> · N live · N waiting on you ┐
+  │ today $4.12 · cloud 3.64 (bedrock 3.1 · max .5) · local .48 │
   ├ sessions, numbered, in the order they joined ─┤
   │ 1 ◐  3m cc·laptop ctxswitch@main  title…      │
-  │   ↳ what it's waiting on                      │
+  │   └ what it's waiting on                      │
+  │   ↳ ◆ cc·laptop job1.md · ok · 72 turns ~$0.03│
   ├ ledger of the selected session ──────────────┤
   │ state / open asks / last exchange / decisions│
   └──────────────────────────────────────────────┘
@@ -24,7 +26,7 @@ import asyncio
 import json
 import os
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from rich.text import Text
 from textual import work
@@ -72,8 +74,9 @@ MSG_HELP = {"queued": "queued: waiting for its host to pick it up", "sent": "sen
             "failed": "failed: the reason is shown; send it again", "cancelled": "cancelled"}
 CLAIM_HELP = {"done": "the agent says it's done", "tests_pass": "it says tests pass", "tests_fail": "it says tests fail",
               "blocked": "it says it's blocked"}
-SUMMARY_TIP = ("The host filter (h), how many sessions are live, and how many are waiting on you. A waiting session's row "
-               "says what it's waiting on (↳); ○ idle ones finished their turn: your move.")
+SUMMARY_TIP = ("The host filter (h), how many sessions are live, and how many are waiting on you, and what today has cost"
+               " ($ for the rest). A waiting session's row says what it's waiting on (└); ○ idle ones finished their turn:"
+               " your move. A pool job it launched is nested under it (↳), with its local cost estimate.")
 
 
 def waiting_on(s: dict) -> str | None:
@@ -96,6 +99,13 @@ def summary_line(sessions: list[dict], host: str | None) -> Text:
     return t
 
 
+def summary_text(sessions: list[dict], host: str | None, spend: dict | None = None) -> Text:
+    """The header's two lines: who's on the board, and what today has cost."""
+    t = summary_line(sessions, host)
+    t.append("\n" + fmt.header_spend(spend), style="dim")
+    return t
+
+
 def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
     """Every glyph on the board as (section, [(glyph, style, words)]), from the same tables the board draws with."""
     return [
@@ -106,9 +116,19 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
                  ("3m", "dim", "time in this state (live), or since it was last active (ended)")] +
          [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
          [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
-          ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work")]),
-        ("WAITING ON YOU", [("↳", "yellow", "under a waiting row: the question it asked, or the dialog it has up"),
+          ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work"),
+          ("↳", "dim", "a pool job launched by the session above (indented under it): its brief, how it ended, its "
+                       "turns. It has no number: Alt+N never opens one."),
+          ("~$0.03", "dim", "a job's estimated local cost (energy); the Spend screen ($) has the rest")]),
+        ("WAITING ON YOU", [("└", "yellow", "under a waiting row: what it's waiting on — the question it asked, or the "
+                                            "dialog it has up"),
                             ("2 waiting", "bold yellow", "the header: how many sessions wait on you (and how many are live)")]),
+        ("SPEND", [("today $4.12", "dim", "the header's second line: what has gone since midnight here — cloud (with the "
+                                          "accounts in brackets), and SAINT's local energy estimate (— when it has none)"),
+                   ("cloud $1.23", "dim", "the detail pane's SPEND section: what this session's own turns cost at Bedrock "
+                                          "on-demand rates (`bedrock-spend` has the bill)"),
+                   ("local $0.48", "dim", "what it ran on the local box, estimated from its energy use (SAINT)"),
+                   ("$", "bold cyan", "the Spend screen: today, 7 and 30 days by account and model, then every pool job")]),
         ("MESSAGES", [(fmt.MSG_GLYPH[k], MSG_STYLE.get(k, "dim"), MSG_HELP[k]) for k in fmt.MSG_GLYPH]),
         ("AGENT SAYS", [(fmt.CLAIM_GLYPH[k], CLAIM_STYLE.get(k, ""), CLAIM_HELP[k]) for k in CLAIM_HELP]),
     ]
@@ -159,14 +179,19 @@ HELP_KEYS = [
     (("v",), "v", "mark the selected session viewed (opening it does too, on any machine)"),
     (("r",), "r", "refresh now (the board also updates live)"),
     (("p",), "p", "pop-ups off / on for this run"),
+    (("dollar_sign",), "$", "spend: today's cost, cloud and local, per account, per pool job (Esc, $ or q closes it)"),
     (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
     (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
     (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y"),
 ]
 HELP_TIPS = [
-    ("Where things are", ("The header: how many sessions are live and how many wait on you. The list: every session, "
-     "in the order it joined (so its number stays put); a waiting one says what it's waiting on (↳). Below it: the "
-     "selected session's detail (recap, what you told it, its questions and answers, messages, the last exchange).")),
+    ("Where things are", ("The header: how many sessions are live, how many wait on you, and what today has cost. The "
+     "list: every session, in the order it joined (so its number stays put); a waiting one says what it's waiting on "
+     "(└), and the pool jobs it launched (saint-agent) sit nested under it (↳). Below it: the selected session's detail "
+     "(recap, what you told it, its questions and answers, messages, what it cost, the last exchange).")),
+    ("Pool jobs", ("A session started with `saint-agent` records its job id, the session that launched it, its brief, "
+     "how it ended and the tokens it used. The board nests it under that session with an estimate of what it cost to "
+     "run here; `$` lists the jobs of the last 30 days with what they would have cost in the cloud.")),
     ("Sending a message", ("m types a message into the session as a new prompt: now if it's live, else when it next runs. Its "
      "state shows under MESSAGES (… → ✓ ↩ ✗). `ctx send --cancel <id>` withdraws a queued one.")),
     ("Answering", ("a answers a question the agent asked in its reply. A dialog (permission, plan, AskUserQuestion, pi "
@@ -249,7 +274,7 @@ class Board(DataTable):
         self.tooltip = self.app.tip_for(key) if key else None
 
 
-KEY_NAMES = {"enter": "↵", "slash": "/", "question_mark": "?"}
+KEY_NAMES = {"enter": "↵", "slash": "/", "question_mark": "?", "dollar_sign": "$"}
 
 
 def key_bar(bindings, width: int) -> Text:
@@ -356,9 +381,59 @@ class Help(Screen):
         self.app.pop_screen()
 
 
+def spend_windows(client, host: str | None) -> dict[str, dict | None]:
+    """Today, 7 days and 30 days of /v1/spend, in one call from a worker thread: a window that fails is None (an
+    older hub has no such route at all: all three are)."""
+    now = datetime.now(timezone.utc)
+    local = now.astimezone()
+    out: dict[str, dict | None] = {}
+    for title, frm in (("Today", local.replace(hour=0, minute=0, second=0, microsecond=0)),
+                       ("7 days", now - timedelta(days=7)), ("30 days", now - timedelta(days=30))):
+        try:
+            out[title] = client.spend(frm.isoformat(), now.isoformat(), host)
+        except Exception:                               # noqa: BLE001 - the screen says "—" for what has no report
+            out[title] = None
+    return out
+
+
+class SpendScreen(Screen):
+    """$ : what things cost — three windows by account and model, then the pool jobs and dearest sessions. Esc (or
+    $ or q) closes it. The reports arrive from a worker thread; until then it says it's loading."""
+    BINDINGS = [Binding("escape", "close", show=False), Binding("dollar_sign", "close", show=False),
+                Binding("q", "close", show=False)]
+    DEFAULT_CSS = """
+    SpendScreen > VerticalScroll { padding: 0 1; }
+    """
+
+    def __init__(self, reports: dict[str, dict | None] | None = None):
+        super().__init__()
+        self.reports = reports
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="spend"):
+            yield Static(self.body(), id="spend_text")
+
+    def body(self) -> Text:
+        if self.reports is None:
+            return Text("loading…", style="dim")
+        t = Text.assemble(("spend", "bold"), ("   Esc closes\n", "dim"))
+        t.append("\n".join(fmt.spend_lines(self.reports)))
+        return t
+
+    def loaded(self, reports: dict[str, dict | None]) -> None:
+        self.reports = reports
+        try:
+            self.query_one("#spend_text", Static).update(self.body())
+        except Exception:                               # noqa: BLE001 - closed while the thread was out
+            pass
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+
 class CtxApp(App):
     CSS = """
-    #summary { height: 1; padding: 0 1; background: $panel; }
+    #summary { height: 2; padding: 0 1; background: $panel; }
     #body { height: 1fr; }
     #table { height: auto; max-height: 50%; }
     #detail { height: 1fr; border-top: solid $surface; padding: 0 1; }
@@ -374,7 +449,8 @@ class CtxApp(App):
         Binding("k", "end_session", "end"), Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
-        Binding("p", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"), Binding("question_mark", "help", "help"),
+        Binding("p", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"),
+        Binding("dollar_sign", "spend", "spend"), Binding("question_mark", "help", "help"),
         Binding("W", "message_work", "msg work", show=False),
         Binding("less_than_sign", "wider", show=False), Binding("greater_than_sign", "narrower", show=False),   # the edge moves the arrow's way
         Binding("escape", "clear_filter", show=False),
@@ -409,6 +485,7 @@ class CtxApp(App):
         self.box = None                              # our open tmux popup box (a display-popup process), if any
         self.attention: list[dict] = []              # the latest attention list, for the pop-up settle timer
         self.settling = False
+        self.spend: dict | None = None               # /v1/spend since local midnight; None = the hub can't say
 
     def compose(self) -> ComposeResult:
         yield Static("", id="summary")
@@ -438,6 +515,7 @@ class CtxApp(App):
             data = self.client.sessions(self.host_filter, live_only=False)
             att = self.client.attention(self.host_filter)["items"]
             hosts = [h["host_id"] for h in self.client.hosts()]
+            spend = self.today_spend()                  # never raises: an older hub simply has no spend line
         except Exception as e:                          # noqa: BLE001
             self.call_from_thread(self.sub_title_set, f"hub unreachable: {e.__class__.__name__}")
             return
@@ -451,18 +529,30 @@ class CtxApp(App):
             self.visible_key = None
             self.on_screen = set()
             self.reach = {}
-        self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"])
+        self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"], spend)
+
+    def today_spend(self) -> dict | None:
+        """What has gone since midnight here, for the header. A hub without /v1/spend (or a SAINT that's down) just
+        leaves the header at \"today —\"."""
+        now = datetime.now(timezone.utc)
+        try:
+            return self.client.spend(now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
+                                     now.isoformat(), self.host_filter)
+        except Exception:                               # noqa: BLE001 - cost is never worth breaking a refresh for
+            return None
 
     def sub_title_set(self, s: str) -> None:
         self.sub_title = s
 
-    def apply_data(self, sessions: list[dict], attention: list[dict], hosts: list[str], change: int) -> None:
+    def apply_data(self, sessions: list[dict], attention: list[dict], hosts: list[str], change: int,
+                   spend: dict | None = None) -> None:
         self.change = change
         self.hosts = hosts
         self.sessions = sessions
+        self.spend = spend
         live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
         self.sub_title = f"{self.host_filter or 'all'} · {live} live"
-        self.query_one("#summary", Static).update(summary_line(sessions, self.host_filter))
+        self.query_one("#summary", Static).update(summary_text(sessions, self.host_filter, spend))
         self.popup(attention)
         self.render_table()
         self.render_detail()
@@ -597,6 +687,26 @@ class CtxApp(App):
     def _label_width(self) -> int:
         return max(16, self.size.width - 17)          # number + glyph + age columns + paddings + scrollbar
 
+    def _nest(self, visible: list[dict]) -> tuple[list[dict], set[str]]:
+        """The display order: each top-level session followed by the pool jobs it launched (by ``started_at``), and
+        the keys shown that way. A child whose parent isn't on the list (filtered out, ended, unknown) is top level
+        like any other session; only one level nests, so a grandchild stays at top level too."""
+        by_key = {s["key"]: s for s in visible}
+        kids: dict[str, list[dict]] = {}
+        nested: set[str] = set()
+        top: list[dict] = []
+        for s in visible:
+            p = fmt.link(s, "parent_key")
+            if p in by_key and p != s["key"] and not fmt.link(by_key[p], "parent_key"):
+                kids.setdefault(p, []).append(s); nested.add(s["key"])
+            else:
+                top.append(s)
+        out: list[dict] = []
+        for s in top:
+            out.append(s)
+            out += sorted(kids.get(s["key"], []), key=lambda c: c.get("started_at") or "")
+        return out, nested
+
     def render_table(self) -> None:
         t = self.query_one("#table", DataTable)
         now = datetime.now(timezone.utc)
@@ -618,6 +728,7 @@ class CtxApp(App):
                     head.append(f" · {' '.join(hosts)}", style="dim")
                 t.add_row(Text(""), Text("▾", style="dim"), Text(""), head, key=f"ws:{ws}"); rows += 1
                 visible += members
+        visible, nested = self._nest(visible)            # pool jobs sit under the session that launched them
         for s in visible:
             st = fmt.session_state(s)
             last = s.get("last_turn") or {}
@@ -626,18 +737,22 @@ class CtxApp(App):
             style = STATE_STYLE.get(st, "")
             harness = fmt.harness_label(s, self.cfg.claude_profiles)
             where = harness if self.host_filter else f"{harness}·{s.get('host_id', '?')}"   # a host filter implies the host
+            kid = s["key"] in nested                     # nested under the session that launched it
+            job = kid or bool(fmt.link(s, "job") or fmt.link(s, "job_brief"))
             label = Text()
             reach = self.reach.get(s["key"], "")
+            if kid:                                      # a pool job: indented under its parent row
+                label.append("  ↳ ", style="dim")
             if s["key"] == self.visible_key:
                 label.append("▶ ", style="bold")
             elif reach:
                 label.append(tmux.REACH_GLYPH[reach] + " ", style=REACH_STYLE.get(reach, "dim"))
             if reach in ("foreign", "remote"):
                 style = (style + " dim").strip()          # can't be opened from here
-            ask_mark = f" ◐{fmt.age(asks[0].get('asked_at'), now)}" if asks else ""
-            seen_mark = f" +{s['unseen']}" if s.get("unseen") else ""   # exchanges since you last looked
+            ask_mark = f" ◐{fmt.age(asks[0].get('asked_at'), now)}" if asks and not kid else ""
+            seen_mark = f" +{s['unseen']}" if s.get("unseen") and not kid else ""   # exchanges since you last looked
             # the title keeps 8 columns and the row never overflows (a scrollbar would hide the last row): the repo
-            # gives way first, then the host, then the +N, then the ◐ age (the age column and the ↳ line say it too)
+            # gives way first, then the host, then the +N, then the ◐ age (the age column and the └ line say it too)
             fixed = width - len(label.plain) - 1 - 8      # after the glyph, the space after `where` and the title's 8
             if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0 and where != harness:
                 where = harness
@@ -646,19 +761,26 @@ class CtxApp(App):
             if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
                 ask_mark = ""
             label.append(f"{where} ", style="dim")
-            repo_w = min(18 if width >= 40 else 10 if width >= 28 else 0,
-                         width - len(label.plain) - len(ask_mark) - len(seen_mark) - 8 - 1)
-            if repo_w >= 4:
-                label.append(fmt.one_line(fmt.repo_label(s), repo_w) + " ", style="dim" if st in ("ended", "unknown") else "")
-            rest = width - len(label.plain) - len(ask_mark) - len(seen_mark)
-            label.append(fmt.one_line(fmt.display_title(s) or "(no prompt yet)", max(8, rest)), style=style)
-            label.append(ask_mark, style="bold yellow"); label.append(seen_mark, style="bold cyan")
-            self.slots.append(s["key"])
+            if job:                                      # a job says what it ran, not the session's noisy title
+                label.append(fmt.one_line(fmt.job_label(s) or fmt.display_title(s) or "(no prompt yet)",
+                                          max(8, width - len(label.plain) - len(fmt.cost_mark(s)))), style=style)
+                label.append(fmt.cost_mark(s), style="dim")
+            else:
+                repo_w = min(18 if width >= 40 else 10 if width >= 28 else 0,
+                             width - len(label.plain) - len(ask_mark) - len(seen_mark) - 8 - 1)
+                if repo_w >= 4:
+                    label.append(fmt.one_line(fmt.repo_label(s), repo_w) + " ",
+                                 style="dim" if st in ("ended", "unknown") else "")
+                rest = width - len(label.plain) - len(ask_mark) - len(seen_mark)
+                label.append(fmt.one_line(fmt.display_title(s) or "(no prompt yet)", max(8, rest)), style=style)
+                label.append(ask_mark, style="bold yellow"); label.append(seen_mark, style="bold cyan")
+            on = None if kid else waiting_on(s)
+            if on:                                       # what it's waiting on, under its own row
+                label.append("\n└ " + fmt.one_line(on, max(8, width - 2)), style="yellow")
+            if not kid:
+                self.slots.append(s["key"])              # Alt+N is for real sessions, never a pool job
             n = len(self.slots)
-            on = waiting_on(s)
-            if on:                                     # what it's waiting on, under its own row
-                label.append("\n↳ " + fmt.one_line(on, max(8, width - 2)), style="yellow")
-            t.add_row(Text(str(n) if n <= SLOTS else "", style="dim"), Text(fmt.state_glyph(s), style=style),
+            t.add_row(Text(str(n) if n <= SLOTS and not kid else "", style="dim"), Text(fmt.state_glyph(s), style=style),
                       Text(f"{fmt.age(when, now):>4} ", style="dim"), label, key=s["key"], height=2 if on else 1)
             rows += 1 if on else 0
             rows += 1
@@ -694,10 +816,11 @@ class CtxApp(App):
             self.call_from_thread(self.render_group, key[3:]); return
         try:
             s = self.client.session(key, turns=8)
+            kids = self._kids(s) if s else []           # the pool jobs it launched (a hub with no links: [])
         except Exception:                               # noqa: BLE001
             return
         if s:
-            self.call_from_thread(self.render_detail, s)
+            self.call_from_thread(self.render_detail, s, kids)
 
     def render_group(self, ws: str) -> None:
         now = datetime.now(timezone.utc)
@@ -711,7 +834,23 @@ class CtxApp(App):
             t.append(f"  {fmt.age(s.get('status_since') or s.get('last_activity'), now)}\n", style="dim")
         self.query_one("#detail_text", Static).update(t)
 
-    def render_detail(self, s: dict | None = None) -> None:
+    def _kids(self, s: dict) -> list[dict]:
+        """The pool jobs ``s`` launched, by when they started: the ones on the board, else the hub's children_keys
+        (newest first, so re-sorted by their own started_at). A hub that stores no links says []. """
+        kids = [x for x in self.sessions if fmt.link(x, "parent_key") == s["key"]]
+        if kids:
+            return sorted(kids, key=lambda c: c.get("started_at") or "")
+        out = []
+        for k in s.get("children_keys") or []:
+            try:
+                c = self.client.session(k, turns=0)
+            except Exception:                           # noqa: BLE001 - the detail pane must still show the session
+                c = None
+            if c:
+                out.append(c)
+        return sorted(out, key=lambda c: c.get("started_at") or "")
+
+    def render_detail(self, s: dict | None = None, kids: list[dict] | None = None) -> None:
         w = self.query_one("#detail_text", Static)
         if s is None:
             if not self.selected:
@@ -739,6 +878,20 @@ class CtxApp(App):
         t.append(f"{s.get('cwd') or '-'}\n", style="dim")
         model = (s['meta'].get('model') or '').rsplit('/', 1)[-1]
         t.append(f"{model} {s['meta'].get('permission_mode') or ''}\n", style="dim")
+        kids = kids if kids is not None else self._kids(s)   # load_detail fetched them with the session
+        line = fmt.spend_line(s, kids or None)
+        if line or kids:
+            t.append("SPEND\n", style="bold")
+            t.append((line or f"{len(kids)} pool jobs") + "\n", style="dim")
+        if kids:
+            t.append("POOL JOBS\n", style="bold")
+            for j in kids[:6]:
+                t.append(f"↳ {fmt.one_line(fmt.job_label(j) or j.get('job') or '?', 110)}", style="dim")
+                t.append(f" {fmt.cost_mark(j).strip() or '—'}\n")
+            if len(kids) > 6:
+                t.append(f"… {len(kids) - 6} more\n", style="dim")
+        if line or kids:
+            t.append("\n")
         if s.get("purpose"):
             t.append("for: ", style="bold")
             t.append(s["purpose"] + "\n")
@@ -959,6 +1112,17 @@ class CtxApp(App):
 
     def action_help(self) -> None:
         self.push_screen(Help())
+
+    def action_spend(self) -> None:
+        """$: the Spend screen, "loading…" until the three windows come back from the hub."""
+        screen = SpendScreen()
+        self.push_screen(screen)
+        self.fetch_spend(screen)
+
+    @work(exclusive=True, group="spend", thread=True)
+    def fetch_spend(self, screen: SpendScreen) -> None:
+        reports = spend_windows(self.client, self.host_filter)
+        self.call_from_thread(screen.loaded, reports)
 
     def tip_for(self, key: str) -> str | None:
         if key.startswith("ws:"):

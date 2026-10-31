@@ -6,6 +6,7 @@
   ctx send --cancel <id>                 cancel a message that is still queued
   ctx reply <key-or-prefix> [text | -]   answer the session's open question (a message linked to it)
   ctx attention [--all]                  what needs the operator, oldest wait first
+  ctx spend [--days N] [--host H] [--json]   what things cost: cloud by account and model, local energy, pool jobs
   ctx hosts                              collectors seen by the hub
   ctx search <words> [--kind K] [--host H]   decisions, instructions, claims and your prompts, every session
   ctx mcp                                an MCP server on stdio (read-only) for agents: sessions, ledgers, search
@@ -19,11 +20,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import socket
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ctxswitch.common.schema import LIVE
@@ -78,7 +80,7 @@ def cmd_show(a) -> int:
     if not s:
         print("not found"); return 1
     now = datetime.now(timezone.utc)
-    print("\n".join(fmt.show_lines(s, a.turns, a.decisions, now)))
+    print("\n".join(fmt.show_lines(s, a.turns, a.decisions, now, children=_children(c, s))))
     if not a.no_mark:
         c.viewed(key, now.isoformat().replace("+00:00", "Z"))
     return 0
@@ -224,6 +226,19 @@ def cmd_attention(a) -> int:
     return 0
 
 
+def _children(c: HubClient, s: dict) -> list[dict]:
+    """The pool jobs a session launched, by when they started: an older hub (no children_keys) has none."""
+    out = []
+    for k in s.get("children_keys") or []:
+        try:
+            x = c.session(k, turns=0)
+        except Exception:                               # noqa: BLE001 - show the session either way
+            x = None
+        if x:
+            out.append(x)
+    return sorted(out, key=lambda x: x.get("started_at") or "")
+
+
 def cmd_search(a) -> int:
     from ctxswitch.client.mcp_server import Server
     print(Server(_client()).search(" ".join(a.words), a.kind, a.host, a.limit))
@@ -233,6 +248,34 @@ def cmd_search(a) -> int:
 def cmd_mcp(a) -> int:
     from ctxswitch.client.mcp_server import main as mcp_main
     return mcp_main()
+
+
+def cmd_spend(a) -> int:
+    """What things cost: today, 7 days and 30 days, or one window of ``--days N``. The same as the board's $ screen."""
+    c = _client()
+    now = datetime.now(timezone.utc)
+    host = a.host or None
+    one = lambda frm: _one(c, frm, now, host)
+    if a.days is not None:
+        rep = one(now - timedelta(days=a.days))
+        if rep is None:
+            return 2
+        print(json.dumps(rep, indent=1) if a.json else "\n".join(fmt.spend_lines({f"{a.days} days": rep})))
+        return 0
+    midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    reports = {"Today": one(midnight), "7 days": one(now - timedelta(days=7)), "30 days": one(now - timedelta(days=30))}
+    if all(r is None for r in reports.values()):
+        return 2
+    print(json.dumps(reports, indent=1) if a.json else "\n".join(fmt.spend_lines(reports)))
+    return 0
+
+
+def _one(c: HubClient, frm: datetime, to: datetime, host: str | None) -> dict | None:
+    """One window of /v1/spend, or None with the reason printed (an older hub has no such route)."""
+    try:
+        return c.spend(frm.isoformat(), to.isoformat(), host)
+    except ValueError as e:
+        print(f"no spend report: {e}"); return None
 
 
 def cmd_hosts(a) -> int:
@@ -302,6 +345,10 @@ def main(argv=None) -> None:
     p = sub.add_parser("search"); p.set_defaults(fn=cmd_search)
     p.add_argument("words", nargs="+"); p.add_argument("--kind", help="decision,instruction,claim,prompt (default all)")
     p.add_argument("--host"); p.add_argument("--limit", type=int, default=30)
+    p = sub.add_parser("spend", help="what things cost: today, 7 and 30 days (the board's $ screen)"); p.set_defaults(fn=cmd_spend)
+    p.add_argument("--days", type=int, help="one window of N days instead of the three")
+    p.add_argument("--host", help="one host's sessions and pool jobs (default: every host)")
+    p.add_argument("--json", action="store_true", help="the report(s) as JSON")
     sub.add_parser("mcp").set_defaults(fn=cmd_mcp)
     p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux)
     p.add_argument("--width", default=None, help="board width: columns or percent (default: the last one you set with < > or --width, else 60)")

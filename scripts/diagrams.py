@@ -141,10 +141,10 @@ def architecture() -> None:
 
 
 def row() -> None:
-    s = Svg(1180, 520)
+    s = Svg(1180, 566)
     s.text(40, 52, "Reading a row", size=24, weight=700)
-    s.text(40, 78, "one session per row, numbered in the order it joined the list", size=14, fill=DIM)
-    s.rect(40, 130, 1100, 104, fill="#0d0d0d", stroke=EDGE, rx=10)
+    s.text(40, 78, "one session per row, numbered in the order it joined the list; its pool jobs nest under it", size=14, fill=DIM)
+    s.rect(40, 130, 1100, 146, fill="#0d0d0d", stroke=EDGE, rx=10)
     cw = 10.6                                  # nominal column width; each segment is placed at its own x
     segs = [  # (column, text, colour, weight, name, what it says)
         (0, "2", DIM, 400, "number", "Alt+2 opens it, from any pane"),
@@ -160,14 +160,19 @@ def row() -> None:
     x0, y0 = 62, 190
     for col, t, c, w, _, _ in segs:
         s.spans(x0 + col * cw, y0, [(t, c, w)], size=18)
-    s.spans(x0 + 2 * cw, y0 + 30, [("↳ approve the plan?", YELLOW, 400)], size=18)
+    s.spans(x0 + 2 * cw, y0 + 30, [("└ approve the plan?", YELLOW, 400)], size=18)
+    # a pool job this session launched, nested under it: no number, its brief instead of a title, its own cost
+    s.spans(x0 + 2 * cw, y0 + 66, [("↳ ", ORANGE, 400), ("◆ ", TEXT, 700), ("cc·laptop  ", DIM, 400),
+                                   ("job1-runtime.md · ok · 72 turns", TEXT, 400), ("  ~$0.03", DIM, 400)], size=18)
 
     def badge(cx, cy, n, c):
         s.add(f'<circle cx="{cx}" cy="{cy}" r="11" fill="{PANEL2}" stroke="{c}" stroke-width="1.6"/>')
         s.text(cx, cy + 4.5, str(n), size=12, fill=c, weight=700, anchor="middle")
 
-    items = [(col, t, c, name, what) for col, t, c, _, name, what in segs] + [(2, "↳", YELLOW, "what it's waiting on",
-                                                                              "its question, or the dialog it has up")]
+    items = [(col, t, c, name, what) for col, t, c, _, name, what in segs] + [
+        (2, "└", YELLOW, "what it's waiting on", "under a waiting row: its question, or the dialog it has up"),
+        (2, "↳", ORANGE, "pool job", "a job this session launched (saint-agent), nested under it with its "
+                                     "brief, how it ended and its local cost estimate")]
     for n, (col, t, c, name, what) in enumerate(items, 1):
         c = TEXT if c == DIM else c
         if n <= len(segs):
@@ -175,12 +180,12 @@ def row() -> None:
             badge(cx, 112, n, c)
             s.add(f'<path d="M{cx},123 L{cx},{y0 - 20}" stroke="{c}" stroke-width="1.2" opacity="0.7"/>')
         else:
-            badge(x0 + 2 * cw - 22, y0 + 24, n, c)
-        gx, gy = 40 + ((n - 1) % 2) * 560, 286 + ((n - 1) // 2) * 40
+            badge(x0 + 2 * cw - 22, y0 + (24 if n == len(segs) + 1 else 60), n, c)
+        gx, gy = 40 + ((n - 1) % 2) * 560, 312 + ((n - 1) // 2) * 40
         badge(gx + 12, gy, n, c)
         s.text(gx + 34, gy + 5, name, size=14, fill=c, weight=700)
         s.text(gx + 200, gy + 5, what, size=12.5, fill="#b8b8b8")
-    s.text(40, 500, "Numbers stay put while sessions change state; they only close up when a session above leaves the list. "
+    s.text(40, 546, "Numbers stay put while sessions change state; they only close up when a session above leaves the list. "
                     "Hover a row, or press ?, for the same in words.", size=12.5, fill=DIM)
     s.save("row.svg")
 

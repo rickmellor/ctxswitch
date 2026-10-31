@@ -33,6 +33,7 @@ NOW = datetime.now(timezone.utc)
 WEB, API, DOCS, INFRA, UI, BENCH, OLD = ("laptop/claude/7f3a91c2", "devbox/claude/2b8e40d1", "laptop/pi/01a2b3c4",
                                          "gpu-host/claude/9c1d22e7", "laptop/claude/4e5f6a7b", "devbox/pi/01d4e5f6",
                                          "laptop/claude/0a0b0c0d")
+JOB = "laptop/claude/5d6e7f80"                 # a pool job WEB launched with saint-agent
 
 
 def iso(minutes_ago: float) -> str:
@@ -65,10 +66,21 @@ def seed(store: Store) -> None:
                               "cwd": f"/home/me/{repo}", "repo_root": f"/home/me/{repo}", "repo_remote": f"git@github.com:acme/{repo}.git",
                               "git_branch": branch, "last_activity": iso(ago), "started_at": iso(ago + 60)})
         store.upsert_turns(key, turns, None)
+    # a pool job OAuth login launched with saint-agent: it nests under that row, with its own cost estimate
+    store.upsert_session({"key": JOB, "host_id": "laptop", "harness": "claude", "session_id": JOB.rsplit("/", 1)[-1],
+                          "title": "oauth-tests.md", "cwd": "/home/me/webapp", "repo_root": "/home/me/webapp",
+                          "repo_remote": "git@github.com:acme/webapp.git", "git_branch": "main",
+                          "last_activity": iso(6), "started_at": iso(20),
+                          "parent_key": WEB, "job": "sa-20261030-1412-j1", "job_status": "ok",
+                          "job_brief": "oauth-tests.md", "job_turns": 72,
+                          "job_tokens": {"input": 21_000, "output": 6_400, "cache_read": 1_900_000, "cache_creation": 48_000}})
+    store.upsert_turns(JOB, [turn(0, "brief: oauth-tests.md", "Both flows pass; committed.", 6)], None)
     for host in ("laptop", "devbox", "gpu-host"):
         store.host_seen(host)
         store.set_liveness(host, [{"key": k, "status": st, "status_since": iso(ago), "pid": 1, "socket": "/x"}
-                                  for k, _, _, _, st, ago, _ in rows if k.startswith(host + "/") and st != "ended"])
+                                  for k, _, _, _, st, ago, _ in rows if k.startswith(host + "/") and st != "ended"]
+                                 + ([{"key": JOB, "status": "idle", "status_since": iso(6), "pid": 1, "socket": "/x"}]
+                                    if host == "laptop" else []))
     store.db.execute("INSERT INTO asks(key,ref,kind,text,turn_idx,asked_at) VALUES(?,?,?,?,?,?)",
                      (UI, "hook:perm:Bash:1", "permission", "allow Bash: npm run e2e", 0, iso(1)))
     store.apply_extraction(API, turn(1, "x", "", 3), [
@@ -127,7 +139,8 @@ class Demo(tui.CtxApp):
 def patch_tmux() -> None:
     """Pretend we're in ctx's tmux: OAuth login is on the left, the rest are in their own windows, one runs on
     another host and one in another terminal."""
-    reach = {WEB: "pane", API: "pane", DOCS: "pane", INFRA: "remote", UI: "pane", BENCH: "foreign", OLD: "resume"}
+    reach = {WEB: "pane", API: "pane", DOCS: "pane", INFRA: "remote", UI: "pane", BENCH: "foreign", OLD: "resume",
+             JOB: "pane"}
     tui.tmux.reap_viewer = lambda *a, **k: None
     tui.tmux.panes = list
     tui.tmux.visible_key = lambda ps, sessions=None: WEB
@@ -137,17 +150,38 @@ def patch_tmux() -> None:
     tui.CtxApp.join_tmux = lambda self: None
 
 
+def patch_spend(app: tui.CtxApp) -> None:
+    """Today's costs as /v1/spend would answer them: this branch's hub has no such route, and the image must show
+    the header's second line as it looks with one."""
+    app.client.spend = lambda frm, to, host=None: {
+        "window": {"from": frm, "to": to},
+        "cloud": {"usd": 3.64, "tokens": {"input": 410_000, "output": 96_000, "cache_read": 7_100_000, "cache_creation": 380_000},
+                  "by_account": [{"account": "bedrock", "usd": 3.11, "tokens": 3_800_000, "sessions": 6},
+                                 {"account": "max", "usd": 0.53, "tokens": 4_192_000, "sessions": 2}],
+                  "by_model": [{"model": "claude-opus-5-5", "usd": 3.64, "tokens": 7_986_000, "priced": True}]},
+        "local": {"energy_usd": 0.48, "if_cloud_usd": 2.9, "tokens": 17_300_000, "requests": 342,
+                  "price_as": "claude-opus-5-5", "source": "saint", "error": None},
+        "jobs": [{"job": "sa-20261030-1412-j1", "key": JOB, "parent_key": WEB, "parent_title": "OAuth login",
+                  "status": "ok", "brief": "oauth-tests.md", "started_at": iso(20), "dur_s": 640, "turns": 72,
+                  "tokens": 1_975_400, "local_usd": 0.03, "if_cloud_usd": 0.91}],
+        "sessions": [{"key": WEB, "title": "OAuth login", "host_id": "laptop", "harness": "claude",
+                      "account": "bedrock", "usd": 1.23, "tokens": 2_400_000, "model": "claude-opus-5-5"}],
+        "total_usd": 4.12, "unpriced_models": [], "rates": "default"}
+
+
 async def shoot(store: Store) -> None:
     cfg = Config(); cfg.hub.token = "t"; cfg.collector.host_id = "laptop"
     app = Demo(cfg, None)
     app.client._c = TestClient(Hub(store, token="t").app(), headers={"Authorization": "Bearer t"})
-    async with app.run_test(size=(150, 50)) as pilot:
+    patch_spend(app)
+    async with app.run_test(size=(150, 52)) as pilot:
         await pilot.pause(1.5)
         t = app.query_one("#table")
         t.move_cursor(row=t.get_row_index(API)); await pilot.pause(1.0)
         (OUT / "board.svg").write_text(app.export_screenshot(title="ctx tmux"))
     help_app = Demo(cfg, None)
     help_app.client._c = app.client._c
+    patch_spend(help_app)
     help_app.CSS = tui.CtxApp.CSS
     help_app.compose = lambda: tui.CtxApp.compose(help_app)
     async with help_app.run_test(size=(62, 46)) as pilot:

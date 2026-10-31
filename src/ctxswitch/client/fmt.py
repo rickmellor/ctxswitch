@@ -149,6 +149,148 @@ def sender(m: dict) -> str:
     return f"from {m['from_key']}: " if m.get("from_key") else ""
 
 
+def money(x: float | None) -> str:
+    """"$1.23", or "—" when it has no price (an unpriced model, or no SAINT for a local estimate)."""
+    return f"${x:.2f}" if x is not None else "—"
+
+
+def _num(x: float | None) -> str:
+    """The same without the sign, for where one "$" already covers the line."""
+    return f"{x:.2f}" if x is not None else "—"
+
+
+def tokens_short(n: int | None) -> str:
+    """"17.3M" · "262k" · "1.2k" · "41"."""
+    n = int(n or 0)
+    if n >= 1_000_000: return f"{n / 1e6:.1f}M"
+    if n >= 100_000: return f"{n / 1e3:.0f}k"
+    if n >= 1_000: return f"{n / 1e3:.1f}k"
+    return str(n)
+
+
+def link(s: dict, key: str):
+    """A session's pool-job link (``parent_key`` / ``job`` / ``job_status`` / ``job_brief`` / ``job_turns`` …): the
+    hub's own column when it has one, else what the collector put in the session's meta (an older hub)."""
+    return s.get(key) or (s.get("meta") or {}).get(key) or ""
+
+
+def job_label(s: dict) -> str:
+    """What a pool job row says instead of its (noisy) title: ``job1-runtime.md · ok · 72 turns``. A session that
+    isn't a pool job keeps its title."""
+    job, brief = link(s, "job"), link(s, "job_brief")
+    if not (job or brief):
+        return display_title(s) or ""
+    parts = [brief or job, link(s, "job_status"),
+             f"{link(s, 'job_turns')} turns" if link(s, "job_turns") else None]
+    return " · ".join(str(p) for p in parts if p)
+
+
+def tok_total(u: dict | None) -> int:
+    """input + output + cache_read + cache_creation of a usage dict (the hub's ``tokens`` when it sends one)."""
+    return sum(int(v or 0) for v in (u or {}).values())
+
+
+def cost_mark(s: dict) -> str:
+    """The cost at the end of a row: `` ~$0.03`` when it has an estimate, else the tokens it used."""
+    sp = s.get("spend") or {}
+    if sp.get("usd") is not None:
+        return f" ~${sp['usd']:.2f}"
+    tok = sp.get("tokens") or tok_total(s.get("job_tokens") or link(s, "job_tokens"))
+    return f" {tokens_short(tok)} tok" if tok else ""
+
+
+def spend_line(s: dict, children: list | None = None) -> str:
+    """One line of what a session cost: its priced cloud use, what it ran locally (SAINT's energy estimate), and how
+    many pool jobs it launched. "" when the hub says nothing about cost (an older hub)."""
+    sp = s.get("spend") or {}
+    parts: list[str] = []
+    if sp.get("unpriced"):
+        parts.append(f"unpriced model {sp.get('model') or '?'}: {tokens_short(sp.get('tokens'))} tokens")
+    elif sp.get("usd") is not None:
+        parts.append("cloud " + " · ".join([money(sp["usd"]), f"{tokens_short(sp.get('tokens'))} tokens",
+                                            sp.get("model") or "", sp.get("account") or ""]).rstrip(" ·"))
+    loc = sp.get("local") or {}
+    if loc.get("energy_usd") is not None or loc.get("tokens"):
+        parts.append(f"local {money(loc.get('energy_usd'))} energy · {tokens_short(loc.get('tokens'))} tokens"
+                     + (f" · {loc['requests']} requests" if loc.get("requests") is not None else ""))
+    jobs = children if children is not None else [{} for _ in s.get("children_keys") or []]
+    if jobs:
+        est = [j.get("spend", {}).get("usd") for j in jobs if isinstance(j, dict)] if children is not None else []
+        est = [x for x in est if x is not None]
+        parts.append(f"{len(jobs)} pool job{'s' if len(jobs) != 1 else ''}"
+                     + (f": {money(sum(est))} local est." if est else ""))
+    return " · ".join(parts)
+
+
+def header_spend(rep: dict | None) -> str:
+    """The header's second line: what today has cost, cloud and local, the accounts when there's more than one."""
+    if not rep:
+        return "today —"
+    cloud, loc = rep.get("cloud") or {}, rep.get("local") or {}
+    t = f"today {money(rep.get('total_usd'))} · cloud {_num(cloud.get('usd'))}"
+    accts = cloud.get("by_account") or []
+    if len(accts) > 1:
+        t += " (" + " · ".join(f"{a.get('account') or 'default'} {_num(a.get('usd'))}" for a in accts) + ")"
+    return t + f" · local {_num(loc.get('energy_usd'))}"
+
+
+def pool_job_lines(children: list, n: int = 6) -> list[str]:
+    """The pool jobs a session launched: what each was for, how it ended, what it cost."""
+    out = [f"    ↳ {job_label(j) or j.get('job') or '?'}{cost_mark(j)}" for j in children[:n]]
+    if len(children) > n:
+        out.append(f"    … {len(children) - n} more")
+    return out
+
+
+def spend_lines(reports: dict[str, dict | None]) -> list[str]:
+    """What things cost, per window: totals and accounts, then the pool jobs and sessions of the widest one, then
+    the caveats. ``reports`` maps a window's name to its /v1/spend report (None: it couldn't be fetched)."""
+    out: list[str] = []
+    for title, rep in reports.items():
+        if not rep:
+            out.append(f"{title:<9} —")
+            continue
+        cloud, loc = rep.get("cloud") or {}, rep.get("local") or {}
+        line = f"{title:<9} {money(rep.get('total_usd'))}   cloud {_num(cloud.get('usd'))}"
+        accts = cloud.get("by_account") or []
+        if len(accts) > 1:
+            line += " (" + " · ".join(f"{a.get('account') or 'default'} {_num(a.get('usd'))}" for a in accts) + ")"
+        out.append(line.rstrip())
+        out.append(f"{'':<9} local {_num(loc.get('energy_usd'))} energy · {tokens_short(loc.get('tokens'))} tok"
+                   f" · {loc.get('requests') or 0} requests" + (f"  ({loc['error']})" if loc.get("error") else ""))
+        models = [m for m in cloud.get("by_model") or [] if not m.get("priced", True)]
+        if models:
+            out.append(f"{'':<9} unpriced: " + " · ".join(f"{m['model']} {tokens_short(m.get('tokens'))} tok" for m in models))
+        out.append("")
+    wide = max(reports.values(), key=lambda r: len((r or {}).get("jobs") or []), default=None) or {}
+    jobs = wide.get("jobs") or []
+    out.append(f"POOL JOBS ({len(jobs)})" if jobs else "POOL JOBS")
+    for j in jobs[:15]:
+        out.append(f"  {j.get('job','?'):<24} {one_line(j.get('parent_title'), 22):<22} {j.get('status') or '?':<8}"
+                   f" {j.get('turns') if j.get('turns') is not None else '-':>4} turns {_dur(j.get('dur_s')):>6}"
+                   f"  {tokens_short(j.get('tokens')):>7} tok ~{_num(j.get('local_usd'))} if-cloud {_num(j.get('if_cloud_usd'))}")
+    wide2 = max(reports.values(), key=lambda r: len((r or {}).get("sessions") or []), default=None) or {}
+    sess = wide2.get("sessions") or []
+    out.append(f"\nSESSIONS ({len(sess)})" if sess else "\nSESSIONS")
+    for x in sess[:15]:
+        out.append(f"  {money(x.get('usd')):>7}  {x['key']:<28} {x.get('harness',''):<7} {tokens_short(x.get('tokens')):>7} tok"
+                   f"  {one_line(x.get('title'), 40)}")
+    unp = sorted({m for r in reports.values() for m in (r or {}).get("unpriced_models") or []}
+                 | {x["model"] for r in reports.values() if r for x in (r.get("cloud") or {}).get("by_model") or []
+                    if not x.get("priced", True) and x.get("model")})
+    rates = next((r.get("rates") for r in reports.values() if r), "default")
+    out.append("\n" + (f"unpriced models (tokens only, never $0): {' '.join(unp)}\n" if unp else "")
+               + f"rates: {rates} · local = energy estimate from SAINT\n"
+                 "estimates at Bedrock on-demand rates; `bedrock-spend` has the bill")
+    return out
+
+
+def _dur(sec: int | None) -> str:
+    if sec is None:
+        return "-"
+    return f"{sec // 60}m" if sec < 3600 else f"{sec / 3600:.1f}h"
+
+
 WORK_NOTE = "the first session live on this work (any host) takes it"
 
 
@@ -222,9 +364,11 @@ def workstream_label(ws: str | None) -> str:
     return f"{name}@{br}" if br else name
 
 
-def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | None = None) -> list[str]:
+def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | None = None,
+               children: list | None = None) -> list[str]:
     """`ctx show` (and the MCP get_session): meta, what it's for, your instructions, open asks, decisions, messages,
-    the same work elsewhere, then the last ``turns`` exchanges."""
+    the same work elsewhere, then the last ``turns`` exchanges. ``children``: the pool jobs it launched (the CLI
+    fetches them; without them only their number shows)."""
     now = now or datetime.now(timezone.utc)
     out: list[str] = []
     out.append(f"{state_glyph(s)} {s['key']}   [{session_state(s)} since {age(s.get('status_since') or s.get('last_activity'), now)}]")
@@ -232,6 +376,12 @@ def show_lines(s: dict, turns: int = 6, n_decisions: int = 8, now: datetime | No
     out.append(f"  where : {s.get('cwd') or '-'}  ({repo_label(s)})   model: {s['meta'].get('model') or '-'}  perm: {s['meta'].get('permission_mode') or '-'}")
     out.append(f"  turns : {s.get('turn_count')}   started {age(s.get('started_at'), now)} ago, last activity {age(s.get('last_activity'), now)} ago"
           + (f", viewed {age(s.get('last_viewed_at'), now)} ago" if s.get('last_viewed_at') else ""))
+    line = spend_line(s)
+    if line:
+        out.append(f"  spend : {line}")
+    if children:
+        out.append(f"  pool jobs ({len(children)}):")
+        out += pool_job_lines(children)
     new = since_viewed(s)
     if new:
         out.append(f"  since you looked ({age(s.get('last_viewed_at'), now)} ago): {since_line(new)}")
