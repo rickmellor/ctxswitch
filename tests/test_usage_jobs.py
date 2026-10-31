@@ -226,3 +226,19 @@ def test_indexer_leaves_a_normal_session_unlinked(tmp_path):
     sess = [p for k, p in events if k == "session"][0]
     assert sess["parent_key"] == "" and sess["job"] == "" and sess["job_status"] == "" and sess["job_brief"] == ""
     assert sess["job_dur_s"] is None and sess["job_turns"] is None and sess["job_tokens"] is None
+
+
+def test_a_job_launched_outside_a_claude_session_has_a_job_but_no_parent(tmp_path):
+    """saint-agent run from a plain shell: the ledger's session is null, so the row is a job at top level."""
+    root = tmp_path / "claude" / "-home-rick-repos-demo"
+    root.mkdir(parents=True)
+    cfg = CollectorConfig(claude_roots=[str(tmp_path / "claude")], pi_roots=[], backfill_days=30)
+    events = []
+    ix = Indexer(cfg, "laptop", CollectorState(tmp_path / "c.db"), lambda k, p: events.append((k, p)))
+    ix.jobs = Jobs(ledger(tmp_path / "l.jsonl", dict(START, ts=iso(T0), sid=S, session=None)))
+    with open(root / f"{S}.jsonl", "wb") as h:
+        h.write((json.dumps(user("go", "2026-10-30T00:00:00Z")) + "\n").encode())
+    ix.live_keys = {f"laptop/claude/{S}"}
+    assert ix.scan_all() == 1
+    sess = [p for k, p in events if k == "session"][0]
+    assert sess["job"] == "J1" and sess["parent_key"] == ""                     # not "laptop/claude/" or "laptop/claude/None"
