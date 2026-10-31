@@ -425,6 +425,28 @@ class Store:
         pend = self.db.execute("SELECT v FROM kv WHERE k=?", (f"handoff:{key}",)).fetchone()
         return {"continues": cont[0] if cont else None, "continued_by": by, "handed_off": json.loads(pend[0]) if pend else None}
 
+    # -- monthly budget ---------------------------------------------------------------------------------------------
+    def set_budget(self, d: dict[str, Any]) -> None:
+        """The latest word on one account's monthly budget, from whichever host has a ccwb token (the collector's
+        ``budget`` event). One per account: a new push replaces it, so the board never shows two months at once."""
+        account = str(d.get("account") or "default")
+        with self._lock:
+            self.db.execute("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                            (f"budget:{account}", json.dumps(d)))
+            self.db.commit(); self._bump()
+
+    def budgets(self) -> dict[str, dict[str, Any]]:
+        """account -> its monthly budget (what a host's `bedrock-spend` last said), {} when nobody has pushed one."""
+        out: dict[str, dict[str, Any]] = {}
+        for r in self.db.execute("SELECT k,v FROM kv WHERE k LIKE 'budget:%'"):
+            try:
+                d = json.loads(r[1])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(d, dict):
+                out[str(r[0][len("budget:"):])] = d
+        return out
+
     def tracker_state(self, key: str) -> dict[str, Any]:
         r = self.db.execute("SELECT * FROM tracker WHERE key=?", (key,)).fetchone()
         if r is None:

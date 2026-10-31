@@ -281,7 +281,10 @@ def spend_report(store, frm: str, to: str, host: str | None, prices: dict[str, d
             "local": local,
             "jobs": jobs, "sessions": sessions,
             "total_usd": round(cloud_usd + (local["energy_usd"] or 0.0), 6),
-            "unpriced_models": sorted(unpriced), "rates": "config" if prices else "default"}
+            "unpriced_models": sorted(unpriced), "rates": "config" if prices else "default",
+            # the bill as the account's own quota API states it, pushed by the host that has a token: the estimate
+            # above is what the transcripts price to, this is what the month actually costs against its limit.
+            "budget": store.budgets()}
 
 
 def _sorted(d: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:

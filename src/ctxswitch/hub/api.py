@@ -109,6 +109,8 @@ class Hub:
             self.hooks.apply(host, payload)
         elif kind == "liveness":
             self.store.set_liveness(payload.get("host_id", host), payload.get("sessions", []))
+        elif kind == "budget":
+            self.store.set_budget(payload)             # the monthly budget as the host with the token reads it
         else:
             log.warning("unknown event kind %r from %s", kind, host)
 

@@ -76,6 +76,11 @@ class CollectorConfig:
     backfill_days: int = 30                # how far back to index on first run (hard signals only)
     max_text_chars: int = 4000             # trim for user/assistant text shipped to the hub
     accept_messages: bool = True           # deliver operator messages from the hub into live sessions here
+    # Monthly budget: the one host with a ccwb token runs `bedrock-spend` and pushes what it says (the hub has no
+    # token of its own). budget_cmd = "" disables it; budget_account names which [[claude_profiles]] it belongs to.
+    budget_cmd: str = "bedrock-spend"
+    budget_every: int = 900                # seconds between polls
+    budget_account: str = "bedrock"
 
 
 @dataclass

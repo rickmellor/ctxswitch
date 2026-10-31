@@ -17,7 +17,10 @@ import json
 import logging
 import os
 import platform
+import shutil
+import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +48,52 @@ from ctxswitch.common.config import Config, data_dir, load
 
 log = logging.getLogger("ctxswitch.collector")
 WIN_POLL_S = 30
+_budget_warned: set[str] = set()           # one WARNING per distinct way the budget command is failing, not one a poll
+
+
+def read_budget(cmd: str, account: str, run=subprocess.run) -> dict[str, Any] | None:
+    """This month's Bedrock budget as ``bedrock-spend`` says it: the bill and the limit, what's left, how far in.
+
+    The hub can't ask the ccwb spend API itself (no token in that container), so the host that has one answers and
+    pushes the answer. Two calls: ``<cmd> /quota/current-month --json`` for the limit, ``<cmd> --json`` for the bill.
+    Never opens a browser (``BEDROCK_SPEND_BROWSER=none``): a cached token means it shouldn't need one, and a poll
+    that opened a window on someone's desktop would be worse than no number.
+    """
+    env = {**os.environ, "BEDROCK_SPEND_BROWSER": "none"}
+    docs: list[dict[str, Any]] = []
+    for what, argv in (("quota", [cmd, "/quota/current-month", "--json"]), ("bill", [cmd, "--json"])):
+        try:
+            p = run(argv, capture_output=True, text=True, timeout=60, env=env)
+        except Exception as e:                          # noqa: BLE001 - a missing tool, a timeout, anything
+            _budget_once(f"{what}: {e.__class__.__name__}"); return None
+        if isinstance(p, int) or int(getattr(p, "returncode", 0) or 0):
+            _budget_once(f"{what}: exit {getattr(p, 'returncode', p)}"); return None
+        out = getattr(p, "stdout", "") or ""
+        try:
+            d = json.loads(out.decode() if isinstance(out, bytes) else out)
+        except (ValueError, TypeError):
+            _budget_once(f"{what}: not JSON"); return None
+        if not isinstance(d, dict):
+            _budget_once(f"{what}: not a JSON object"); return None
+        docs.append(d)
+    quota, bill = docs
+    if not isinstance(bill.get("cost_usd"), (int, float)) or not isinstance(quota.get("monthly_cost_limit_usd"), (int, float)):
+        _budget_once("no cost_usd / monthly_cost_limit_usd in its output")
+        return None
+    limit, spent = float(quota["monthly_cost_limit_usd"]), float(bill["cost_usd"])
+    return {"account": account, "month": bill.get("month") or "", "limit_usd": limit, "spent_usd": spent,
+            "remaining_usd": round(max(0.0, limit - spent), 6) if limit else None,
+            "pct_used": round(spent / limit * 100, 1) if limit else None,
+            "enforcement": quota.get("enforcement_mode") or "",
+            "expires_at": quota.get("expires_at") or "",
+            "currency": bill.get("currency") or quota.get("currency") or "USD",
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "source": "bedrock-spend"}
+
+
+def _budget_once(why: str) -> None:
+    if why not in _budget_warned:
+        _budget_warned.add(why)
+        log.warning("budget: %s", why)
 
 
 class Collector:
@@ -237,6 +286,22 @@ class Collector:
                 log.exception("windows poll")
             await asyncio.sleep(WIN_POLL_S)
 
+    async def budget_loop(self) -> None:
+        """The monthly budget, from the one host that has a ccwb token. A host without `bedrock-spend` runs no loop
+        at all: the hub keeps whatever the host that has it last pushed."""
+        cmd = self.cfg.collector.budget_cmd
+        if not cmd or not shutil.which(cmd):
+            return
+        every = max(60, int(self.cfg.collector.budget_every or 0) or 900)
+        while True:
+            try:
+                d = await asyncio.to_thread(read_budget, cmd, self.cfg.collector.budget_account)
+                if d:
+                    self._emit("budget", d)
+            except Exception:                          # noqa: BLE001
+                log.exception("budget poll")
+            await asyncio.sleep(every)
+
     async def sweep_loop(self) -> None:
         """Re-process everything every 10 min so sessions age into 'ended' without a file change."""
         while True:
@@ -256,7 +321,7 @@ class Collector:
         if self.once:
             await self.push_loop(); return
         await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop(),
-                             self.spool_loop(), self.windows_loop(), self.inbox_loop())
+                             self.spool_loop(), self.windows_loop(), self.inbox_loop(), self.budget_loop())
 
 
 def main() -> None:
