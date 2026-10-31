@@ -328,3 +328,13 @@ def test_a_config_may_price_a_model_the_hub_does_not_know(tmp_path):
     body = _hub(store, prices=cfg.hub.prices).get("/v1/spend", params={"from": DAY, "to": NEXT}).json()
     assert body["rates"] == "config" and body["cloud"]["usd"] == pytest.approx(3.0) and body["unpriced_models"] == []
     assert _hub(store, prices=cfg.hub.prices).get(f"/v1/sessions/{P}", headers=H).json()["spend"]["usd"] == pytest.approx(3.0)
+
+
+def test_a_running_job_without_a_ledger_token_count_shows_its_turns_tokens(tmp_path):
+    store = Store(tmp_path / "hub.db")
+    _sess(store, P)
+    _sess(store, CHILD, parent_key=P, job="sa-run-j1", job_status="running")       # no job_tokens yet: the end line hasn't come
+    store.upsert_turns(CHILD, [_turn(0, usage=_u(i=300_000, o=50_000)), _turn(1, model="claude-sonnet-5", usage=_u(i=150_000))], None)
+    body = _hub(store).get("/v1/spend", params={"from": DAY, "to": NEXT}).json()
+    (job,) = body["jobs"]
+    assert job["tokens"] == 500_000 and job["status"] == "running" and body["cloud"]["usd"] == 0.0
