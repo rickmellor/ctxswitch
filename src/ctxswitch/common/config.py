@@ -37,6 +37,28 @@ class HubConfig:
     recap: bool = True                     # one-line LLM recap per session (local seat)
     recap_days: int = 7                    # only sessions live or active this recently (recap and ledger)
     ledger: bool = True                    # extract instructions/decisions/claims/asks per exchange (same seat)
+    # spend (hub/spend.py): [hub.prices] rates per model, overriding the built-in Bedrock table; the SAINT usage
+    # endpoint for local energy ("" = derived from the preferred seat's url; false in the file disables it);
+    # and which model's rates "ran in the cloud instead" is priced at.
+    prices: dict = field(default_factory=dict)
+    usage_url: str = ""
+    local_price_as: str = "claude-opus-5-5"
+
+    def usage_endpoint(self, seats: list[SeatConfig]) -> str:
+        """SAINT's usage endpoint: ``usage_url`` as given, or the lowest-priority seat's url with its ``/v1`` swapped
+        for ``/usage/v1`` — the same box, a different API. False/"" in the config disables local numbers."""
+        if self.usage_url is False:                   # `usage_url = false` in the file: no local numbers at all
+            return ""
+        u = str(self.usage_url or "").strip()
+        if u.lower() in ("false", "0", "off", "none"):
+            return ""
+        if u:
+            return u.rstrip("/")
+        for s in sorted(seats, key=lambda x: x.priority):
+            base = (s.url or "").rstrip("/")
+            if base.endswith("/v1"):
+                return f"{base[:-len('/v1')]}/usage/v1"
+        return ""
 
 
 @dataclass
@@ -172,6 +194,9 @@ def load(path: Path | None = None) -> Config:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
     _apply(cfg.hub, raw.get("hub", {}))
+    # [hub.prices.<model>] tables: tomllib gives a dict of dicts; keep it (a model absent here keeps its built-in rate)
+    cfg.hub.prices = {str(k): {str(t): float(v) for t, v in r.items()}
+                      for k, r in (raw.get("hub", {}).get("prices") or {}).items() if isinstance(r, dict)}
     _apply(cfg.collector, raw.get("collector", {}))
     if "agy_roots" not in raw.get("collector", {}):      # on by default; [] in the file opts out
         cfg.collector.agy_roots = [AGY_ROOT]

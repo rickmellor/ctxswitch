@@ -7,6 +7,23 @@ token = "change-me"                   # shared bearer token; same value in the h
 bind = "0.0.0.0"
 port = 7433
 # db_path = "/data/hub.db"
+# Local (SAINT) energy for `ctx spend` / /v1/spend. Default: the lowest-priority seat's url with "/v1" dropped and
+# "/usage/v1" added (the same box, its usage API); false = no local numbers. local_price_as = the model "ran in the
+# cloud instead" is priced at.
+# usage_url = "http://saint.local:4000/usage/v1"
+# local_price_as = "claude-opus-5-5"
+
+# Rates per million tokens (USD) overriding/extending the hub's built-in Bedrock on-demand table, for a model it
+# doesn't know or bills differently. Keys are canonical model names (a dated version still matches its family); a
+# model not listed keeps the built-in rate. Presence of any table makes the spend report say rates = "config".
+# [hub.prices."claude-opus-5-5"]
+# input = 4.4
+# output = 22.0
+# cache_creation = 5.5
+# cache_read = 0.22
+# [hub.prices."qwen3-coder"]
+# input = 0.05
+# output = 0.20
 
 [collector]
 host_id = "laptop"                    # stable short name for this machine (default: hostname)

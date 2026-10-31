@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     meta TEXT NOT NULL, title TEXT, cwd TEXT, repo_root TEXT, repo_remote TEXT, git_branch TEXT,
     started_at TEXT, last_activity TEXT, ended INTEGER NOT NULL DEFAULT 0,
     live_status TEXT NOT NULL DEFAULT 'unknown', status_since TEXT, pid INTEGER, socket TEXT,
-    last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL, live_name TEXT, reentry TEXT
+    last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL, live_name TEXT, reentry TEXT,
+    parent_key TEXT, job TEXT, job_status TEXT, job_brief TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_host ON sessions(host_id);
 CREATE TABLE IF NOT EXISTS turns (
@@ -85,9 +86,59 @@ SIBLINGS = 6                                        # other sessions shown for a
 SIBLING_DAYS = 14                                   # ... live, or active within this many days
 SEARCH_KINDS = ("decision", "instruction", "claim", "prompt")
 
+TOKEN_TYPES = ("input", "output", "cache_read", "cache_creation")        # every usage dict has all four ints
+
+
+def _usage_cols(alias: str = "t") -> str:
+    """The aggregates one GROUP BY over turns needs: the four token types summed (``u_<type>``), the same totals over
+    the turns the hub must price itself (``p_<type>`` — pi prices a turn with cost_usd already), pi's own total, the
+    newest turn's index and a turn count. json_extract of a missing key is NULL, so COALESCE it away; a shell or agy
+    turn contributes nothing."""
+    out = []
+    for t in TOKEN_TYPES:
+        j = f"COALESCE(json_extract({alias}.data,'$.usage.{t}'),0)"
+        out.append(f"COALESCE(SUM({j}),0) AS u_{t}")
+        out.append(f"COALESCE(SUM(CASE WHEN COALESCE(json_extract({alias}.data,'$.cost_usd'),0)>0 THEN 0 ELSE {j} END),0) AS p_{t}")
+    out += [f"COALESCE(SUM(COALESCE(json_extract({alias}.data,'$.cost_usd'),0)),0) AS reported",
+            f"MAX({alias}.idx) AS last_idx", "COUNT(*) AS turn_usage"]
+    return ", ".join(out)
+
+
+def _usage_sql(where: str = "", alias: str = "t") -> str:
+    """One GROUP BY over turns by session *and model*: a session that ran on two models (the cloud, then SAINT) prices
+    each part of it right. The rows every spend answer is built from."""
+    return (f"SELECT {alias}.key AS key, COALESCE(json_extract({alias}.data,'$.model'),'') AS model, {_usage_cols(alias)} "
+            f"FROM turns {alias}{' WHERE ' + where if where else ''} GROUP BY {alias}.key, model")
+
+
+def _usage_row(r: sqlite3.Row) -> dict[str, Any]:
+    """One grouped row as data: what one session turned over on one model."""
+    return {"key": r["key"], "model": r["model"] or "", "turns": r["turn_usage"], "reported": r["reported"],
+            "last_idx": r["last_idx"], "tokens": {t: r[f"u_{t}"] for t in TOKEN_TYPES},
+            "priced": {t: r[f"p_{t}"] for t in TOKEN_TYPES}}
+
+
+def _blank_usage() -> dict[str, Any]:
+    return {"tokens": {t: 0 for t in TOKEN_TYPES}, "priced": {t: 0 for t in TOKEN_TYPES},
+            "reported": 0.0, "model": "", "model_idx": -1, "turns": 0}
+
+
+def _accumulate(d: dict[str, Any], r: dict[str, Any]) -> None:
+    """Fold one grouped usage row into a session's totals."""
+    for t in TOKEN_TYPES:
+        d["tokens"][t] += r["tokens"][t]
+        d["priced"][t] += r["priced"][t]
+    d["reported"] += r["reported"]
+    d["turns"] += r["turns"]
+    if r["last_idx"] > d["model_idx"]:                  # the newest turn's model names the session
+        d["model_idx"], d["model"] = r["last_idx"], r["model"]
+
+
 
 class Store:
-    def __init__(self, path: Path | str):
+    def __init__(self, path: Path | str, prices: dict[str, dict[str, float]] | None = None):
+        """``prices``: [hub.prices] rates per model, overriding the built-in table (see hub/spend.py)."""
+        self.prices = prices or {}
         self.path = str(path)
         self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -95,7 +146,8 @@ class Store:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}
-        for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL"), ("live_name", "TEXT"), ("reentry", "TEXT")):   # older databases
+        for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL"), ("live_name", "TEXT"), ("reentry", "TEXT"),
+                         ("parent_key", "TEXT"), ("job", "TEXT"), ("job_status", "TEXT"), ("job_brief", "TEXT")):   # older databases
             if col not in cols:
                 self.db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
         mcols = {r[1] for r in self.db.execute("PRAGMA table_info(messages)")}
@@ -127,13 +179,16 @@ class Store:
                 self.db.execute("DELETE FROM ledger WHERE key=?", (m["key"],))
                 self.db.execute("DELETE FROM tracker WHERE key=?", (m["key"],))
             self.db.execute(
-                "INSERT INTO sessions(key,host_id,harness,session_id,meta,title,cwd,repo_root,repo_remote,git_branch,started_at,last_activity,ended,updated) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET meta=excluded.meta, title=excluded.title, cwd=excluded.cwd, "
+                "INSERT INTO sessions(key,host_id,harness,session_id,meta,title,cwd,repo_root,repo_remote,git_branch,started_at,last_activity,ended,updated,"
+                "parent_key,job,job_status,job_brief) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET meta=excluded.meta, title=excluded.title, cwd=excluded.cwd, "
                 "repo_root=excluded.repo_root, repo_remote=excluded.repo_remote, git_branch=excluded.git_branch, started_at=excluded.started_at, "
-                "last_activity=excluded.last_activity, ended=excluded.ended, updated=excluded.updated",
+                "last_activity=excluded.last_activity, ended=excluded.ended, updated=excluded.updated, "
+                "parent_key=excluded.parent_key, job=excluded.job, job_status=excluded.job_status, job_brief=excluded.job_brief",
                 (m["key"], m["host_id"], m["harness"], m["session_id"], json.dumps(m), m.get("title", ""), m.get("cwd", ""),
                  m.get("repo_root", ""), m.get("repo_remote", ""), m.get("git_branch", ""), m.get("started_at", ""),
-                 m.get("last_activity", ""), int(bool(m.get("ended"))), time.time()))
+                 m.get("last_activity", ""), int(bool(m.get("ended"))), time.time(),
+                 m.get("parent_key") or "", m.get("job") or "", m.get("job_status") or "", m.get("job_brief") or ""))
             if m.get("ended"):
                 self.db.execute("UPDATE sessions SET live_status='ended' WHERE key=? AND live_status!='ended'", (m["key"],))
             self._bump()
@@ -473,6 +528,76 @@ class Store:
     def hosts(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute("SELECT host_id,last_seen FROM hosts ORDER BY host_id")]
 
+    def children(self, key: str) -> list[str]:
+        """Keys of the sessions this one launched (pool jobs), newest ``started_at`` first."""
+        return [r[0] for r in self.db.execute(
+            "SELECT key FROM sessions WHERE parent_key=? ORDER BY COALESCE(started_at,'') DESC, key", (key,))]
+
+    def usage_rows(self, frm: str | None = None, to: str | None = None) -> list[dict[str, Any]]:
+        """Turns by session *and model* — one GROUP BY, in a window when given one. What a session's spend and the
+        spend report are both built from: the window filters turns, so a long-lived session shows what it turned
+        over in the window rather than all it ever did."""
+        cond, args = ["t.started_at IS NOT NULL"], []
+        if frm:
+            cond.append("t.started_at>=?"); args.append(frm)
+        if to:
+            cond.append("t.started_at<?"); args.append(to)
+        return [_usage_row(r) for r in self.db.execute(_usage_sql(" AND ".join(cond)), args)]
+
+    def usage_rollup(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Those rows combined per session."""
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            _accumulate(out.setdefault(r["key"], _blank_usage()), r)
+        return out
+
+    def spend_window(self, frm: str | None, to: str | None, host: str | None = None) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        """/v1/spend's raw material: the usage rows whose turns started in the window, and the sessions they belong to
+        (``{key: {...}}``, one query, host-filtered). Sessions with no turns in the window are absent entirely."""
+        rows = self.usage_rows(frm, to)
+        keys = {r["key"] for r in rows}
+        found: dict[str, dict[str, Any]] = {}
+        for k in sorted(keys):
+            r = self.db.execute("SELECT * FROM sessions WHERE key=?", (k,)).fetchone()
+            if r is None or (host and r["host_id"] != host):
+                continue
+            d = dict(r)
+            d["meta"] = json.loads(d["meta"] or "{}")
+            d["title"] = d["live_name"] or d["title"]
+            for f in ("parent_key", "job", "job_status", "job_brief"):
+                d[f] = d[f] or ""
+            found[k] = d
+        return [r for r in rows if r["key"] in found], found
+
+    def usage_window(self, frm: str | None, to: str | None, host: str | None = None) -> list[dict[str, Any]]:
+        """What /v1/spend prices: one row per (session, model) with turns in the window, carrying the session's own
+        fields (harness, meta, title, host, the pool-job link) next to its token totals (spend_window's two halves,
+        joined)."""
+        rows, found = self.spend_window(frm, to, host)
+        out = []
+        for r in rows:
+            s = found[r["key"]]
+            out.append({**r, "harness": s["harness"], "host_id": s["host_id"], "meta": s["meta"], "title": s["title"],
+                        "started_at": s["started_at"], "parent_key": s["parent_key"], "job": s["job"],
+                        "job_status": s["job_status"], "job_brief": s["job_brief"]})
+        return out
+
+    def usage_total(self, frm: str | None, to: str | None, host: str | None = None) -> dict[str, Any]:
+        """The window's cloud token total by type, over the same rows."""
+        tokens = {t: 0 for t in TOKEN_TYPES}
+        for r in self.usage_window(frm, to, host):
+            for t in TOKEN_TYPES:
+                tokens[t] += r["tokens"][t]
+        return {"tokens": tokens}
+
+    def turn_usage(self, key: str) -> dict[str, Any]:
+        """One session's totals: tokens by type, the tokens to price here (pi prices a cost_usd turn itself), the
+        model of its newest turn ('' when none named one) and pi's own cost total."""
+        u = _blank_usage()
+        for r in self.db.execute(_usage_sql("t.key=?", "t"), (key,)):
+            _accumulate(u, _usage_row(r))
+        return u
+
     def sessions(self, host: str | None = None, include_ended: bool = True, limit: int = 500) -> list[dict[str, Any]]:
         q = "SELECT * FROM sessions"
         cond, args = [], []
@@ -485,14 +610,33 @@ class Store:
         q += " WHERE " + " AND ".join(cond)
         q += " ORDER BY CASE live_status WHEN 'busy' THEN 0 WHEN 'waiting' THEN 0 WHEN 'shell' THEN 1 WHEN 'idle' THEN 1 WHEN 'unknown' THEN 2 ELSE 3 END, last_activity DESC LIMIT ?"
         args.append(limit)
+        rows = list(self.db.execute(q, args))
+        # two queries for the whole list rather than one per row: everyone's turn totals, and the pool-job child counts
+        keys = {r["key"] for r in rows}
+        usage = {k: v for k, v in self.usage_rollup(self.usage_rows()).items() if k in keys}
+        kids = dict(self.db.execute("SELECT parent_key, COUNT(*) FROM sessions WHERE COALESCE(parent_key,'')!='' "
+                                    "GROUP BY parent_key"))
         out = []
-        for r in self.db.execute(q, args):
+        for r in rows:
             d = self._session_row(r)
+            d["children"] = kids.get(d["key"], 0)
+            d["spend"] = self._spend(d, usage.get(d["key"], _blank_usage()))
             out.append(d)
         return out
 
+    def _spend(self, d: dict[str, Any], u: dict[str, Any]) -> dict[str, Any]:
+        """What this session's turns cost at the hub's rates (hub/spend.py). usd is null when its model has no rate or
+        it turned over no tokens: an unpriced model contributes tokens, never $0. ``local`` is SAINT's, filled in by
+        the API for a single session."""
+        from ctxswitch.hub.spend import usage_spend
+        harness = d.get("harness") or ""
+        account = ((d.get("meta") or {}).get("profile") or "default") if harness == "claude" else (harness or "default")
+        return usage_spend(u["tokens"], u["model"], u["reported"], self.prices, account=account, priced=u["priced"])
+
     def _session_row(self, r: sqlite3.Row) -> dict[str, Any]:
         d = dict(r); d["meta"] = json.loads(d["meta"] or "{}"); d["ended"] = bool(d["ended"])
+        for k in ("parent_key", "job", "job_status", "job_brief"):      # a pool job says who launched it and how it went
+            d[k] = d.get(k) or ""
         if d.get("live_name"):                          # the running session's own name beats the transcript's
             d["title"] = d["live_name"]
         last = self.db.execute("SELECT data FROM turns WHERE key=? ORDER BY idx DESC LIMIT 1", (d["key"],)).fetchone()
@@ -523,6 +667,9 @@ class Store:
         d["siblings"] = self.siblings(d)
         d["workstream_messages"] = self.workstream_messages(d.get("workstream"))
         d.update(self.handoff_links(key))
+        d["children_keys"] = self.children(key)
+        d["children"] = len(d["children_keys"])
+        d["spend"] = self._spend(d, self.turn_usage(key))
         return d
 
     def search(self, query: str, kinds: tuple[str, ...] = SEARCH_KINDS, host: str | None = None,
@@ -652,3 +799,4 @@ def _norm(text: str | None) -> str:
 def _clip(text: str | None, n: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= n else text[: n - 1] + "…"
+

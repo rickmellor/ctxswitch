@@ -206,11 +206,13 @@ def test_the_output_tail_gets_truncated(pane):
     for _ in range(4):
         send(pane, ":")
     assert wait_for(lambda: pane.out.stat().st_size <= cap), "the capture kept growing past the cap"
-    rs = records(pane.log)
-    big = [r for r in rs if r["t"] == "end" and r["out"] > cap]
-    assert big, "no end record ever saw the capture over the cap"
-    assert any(s["out"] < big[-1]["out"] for s in rs if s["t"] == "start" and s["n"] > big[-1]["n"]), \
-        "offsets did not restart after the truncation"
+
+    def restarted():
+        rs = records(pane.log)
+        big = [r for r in rs if r["t"] == "end" and r["out"] > cap]
+        return bool(big) and any(s["out"] < big[-1]["out"] for s in rs if s["t"] == "start" and s["n"] > big[-1]["n"])
+    # the start record after the truncation lands a beat after the capture shrinks: wait for it, don't read once
+    assert wait_for(restarted), "offsets did not restart after the truncation"
 
 
 def test_a_resumed_shell_adds_to_the_same_transcript(pane):

@@ -8,6 +8,7 @@ import uvicorn
 
 from ctxswitch.common.config import data_dir, load
 from ctxswitch.hub.api import Hub
+from ctxswitch.hub.spend import SaintUsage
 from ctxswitch.hub.store import Store
 
 
@@ -21,7 +22,9 @@ def main() -> None:
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)       # one INFO line per seat call otherwise
     db = a.db or cfg.hub.db_path or str(data_dir() / "hub.db")
-    hub = Hub(Store(db), a.token if a.token is not None else cfg.hub.token)
+    usage_url = cfg.hub.usage_endpoint(cfg.seats)      # SAINT's energy accounting; "" = no local numbers
+    hub = Hub(Store(db), a.token if a.token is not None else cfg.hub.token,
+              saint=SaintUsage(usage_url) if usage_url else None, prices=cfg.hub.prices, price_as=cfg.hub.local_price_as)
     if cfg.hub.recap and not a.no_recap and cfg.seats:
         from ctxswitch.hub.tracker.recap import Recapper
         seat = sorted(cfg.seats, key=lambda x: x.priority)[0]
