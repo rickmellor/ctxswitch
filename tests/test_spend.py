@@ -202,7 +202,7 @@ def test_spend_totals_the_window_by_account_and_model(tmp_path):
     assert body["rates"] == "default"
     assert body["total_usd"] == pytest.approx(28.0 + 1.0)               # cloud + SAINT's energy
     assert [s["key"] for s in body["sessions"]][0] == P and body["sessions"][0]["usd"] == pytest.approx(27.5)
-    assert body["sessions"][-1]["tokens"] == 0                          # the shell: nothing recorded
+    assert SH not in [s["key"] for s in body["sessions"]]              # the shell recorded nothing: not a spend row
 
 
 def test_spend_local_energy_and_the_pool_jobs(tmp_path):

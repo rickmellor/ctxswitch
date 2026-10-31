@@ -553,7 +553,8 @@ class CtxApp(App):
         self.spend = spend
         live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
         self.sub_title = f"{self.host_filter or 'all'} · {live} live"
-        self.query_one("#summary", Static).update(summary_text(sessions, self.host_filter, spend, max(20, self.size.width - 2)))
+        head = self.query_one("#summary", Static)
+        head.update(summary_text(sessions, self.host_filter, spend, max(20, (head.size.width or self.size.width) - 2)))
         self.popup(attention)
         self.render_table()
         self.render_detail()

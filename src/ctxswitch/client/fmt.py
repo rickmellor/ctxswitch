@@ -270,7 +270,7 @@ def spend_lines(reports: dict[str, dict | None]) -> list[str]:
     jobs = wide.get("jobs") or []
     out.append(f"POOL JOBS ({len(jobs)})" if jobs else "POOL JOBS")
     for j in jobs[:15]:
-        out.append(f"  {j.get('job','?'):<24} {one_line(j.get('parent_title'), 22):<22} {j.get('status') or '?':<8}"
+        out.append(f"  {j.get('job','?'):<26} {one_line(j.get('parent_title'), 20):<20} {one_line(j.get('status') or '?', 14):<14}"
                    f" {j.get('turns') if j.get('turns') is not None else '-':>4} turns {_dur(j.get('dur_s')):>6}"
                    f"  {tokens_short(j.get('tokens')):>7} tok ~{_num(j.get('local_usd'))} if-cloud {_num(j.get('if_cloud_usd'))}")
     wide2 = max(reports.values(), key=lambda r: len((r or {}).get("sessions") or []), default=None) or {}

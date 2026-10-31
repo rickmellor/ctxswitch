@@ -251,6 +251,7 @@ def spend_report(store, frm: str, to: str, host: str | None, prices: dict[str, d
         row["tokens"] += s["tokens"]
         if r["model"]:
             row["model"] = r["model"]
+    sessions = [x for x in sessions if x["tokens"] or x["usd"]]   # a session with nothing recorded has no place here
     sessions.sort(key=lambda d: (-(d["usd"] or 0.0), -d["tokens"], d["key"]))
     sessions = sessions[:30]
 
