@@ -870,14 +870,23 @@ class CtxApp(App):
         t = Text()
         t.append(f"{fmt.state_glyph(s)} {fmt.display_title(s) or '-'}\n", style="bold")
         turns = s.get("turns", [])
-        # the card reads top-down by what you need on coming back: what's going on, what it costs, where it is,
-        # the last exchange, then everything else
+        # the card reads top-down by what you need on coming back: what's going on, what it waits on, what it costs,
+        # where it is, the last exchange, then everything else
         if s.get("recap"):
             stale = s.get("recap_anchor") != _anchor(s)
             t.append("RECAP" + (" (updating…)" if stale else "") + "\n", style="bold")
             t.append(s["recap"] + "\n", style="cyan")
             for line in (s.get("reentry") or "").splitlines():
                 t.append(f"› {line}\n")
+            t.append("\n")
+        opens = [x for x in s.get("asks", []) if not x["answered"]]
+        if opens:
+            t.append("WAITING ON YOU\n", style="bold yellow")
+            for x in opens:
+                t.append(f"◐ {fmt.age(x.get('asked_at'), now)} [{x['kind']}] ", style="yellow")
+                t.append(x['text'] + "\n")
+            ask, why = fmt.reply_target(s)
+            t.append("  a = answer it here\n" if ask else f"  {why}\n", style="dim")
             t.append("\n")
         kids = kids if kids is not None else self._kids(s)   # load_detail fetched them with the session
         line = fmt.spend_line(s, kids or None)
@@ -941,15 +950,6 @@ class CtxApp(App):
             for m in new["replies"][-2:]:
                 t.append("  reply: ", style="dim")
                 t.append(f"{fmt.one_line(m.get('reply'), 140)}\n")
-            t.append("\n")
-        opens = [x for x in s.get("asks", []) if not x["answered"]]
-        if opens:
-            t.append("WAITING ON YOU\n", style="bold yellow")
-            for x in opens:
-                t.append(f"◐ {fmt.age(x.get('asked_at'), now)} [{x['kind']}] ", style="yellow")
-                t.append(x['text'] + "\n")
-            ask, why = fmt.reply_target(s)
-            t.append("  a = answer it here\n" if ask else f"  {why}\n", style="dim")
             t.append("\n")
         msgs = fmt.messages(s)
         if msgs:

@@ -433,8 +433,8 @@ def test_the_header_drops_the_account_brackets_before_it_drops_a_figure():
     assert fmt.header_spend(two, 20) == "today $12.40 · cloud 12.40 · local 0.48"
 
 
-async def test_the_detail_card_reads_recap_spend_session_last_exchange_then_the_rest(monkeypatch):
-    """Coming back to a session, the card leads with what's going on, then what it costs, where it is and what was
+async def test_the_detail_card_reads_recap_asks_spend_session_last_exchange_then_the_rest(monkeypatch):
+    """Coming back to a session, the card leads with what's going on and what it waits on, then what it costs, where it is and what was
     last said; the asks, messages, rules and history follow."""
     turn = {"idx": 0, "started_at": "2026-10-30T09:00:00Z", "ended_at": "2026-10-30T09:01:00Z", "user_text": "ship it",
             "user_origin": "human", "assistant_text": "Shipped.", "tally": {}, "asks": [], "events": [], "complete": True}
@@ -447,6 +447,6 @@ async def test_the_detail_card_reads_recap_spend_session_last_exchange_then_the_
     async with app.run_test(size=(70, 40)) as pilot:
         await pilot.pause(1)
         t = app.query_one("#detail_text").render().plain
-        order = ["RECAP", "SPEND", "/home/me/webapp", "for: the 2.4 release", "LAST EXCHANGE", "WAITING ON YOU"]
+        order = ["RECAP", "WAITING ON YOU", "SPEND", "/home/me/webapp", "for: the 2.4 release", "LAST EXCHANGE"]
         at = [t.find(x) for x in order]
         assert -1 not in at and at == sorted(at), dict(zip(order, at))

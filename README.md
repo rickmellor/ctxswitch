@@ -190,6 +190,10 @@ and time instead. The waiting line under a row now starts `└`, so `↳` means 
 **Detail pane** for the selected session, most useful first:
 - its title;
 - **RECAP**: one line on where it stands and what it needs from you, then a short `›` re-entry card (see below);
+- **WAITING ON YOU**: every open question, approval or prompt, verbatim, with how long it's been waiting.
+  Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
+  input), `prompt` (a pi dialog), `plain` (its reply ended in a question), `text` (the tracker read a question
+  in its reply). Underneath: `a = answer it here`, or why you have to answer in the session;
 - **SPEND**: what its own turns cost (see Spend), and under it **POOL JOBS**, the jobs it launched with their
   estimates;
 - the state and age, number of exchanges, and when you last looked (`seen 2h`); what Enter will do with it, the
@@ -199,10 +203,6 @@ and time instead. The waiting line under a row now starts `└`, so `↳` means 
 - **SINCE YOU LOOKED**: what's new since you last opened it (on any machine): how many exchanges, and the
   decisions, claims and instructions they added. Not shown before you've opened it once. The list row's `+N` is
   the same count;
-- **WAITING ON YOU**: every open question, approval or prompt, verbatim, with how long it's been waiting.
-  Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
-  input), `prompt` (a pi dialog), `plain` (its reply ended in a question), `text` (the tracker read a question
-  in its reply). Underneath: `a = answer it here`, or why you have to answer in the session;
 - **MESSAGES**: what you sent it with `m` or `ctx send`, and what other agents sent it (`from <session>`), and where
   each one is (see Messages);
 - **YOUR INSTRUCTIONS**: standing rules you gave it that are still in force, numbered for `i`, with the exchange
