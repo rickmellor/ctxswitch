@@ -276,9 +276,15 @@ def test_shell_session_id_is_the_stem():
         "3f2b1c4a-0000-4000-8000-000000000001"
 
 
-def test_shell_root_defaults_to_the_state_directory():
+def test_shell_root_is_where_ctx_shell_writes(monkeypatch, tmp_path):
+    """The collector watches exactly where `ctx shell` writes: $CTXSWITCH_SHELLS, else the state directory."""
+    from pathlib import Path
     from ctxswitch.common.config import CollectorConfig as C
-    assert C().shell_roots == ["~/.local/state/ctxswitch/shells"]
+    monkeypatch.setenv("CTXSWITCH_SHELLS", str(tmp_path / "x"))
+    assert C().shell_roots == [str(tmp_path / "x")]
+    monkeypatch.delenv("CTXSWITCH_SHELLS")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert C().shell_roots == [str(Path(tmp_path) / ".local/state/ctxswitch/shells")]
 
 
 # -- registry liveness -------------------------------------------------------------------------------------------
@@ -335,3 +341,10 @@ def test_a_terminals_crlf_output_keeps_its_lines(tmp_path):
     raw = b"\x1b[?2004l\rhello from the shell\r\nstep 1/3\rstep 3/3\r\nls: cannot access '/x': No such file\r\n\x1b[?2004h"
     o = tmp_path / "s.out"; o.write_bytes(raw)
     assert output_tail(o, 0, len(raw)) == "hello from the shell\nstep 3/3\nls: cannot access '/x': No such file"
+
+
+def test_offsets_running_backwards_never_read_other_output(tmp_path):
+    """end < start with the file still long (it was truncated and refilled): no tail, not whatever follows `start`."""
+    from ctxswitch.collector.adapters.shell import output_tail
+    o = tmp_path / "s.out"; o.write_bytes(b"x" * 50 + b"someone else's output\n" * 4)
+    assert output_tail(o, 50, 10) == "" and output_tail(o, 50, 50) == ""
