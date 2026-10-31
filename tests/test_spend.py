@@ -229,10 +229,10 @@ def test_spend_filters_by_window_and_host_and_validates_the_timestamps(tmp_path)
     assert c.get("/v1/spend").status_code == 200                                  # defaults: the last day
     assert url(**{"from": "not-a-timestamp"}).status_code == 400 and url(to="nope").status_code == 400
     assert url(**{"from": DAY, "to": DAY}).status_code == 400                                # from must be before to
-    assert c.get("/v1/spend").status_code == 401                                   # auth required
+    assert TestClient(Hub(store, token="t").app()).get("/v1/spend").status_code == 401   # auth required
     day = url(**{"from": DAY, "to": NEXT}).json()
     assert OLD not in [s["key"] for s in day["sessions"]]                          # last year's turns are out
-    assert day["cloud"]["tokens"] == _u(i=2_100_000, o=1_000_000)
+    assert day["cloud"]["tokens"] == _u(i=3_100_000, o=1_000_000)             # the corpus's 2.1M + desk's 1M
     half = url(**{"from": "2026-01-02T10:30:00Z", "to": NEXT}).json()              # only turns that started after it
     assert half["cloud"]["tokens"] == _u(i=500_000) and half["cloud"]["usd"] == pytest.approx(1.1)
     desk = url(**{"from": DAY, "to": NEXT}, host="desk").json()
@@ -275,8 +275,9 @@ def test_spend_lists_a_job_saint_knows_that_the_ledger_never_linked(tmp_path):
 # -- the session endpoints ---------------------------------------------------------------------------------------
 def test_session_rows_carry_the_link_and_their_spend(tmp_path):
     store = Store(tmp_path / "hub.db")
-    _sess(store, P, live=True)
-    _sess(store, CHILD, parent_key=P, job="sa-2-j1", job_status="running", live=True, profile="max")
+    _sess(store, P)
+    _sess(store, CHILD, parent_key=P, job="sa-2-j1", job_status="running", profile="max")
+    store.set_liveness("laptop", [{"key": k, "status": "idle", "status_since": IN_DAY, "pid": 1, "socket": "/x"} for k in (P, CHILD)])
     store.upsert_turns(CHILD, [_turn(0, model="claude-haiku-4-5-20251001-v1:0", usage=_u(i=1_000_000, o=1_000_000))], None)
     rows = {r["key"]: r for r in _hub(store).get("/v1/sessions", headers=H).json()["sessions"]}
     assert (rows[CHILD]["parent_key"], rows[CHILD]["job"], rows[CHILD]["job_status"], rows[CHILD]["job_brief"]) == \

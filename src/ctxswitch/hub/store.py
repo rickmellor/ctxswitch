@@ -569,6 +569,27 @@ class Store:
             found[k] = d
         return [r for r in rows if r["key"] in found], found
 
+    def usage_window(self, frm: str | None, to: str | None, host: str | None = None) -> list[dict[str, Any]]:
+        """What /v1/spend prices: one row per (session, model) with turns in the window, carrying the session's own
+        fields (harness, meta, title, host, the pool-job link) next to its token totals (spend_window's two halves,
+        joined)."""
+        rows, found = self.spend_window(frm, to, host)
+        out = []
+        for r in rows:
+            s = found[r["key"]]
+            out.append({**r, "harness": s["harness"], "host_id": s["host_id"], "meta": s["meta"], "title": s["title"],
+                        "started_at": s["started_at"], "parent_key": s["parent_key"], "job": s["job"],
+                        "job_status": s["job_status"], "job_brief": s["job_brief"]})
+        return out
+
+    def usage_total(self, frm: str | None, to: str | None, host: str | None = None) -> dict[str, Any]:
+        """The window's cloud token total by type, over the same rows."""
+        tokens = {t: 0 for t in TOKEN_TYPES}
+        for r in self.usage_window(frm, to, host):
+            for t in TOKEN_TYPES:
+                tokens[t] += r["tokens"][t]
+        return {"tokens": tokens}
+
     def turn_usage(self, key: str) -> dict[str, Any]:
         """One session's totals: tokens by type, the tokens to price here (pi prices a cost_usd turn itself), the
         model of its newest turn ('' when none named one) and pi's own cost total."""
@@ -779,7 +800,3 @@ def _clip(text: str | None, n: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= n else text[: n - 1] + "…"
 
-
-def _by_type(r: sqlite3.Row) -> dict[str, int]:
-    return {"input": r["u_in"] or 0, "output": r["u_out"] or 0, "cache_read": r["u_cread"] or 0,
-            "cache_creation": r["u_ccreate"] or 0}

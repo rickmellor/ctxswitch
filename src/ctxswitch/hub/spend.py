@@ -216,11 +216,13 @@ def spend_report(store, frm: str, to: str, host: str | None, prices: dict[str, d
     cloud_usd, unpriced = 0.0, set()
     per_account: dict[str, dict[str, Any]] = {}
     per_model: dict[str, dict[str, Any]] = {}
+    seen: dict[str, set[str]] = {}                  # account -> session keys: a session on two models counts once
     sessions: list[dict[str, Any]] = []
+    by_key: dict[str, dict[str, Any]] = {}
     for r in rows:
         harness = r["harness"]
         account = (r["meta"].get("profile") or "default") if harness == "claude" else (harness or "default")
-        s = usage_spend(r["tokens"], r["model"], r["reported"], prices, account)
+        s = usage_spend(r["tokens"], r["model"], r["reported"], prices, account, r.get("priced"))   # pi-priced turns once
         usd = s["usd"] or 0.0
         cloud_usd += usd
         if s["tokens"]:
@@ -229,14 +231,23 @@ def spend_report(store, frm: str, to: str, host: str | None, prices: dict[str, d
             a = per_account.setdefault(account, {"account": account, "usd": 0.0, "tokens": 0, "sessions": 0})
             a["usd"] += usd
             a["tokens"] += s["tokens"]
-            a["sessions"] += 1
+            if r["key"] not in seen.setdefault(account, set()):
+                seen[account].add(r["key"]); a["sessions"] += 1
             key = norm_model(r["model"]) or "(unknown)"
             m = per_model.setdefault(key, {"model": key, "usd": 0.0, "tokens": 0, "priced": s["usd"] is not None})
             m["usd"] += usd
             m["tokens"] += s["tokens"]
             m["priced"] = m["priced"] and not s["unpriced"]
-        sessions.append({"key": r["key"], "title": r["title"] or "", "host_id": r["host_id"], "harness": harness,
-                         "account": account, "usd": s["usd"], "tokens": s["tokens"], "model": r["model"] or ""})
+        row = by_key.get(r["key"])                      # one entry per session: its models' rows summed
+        if row is None:
+            row = by_key[r["key"]] = {"key": r["key"], "title": r["title"] or "", "host_id": r["host_id"], "harness": harness,
+                                      "account": account, "usd": None, "tokens": 0, "model": r["model"] or ""}
+            sessions.append(row)
+        if s["usd"] is not None:
+            row["usd"] = (row["usd"] or 0.0) + s["usd"]
+        row["tokens"] += s["tokens"]
+        if r["model"]:
+            row["model"] = r["model"]
     sessions.sort(key=lambda d: (-(d["usd"] or 0.0), -d["tokens"], d["key"]))
     sessions = sessions[:30]
 
