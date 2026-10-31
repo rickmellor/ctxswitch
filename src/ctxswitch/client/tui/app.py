@@ -173,6 +173,9 @@ HELP_TIPS = [
      "prompt) waits on a keypress in its own terminal: Enter opens it.")),
     ("Agents", ("Agents can read this board and message each other through the ctxswitch MCP tools. Their messages "
      "say which session and host sent them, and never count as yours.")),
+    ("Shell sessions", ("n → shell opens a bash that records each command, its exit code and the last lines it "
+     "printed, so it's on the list (sh) with a recap like any session. Start a command with a space to keep it out. "
+     "Shells don't take messages; an ended one resumes with its history (↻).")),
     ("Ending a session", ("k ends the selected session's agent after a y (the transcript stays: Enter resumes it). "
      "Quitting it yourself (/exit in Claude Code) does the same. Either way the next agent takes its place on the "
      "left and the ended one drops off the list (e shows ended ones). Q ends everything in the ctx session.")),
