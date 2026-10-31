@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ctxswitch.common.schema import PLAN_ASK, Ask, ToolTally, Turn, add_usage, question_text, trim
+from ctxswitch.common.schema import PLAN_ASK, USAGE_KEYS, Ask, ToolTally, Turn, add_usage, question_text, trim
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "ToolSearch"}
@@ -24,6 +24,10 @@ AGENT_TOOLS = {"Agent", "Task", "Workflow"}
 PLAN_REJECTED = "The user doesn't want to proceed with this tool use."
 _REJECT_FEEDBACK = re.compile(r"the user said:\s*(.*)\Z", re.S)
 _CMD = re.compile(r"<command-name>(/[^<\s]+)</command-name>")
+
+
+_USAGE_MAP = (("input", "input_tokens"), ("output", "output_tokens"), ("cache_read", "cache_read_input_tokens"),
+              ("cache_creation", "cache_creation_input_tokens"))
 
 
 class ClaudeParser:
@@ -36,12 +40,13 @@ class ClaudeParser:
         self._n = 0
         self._tools: dict[str, str] = {}        # pending tool_use id -> tool name
         self._pending_events: list[str] = []    # events seen before the next turn opens
+        self._usage_ids: dict[str, dict[str, int]] = {}   # this turn's API replies (message.id) -> the usage counted
         self.bad_lines = 0
 
     # -- persistence -------------------------------------------------------------------------------------------
     def state(self) -> dict[str, Any]:
         return {"meta": self.meta, "cur": self._cur.to_dict() if self._cur else None, "n": self._n,
-                "tools": self._tools, "pending": self._pending_events, "bad": self.bad_lines}
+                "tools": self._tools, "pending": self._pending_events, "bad": self.bad_lines, "usage_ids": self._usage_ids}
 
     @classmethod
     def from_state(cls, st: dict[str, Any], max_text: int = 4000) -> "ClaudeParser":
@@ -50,6 +55,7 @@ class ClaudeParser:
         if str(p.meta.get("first_prompt", "")).startswith("<"):      # cached from before the wrapper filter
             p.meta.pop("first_prompt")
         p.bad_lines = st["bad"]
+        p._usage_ids = st.get("usage_ids") or {}
         p._cur = Turn.from_dict(st["cur"]) if st["cur"] else None
         return p
 
@@ -148,6 +154,7 @@ class ClaudeParser:
                 if a.kind == "plain" and not a.answered:
                     a.answered, a.answer, a.answered_at = True, trim(text, 400), e.get("timestamp")
         events = self._pending_events; self._pending_events = []
+        self._usage_ids = {}
         self._cur = Turn(idx=self._n, started_at=e.get("timestamp") or "", ended_at=e.get("timestamp"),
                          user_text=trim(text, self.max_text), user_origin=origin, assistant_text="",
                          events=events, offset_end=offset_end)
@@ -228,9 +235,14 @@ class ClaudeParser:
         cur = self._cur
         assert cur is not None
         if isinstance(msg.get("usage"), dict):
-            add_usage(cur, msg["usage"], (("input", "input_tokens"), ("output", "output_tokens"),
-                                          ("cache_read", "cache_read_input_tokens"),
-                                          ("cache_creation", "cache_creation_input_tokens")))
+            # One API reply is written as several lines (thinking, text, each tool call), every one repeating the
+            # reply's usage: count each message.id once, its latest line's figures replacing the earlier ones.
+            u = {k: v for k, v in ((dst, msg["usage"].get(src)) for dst, src in _USAGE_MAP) if isinstance(v, int)}
+            mid = msg.get("id")
+            prev = self._usage_ids.get(mid, {}) if isinstance(mid, str) else {}
+            add_usage(cur, {k: u.get(k, 0) - prev.get(k, 0) for k in USAGE_KEYS}, tuple((k, k) for k in USAGE_KEYS))
+            if isinstance(mid, str):
+                self._usage_ids[mid] = u
         if isinstance(model, str) and model:
             cur.model = model
         content = msg.get("content")

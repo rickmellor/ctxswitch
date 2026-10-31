@@ -46,6 +46,31 @@ def test_claude_usage_sums_the_turns_assistant_entries():
     assert switched.current.model == "claude-haiku-4-5"               # the turn's last assistant entry names it
 
 
+def test_claude_usage_counts_each_api_reply_once_however_many_lines_it_is_written_as():
+    """Claude Code writes one reply as a line per content block, each repeating the reply's usage; the cost was
+    2.2x the bill while every line was added. The reply's last line's figures stand (its output count is final)."""
+    def line(mid, blocks, ts, usage):
+        row = ausage(blocks, ts, usage)
+        row["message"] = dict(row["message"], id=mid)
+        return row
+    rows = [user("go", "2026-10-28T10:00:00Z"),
+            line("msg_1", [{"type": "thinking", "thinking": "hm"}], "2026-10-28T10:00:01Z", dict(U, output_tokens=3)),
+            line("msg_1", [text("Looking.")], "2026-10-28T10:00:01Z", U),
+            line("msg_1", [tool_use("Read", "t1")], "2026-10-28T10:00:01Z", U),
+            line("msg_2", [text("Done.")], "2026-10-28T10:00:02Z", dict(U, input_tokens=1, output_tokens=2))]
+    p = feed_all(ClaudeParser(), rows)
+    assert p.current.usage == {"input": 101, "output": 22, "cache_read": 10000, "cache_creation": 1400}
+    # the parser is saved and restored between reads of the file: a reply split across two reads still counts once
+    half = ClaudeParser.from_state(json.loads(json.dumps(feed_all(ClaudeParser(), rows[:2]).state())))
+    for i, r in enumerate(rows[2:], 3):
+        half.feed(r, i * 100)
+    assert half.current.usage == p.current.usage
+    # the same id in the next turn is a different count (ids are per turn, so a new prompt starts afresh)
+    nxt = feed_all(ClaudeParser(), rows + [user("again", "2026-10-28T10:01:00Z"),
+                                           line("msg_1", [text("ok")], "2026-10-28T10:01:01Z", U)])
+    assert nxt.drain()[0].usage["input"] == 101 and nxt.current.usage["input"] == 100
+
+
 def test_claude_usage_counts_a_non_int_as_zero_and_stays_none_without_an_assistant():
     p = feed_all(ClaudeParser(), [user("go", "2026-10-28T10:00:00Z"),
                                   ausage([text("ok")], "2026-10-28T10:00:01Z",
