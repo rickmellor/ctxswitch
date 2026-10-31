@@ -106,7 +106,7 @@ async def test_the_budget_loop_polls_at_start_and_only_where_the_tool_exists(tmp
     read = lambda cmd, account: (read.got.append((cmd, account)), {"account": account})[1]
     read.got = []
     monkeypatch.setattr(C, "read_budget", read)
-    monkeypatch.setattr(C.shutil, "which", lambda c: "/usr/bin/" + c)
+    monkeypatch.setattr(C.shutil, "which", lambda c, path=None: "/usr/bin/" + c)
     slept = []
 
     async def nap(s):
@@ -115,10 +115,10 @@ async def test_the_budget_loop_polls_at_start_and_only_where_the_tool_exists(tmp
     monkeypatch.setattr(asyncio, "sleep", nap)
     with pytest.raises(asyncio.CancelledError):
         await col.budget_loop()
-    assert read.got == [("bedrock-spend", "bedrock")] and slept == [900]        # the first poll, right away
+    assert read.got == [("/usr/bin/bedrock-spend", "bedrock")] and slept == [900]   # the first poll, right away, by its full path
     assert [kind for _, kind, _ in col.state.pending()] == ["budget"]
 
-    read.got.clear(); monkeypatch.setattr(C.shutil, "which", lambda c: None)    # a host without the tool: no loop at all
+    read.got.clear(); monkeypatch.setattr(C.shutil, "which", lambda c, path=None: None)    # a host without the tool: no loop at all
     await col.budget_loop()
     assert read.got == [] and slept == [900]
 
@@ -227,3 +227,15 @@ def test_the_spend_screen_has_a_budget_section_under_the_windows():
     assert lines[i - 1] == "" and lines[i + 1].startswith("  bedrock: $2255.58 of $2500.00 this month (90.2% used)")
     assert "POOL JOBS" in lines and lines.index("POOL JOBS") > i        # the windows, then the bill, then the detail
     assert "BUDGET" not in fmt.spend_lines({"7 days": {**rep, "budget": {}}})
+
+
+def test_the_budget_command_is_found_in_home_bin_when_the_service_path_leaves_it_out(tmp_path, monkeypatch):
+    """systemd --user's PATH has no ~/bin; the laptop's bedrock-spend is there, so the poll must still find it."""
+    (tmp_path / "bin").mkdir()
+    tool = tmp_path / "bin" / "fake-spend"
+    tool.write_text("#!/bin/sh\n"); tool.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert C.find_budget_cmd("fake-spend") == str(tool)
+    assert C.find_budget_cmd("no-such-spend-tool") is None
+    assert C.find_budget_cmd("") is None

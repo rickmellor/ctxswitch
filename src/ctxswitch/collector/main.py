@@ -94,6 +94,15 @@ def read_budget(cmd: str, account: str, run=subprocess.run) -> dict[str, Any] | 
             "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "source": "bedrock-spend"}
 
 
+def find_budget_cmd(cmd: str) -> str | None:
+    """Where the budget command is: on PATH, else in ~/bin or ~/.local/bin, which a systemd --user unit's PATH
+    leaves out (that's where `bedrock-spend` lives on the laptop, and without this the poll was silently off)."""
+    if not cmd:
+        return None
+    home = Path.home()
+    return shutil.which(cmd) or shutil.which(cmd, path=os.pathsep.join([str(home / "bin"), str(home / ".local" / "bin")]))
+
+
 def _budget_once(why: str) -> None:
     if why not in _budget_warned:
         _budget_warned.add(why)
@@ -293,9 +302,11 @@ class Collector:
     async def budget_loop(self) -> None:
         """The monthly budget, from the one host that has a ccwb token. A host without `bedrock-spend` runs no loop
         at all: the hub keeps whatever the host that has it last pushed."""
-        cmd = self.cfg.collector.budget_cmd
-        if not cmd or not shutil.which(cmd):
+        cmd = find_budget_cmd(self.cfg.collector.budget_cmd)
+        if not cmd:
+            log.info("budget: off (budget_cmd %r not found)", self.cfg.collector.budget_cmd) if self.cfg.collector.budget_cmd else None
             return
+        log.info("budget: polling %s", cmd)
         every = max(60, int(self.cfg.collector.budget_every or 0) or 900)
         while True:
             try:
