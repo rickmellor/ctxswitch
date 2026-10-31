@@ -191,10 +191,12 @@ def tok_total(u: dict | None) -> int:
 
 
 def cost_mark(s: dict) -> str:
-    """The cost at the end of a row: `` ~$0.03`` when it has an estimate, else the tokens it used."""
+    """The cost at the end of a row: `` ~$0.03`` when it has an estimate — a pool job's local estimate (its tokens at
+    SAINT's energy per token), else a priced cloud figure — else the tokens it used."""
     sp = s.get("spend") or {}
-    if sp.get("usd") is not None:
-        return f" ~${sp['usd']:.2f}"
+    for k in ("local_usd", "usd"):
+        if sp.get(k) is not None:
+            return f" ~${sp[k]:.2f}"
     tok = sp.get("tokens") or tok_total(s.get("job_tokens") or link(s, "job_tokens"))
     return f" {tokens_short(tok)} tok" if tok else ""
 
@@ -222,16 +224,18 @@ def spend_line(s: dict, children: list | None = None) -> str:
     return " · ".join(parts)
 
 
-def header_spend(rep: dict | None) -> str:
-    """The header's second line: what today has cost, cloud and local, the accounts when there's more than one."""
+def header_spend(rep: dict | None, width: int = 10_000) -> str:
+    """The header's second line: what today has cost, cloud and local, the accounts in brackets when there's more than
+    one and they fit in ``width`` (the pane's); the brackets go first, so the total, cloud and local always show."""
     if not rep:
         return "today —"
     cloud, loc = rep.get("cloud") or {}, rep.get("local") or {}
-    t = f"today {money(rep.get('total_usd'))} · cloud {_num(cloud.get('usd'))}"
+    head, tail = f"today {money(rep.get('total_usd'))} · cloud {_num(cloud.get('usd'))}", f" · local {_num(loc.get('energy_usd'))}"
     accts = cloud.get("by_account") or []
-    if len(accts) > 1:
-        t += " (" + " · ".join(f"{a.get('account') or 'default'} {_num(a.get('usd'))}" for a in accts) + ")"
-    return t + f" · local {_num(loc.get('energy_usd'))}"
+    brackets = " (" + " · ".join(f"{a.get('account') or 'default'} {_num(a.get('usd'))}" for a in accts) + ")" if len(accts) > 1 else ""
+    if brackets and len(head) + len(brackets) + len(tail) <= width:
+        return head + brackets + tail
+    return head + tail
 
 
 def pool_job_lines(children: list, n: int = 6) -> list[str]:

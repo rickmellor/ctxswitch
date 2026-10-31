@@ -381,3 +381,54 @@ def test_the_client_asks_the_hub_for_one_window(monkeypatch):
         raise AssertionError("a hub without the route must raise, like search() does")
     except ValueError as e:
         assert "HTTP 404" in str(e)
+
+
+def test_a_jobs_cost_mark_prefers_its_local_estimate_and_shows_zero_as_zero():
+    from ctxswitch.client import fmt
+    assert fmt.cost_mark({"spend": {"local_usd": 0.0312, "usd": None, "tokens": 1_975_400}}) == " ~$0.03"
+    assert fmt.cost_mark({"spend": {"local_usd": 0.0, "usd": None, "tokens": 5}}) == " ~$0.00"      # priced at nothing is still priced
+    assert fmt.cost_mark({"spend": {"local_usd": None, "usd": 1.5, "tokens": 9}}) == " ~$1.50"
+    assert fmt.cost_mark({"spend": {"local_usd": None, "usd": None, "tokens": 1_975_400}}) == " 2.0M tok"
+    assert fmt.cost_mark({"job_tokens": {"input": 400, "output": 100, "cache_read": 0, "cache_creation": 0}}) == " 500 tok"
+    assert fmt.cost_mark({}) == ""
+
+
+async def test_a_nested_job_row_has_no_waiting_line_or_marks(tmp_path, monkeypatch):
+    """A pool job under its parent is one line: its asks and unseen count belong to the job, not to you."""
+    from types import SimpleNamespace
+    from ctxswitch.client.tui import app as tui
+    from ctxswitch.common.config import Config
+    parent = {"key": "laptop/claude/p", "host_id": "laptop", "harness": "claude", "live_status": "busy", "status_since": "2026-10-30T10:00:00Z",
+              "started_at": "2026-10-30T09:00:00Z", "title": "parent", "cwd": "/r", "meta": {}, "open_asks": [], "parent_key": "", "job": ""}
+    child = dict(parent, key="laptop/claude/c", title="Your working directory is …", parent_key="laptop/claude/p", job="sa-1-j1",
+                 job_status="running", job_brief="b.md", started_at="2026-10-30T09:30:00Z", unseen=3,
+                 open_asks=[{"kind": "plain", "text": "Which one?", "asked_at": "2026-10-30T10:00:00Z"}], spend={"local_usd": 0.02, "tokens": 10})
+    cfg = Config(); cfg.hub.token = "t"
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: False)
+    monkeypatch.setattr(tui.CtxApp, "listen_ws", lambda self: None)
+    app = tui.CtxApp(cfg, None)
+    monkeypatch.setattr(app.client, "sessions", lambda host=None, live_only=False: {"change": 1, "sessions": [parent, child]})
+    monkeypatch.setattr(app.client, "attention", lambda host=None: {"items": []})
+    monkeypatch.setattr(app.client, "hosts", lambda: [])
+    monkeypatch.setattr(app.client, "spend", lambda *a, **k: None)
+    monkeypatch.setattr(app.client, "session", lambda key, turns=50: dict(parent if key == parent["key"] else child, turns=[], asks=[], ledger=[], messages=[]))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        t = app.query_one("#table")
+        rows = [t.get_row_at(i)[3].plain for i in range(t.row_count)]
+        assert rows[0].startswith("▶") or "parent" in rows[0]
+        kid = rows[1]
+        assert "↳" in kid and "b.md · running" in kid and kid.endswith("~$0.02")
+        assert "\n" not in kid and "◐" not in kid and "+3" not in kid                   # one line, no marks, no └
+        assert t.rows[t.coordinate_to_cell_key((1, 0)).row_key].height == 1
+        assert app.slots == ["laptop/claude/p"]                                         # Alt+1 is the parent only
+
+
+def test_the_header_drops_the_account_brackets_before_it_drops_a_figure():
+    from ctxswitch.client import fmt
+    two = {"total_usd": 12.4, "cloud": {"usd": 12.4, "by_account": [{"account": "bedrock", "usd": 11.1}, {"account": "max", "usd": 1.3}]},
+           "local": {"energy_usd": 0.48}}
+    full = "today $12.40 · cloud 12.40 (bedrock 11.10 · max 1.30) · local 0.48"
+    assert fmt.header_spend(two) == full and fmt.header_spend(two, len(full)) == full
+    assert fmt.header_spend(two, len(full) - 1) == "today $12.40 · cloud 12.40 · local 0.48"   # too narrow: the brackets go, the figures stay
+    assert fmt.header_spend(two, 20) == "today $12.40 · cloud 12.40 · local 0.48"

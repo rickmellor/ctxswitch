@@ -99,10 +99,11 @@ def summary_line(sessions: list[dict], host: str | None) -> Text:
     return t
 
 
-def summary_text(sessions: list[dict], host: str | None, spend: dict | None = None) -> Text:
-    """The header's two lines: who's on the board, and what today has cost."""
+def summary_text(sessions: list[dict], host: str | None, spend: dict | None = None, width: int = 10_000) -> Text:
+    """The header's two lines: who's on the board, and what today has cost (fitted to the pane: the per-account
+    brackets are the first thing to go)."""
     t = summary_line(sessions, host)
-    t.append("\n" + fmt.header_spend(spend), style="dim")
+    t.append("\n" + fmt.header_spend(spend, width), style="dim")
     return t
 
 
@@ -552,7 +553,7 @@ class CtxApp(App):
         self.spend = spend
         live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
         self.sub_title = f"{self.host_filter or 'all'} · {live} live"
-        self.query_one("#summary", Static).update(summary_text(sessions, self.host_filter, spend))
+        self.query_one("#summary", Static).update(summary_text(sessions, self.host_filter, spend, max(20, self.size.width - 2)))
         self.popup(attention)
         self.render_table()
         self.render_detail()
