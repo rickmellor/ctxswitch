@@ -263,7 +263,7 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
   drive them from this machine. A session still live on that host stays `⇢`: quit it there first (two copies of
   one session would fork it). The window closes when the agent (or ssh) exits.
 - **Two Claude accounts** (say, corporate Bedrock and a personal Max subscription in its own config directory):
-  list them as `[[claude_profiles]]` (see 9. Configuration). Rows then show the account instead of `cc`
+  list them as `[[claude_profiles]]` (see 10. Configuration). Rows then show the account instead of `cc`
   (`bedrock·laptop`, `max·laptop`). `n` lists one entry per account, `max: ~/repos/x` at the directory prompt does the same, the window is
   named `claude[max]:x`, and Enter resumes each session under the profile its transcript lives in. A profile's
   `command` must be a program, not a shell alias; wrap an alias in a script.
