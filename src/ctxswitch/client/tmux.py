@@ -682,6 +682,7 @@ def bootstrap(width: str | None = None, restart: bool = False) -> str:
         _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)
         _run("split-window", "-h", "-l", width, "-t", f"{SESSION}:{VIEWER_WINDOW}", "-c", os.getcwd(), ctx_cmd)
         _run("set-option", "-t", SESSION, "allow-rename", "off", check=False)
-        _run("select-pane", "-t", f"{SESSION}:{VIEWER_WINDOW}.0", check=False)
+        # a new session's left pane is an empty shell; you start at the board (its Start screen, when nothing's live)
+        _run("select-pane", "-t", f"{SESSION}:{VIEWER_WINDOW}.1", check=False)
     os.execvp(TMUX, [TMUX, "attach-session", "-t", SESSION])
     return ""

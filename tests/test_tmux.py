@@ -550,3 +550,15 @@ def test_resume_many_with_nothing_to_do_says_so(monkeypatch):
     assert tmux.resume_many([]) == "nothing to resume" and made == [] and shown == []
     monkeypatch.setattr(tmux, "in_tmux", lambda: False)
     assert tmux.resume_many(_ended(1)) == "not inside tmux" and made == [] and shown == []
+
+
+def test_a_fresh_ctx_tmux_starts_with_the_board_focused(server, monkeypatch, tmp_path):
+    """The left pane of a new session is an empty shell: you start at the board (its Start screen), not there."""
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    fake = tmp_path / "ctx"; fake.write_text("#!/bin/sh\nexec sleep 300\n"); fake.chmod(0o755)
+    monkeypatch.setattr(tmux.os.sys, "argv", [str(fake), "tmux"])
+    monkeypatch.setattr(tmux, "WIDTH_FILE", tmp_path / "w")
+    monkeypatch.setattr(tmux.os, "execvp", lambda f, argv: None)
+    tm("new-session", "-d", "-s", "keep"); tm("kill-session", "-t", "ctx")     # the last session would end the server
+    tmux.bootstrap("20")
+    assert tm("display-message", "-p", "-t", "ctx:mgr", "#{pane_index}") == "1"     # the board's pane is the active one
