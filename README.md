@@ -227,6 +227,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 |---|---|
 | `↑` `↓` | select a session (the detail pane follows) |
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
+| `1`…`9` | select the session with that number (its detail shows) without opening it; Enter, `k`, `m` and the rest then act on it |
 | `Alt+1`…`Alt+9` | open the session with that number (the list's first column; numbers follow the order shown). Works from any pane of the ctx session, agents included; outside it the key goes through as typed |
 | `n` | new session: a one-key picker (Claude Code per `[[claude_profiles]]` account, pi, Antigravity or a plain shell; only what's installed), then a directory (default: the selected session's). For Claude, `max: ~/repos/x` also picks the account |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |

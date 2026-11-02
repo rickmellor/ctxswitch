@@ -115,7 +115,7 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
         ("SESSION STATE (first column)", [(g, STATE_STYLE[st], STATE_HELP[st]) for st, g in fmt.GLYPH.items()]),
         ("ENTER (before the host)", [("▶", "bold", "it's on the left now")] +
          [(g, REACH_STYLE.get(r, ""), tmux.REACH_HELP[r]) for r, g in tmux.REACH_GLYPH.items() if r != "none"]),
-        ("ROW", [("1", "dim", "its number: Alt+1…9 opens it from any pane of the ctx session"),
+        ("ROW", [("1", "dim", "its number: 1…9 selects it here, Alt+1…9 opens it from any pane of the ctx session"),
                  ("3m", "dim", "time in this state (live), or since it was last active (ended)")] +
          [(h, "dim", f"{HARNESS_NAME.get(k, k)}, then its host ({h}·devbox)") for k, h in fmt.HARNESS.items()] +
          [("◐4m", "bold yellow", "a question has waited this long"), ("+2", "bold cyan", "exchanges since you last looked"),
@@ -164,6 +164,7 @@ def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
 HELP_KEYS = [
     (("enter",), "Enter", "open the selected session: bring it to the left pane, resume it, or say why not"),
     (("slot",), "Alt+1…9", "open the session with that number, from any pane of the ctx session"),
+    (("select_slot",), "1…9", "on the board: select the session with that number, without opening it (Enter, k, m… then act on it)"),
     (("n",), "n", "new session: pick Claude Code (one entry per account), pi or Antigravity or a plain shell, then a "
                   "directory (default: the selected session's). For Claude, 'max: directory' also picks the account"),
     (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
@@ -460,6 +461,7 @@ class CtxApp(App):
         Binding("less_than_sign", "wider", show=False), Binding("greater_than_sign", "narrower", show=False),   # the edge moves the arrow's way
         Binding("escape", "clear_filter", show=False),
         *(Binding(f"{slot_key(n)},alt+{n}", f"slot({n})", show=False) for n in range(1, SLOTS + 1)),
+        *(Binding(str(n), f"select_slot({n})", show=False) for n in range(1, SLOTS + 1)),   # a plain digit only selects
     ]
 
     def __init__(self, cfg: Config, host: str | None):
@@ -631,18 +633,30 @@ class CtxApp(App):
             self.notify(f"no session {n} on the board", severity="warning"); return
         self.open_key(self.slots[n - 1])
 
-    def open_key(self, key: str) -> None:
-        """Select a session on the board and open it, as Enter on its row does."""
+    def action_select_slot(self, n: int) -> None:
+        """1…9 on the board: move to the session numbered N (its detail shows), without opening it. Enter, k, m and
+        the rest then act on it; Alt+N is the one that opens."""
+        if not 1 <= n <= len(self.slots):
+            self.notify(f"no session {n} on the board", severity="warning"); return
+        self.select_key(self.slots[n - 1])
+
+    def select_key(self, key: str) -> bool:
+        """Put the cursor on a session's row. False (and a note) when it has left the board."""
         if not any(x["key"] == key for x in self.sessions):
             self.notify(f"{key} isn't on the board any more", timeout=6)
-            return
+            return False
         self.selected = key
         t = self.query_one("#table", DataTable)
         try:
             t.move_cursor(row=t.get_row_index(key))
-        except Exception:                               # noqa: BLE001 - filtered out of the table: open it anyway
+        except Exception:                               # noqa: BLE001 - filtered out of the table: still selected
             pass
-        self.action_resume()
+        return True
+
+    def open_key(self, key: str) -> None:
+        """Select a session on the board and open it, as Enter on its row does."""
+        if self.select_key(key):
+            self.action_resume()
 
     def action_toggle_popups(self) -> None:
         self.popups = not self.popups

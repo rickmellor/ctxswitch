@@ -186,6 +186,17 @@ def test_alt_n_opens_the_session_numbered_n():
     assert opened == ["k2"] and said == ["no session 3 on the board", "no session 0 on the board"]
 
 
+def test_a_plain_digit_selects_the_row_and_does_not_open_it():
+    selected, said = [], []
+    b = SimpleNamespace(slots=["k1", "k2"], select_key=lambda k: selected.append(k) or True,
+                        notify=lambda m, **k: said.append(m))
+    tui.CtxApp.action_select_slot(b, 2)
+    tui.CtxApp.action_select_slot(b, 3)
+    assert selected == ["k2"] and said == ["no session 3 on the board"]
+    bound = {k.strip(): b.action for b in tui.CtxApp.BINDINGS for k in b.key.split(",")}
+    assert all(bound[str(n)] == f"select_slot({n})" for n in range(1, tui.SLOTS + 1))
+
+
 def test_the_board_binds_alt_digits_to_its_own_pane_in_tmux(monkeypatch):
     calls = []
     monkeypatch.setattr(tui.tmux, "set_role", lambda p, r: calls.append(("role", p, r)))
@@ -293,11 +304,13 @@ def test_help_documents_every_key_the_board_binds():
     for b in tui.CtxApp.BINDINGS:
         if str(b.action).startswith("slot("):
             assert "slot" in documented
+        elif str(b.action).startswith("select_slot("):
+            assert "select_slot" in documented
         else:
             for k in b.key.split(","):
                 assert k.strip() in documented, (k, b.action)
     bound = {k.strip() for b in tui.CtxApp.BINDINGS for k in b.key.split(",")}
-    assert documented - {"slot"} <= bound                             # and every documented key is bound
+    assert documented - {"slot", "select_slot"} <= bound                             # and every documented key is bound
     text = tui.help_text()
     assert text.index("KEYS") < text.index("SESSION STATE") < text.index("RESTARTING THE BOARD")   # keys, legend, how-tos
     assert all(shown in text for _, shown, _ in tui.HELP_KEYS)

@@ -450,3 +450,19 @@ async def test_the_detail_card_reads_recap_asks_spend_session_last_exchange_then
         order = ["RECAP", "WAITING ON YOU", "SPEND", "/home/me/webapp", "for: the 2.4 release", "LAST EXCHANGE"]
         at = [t.find(x) for x in order]
         assert -1 not in at and at == sorted(at), dict(zip(order, at))
+
+
+async def test_pressing_a_digit_moves_the_cursor_and_enter_then_opens_that_row(monkeypatch):
+    app = _board(monkeypatch, [_sess(P1), _sess(C1, title="second one")], reports={})
+    opened = []
+    monkeypatch.setattr(tui.CtxApp, "action_resume", lambda self: opened.append(self.selected))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert app.slots[:2] == [P1, C1] and app.selected == P1
+        await pilot.press("2"); await pilot.pause(0.3)
+        assert app.selected == C1 and opened == []                       # selected, shown, not opened
+        assert app.query_one("#table").cursor_row == app.query_one("#table").get_row_index(C1)
+        await pilot.press("enter"); await pilot.pause(0.3)
+        assert opened == [C1]
+        await pilot.press("9"); await pilot.pause(0.3)
+        assert app.selected == C1                                        # no row 9: nothing moves
