@@ -506,3 +506,47 @@ def test_x_on_a_running_session_ends_it_and_waits_for_the_registry(server, monke
     assert s["live_status"] == "ended" and proc_start(pid) is None
     gone = {**s, "key": "laptop/claude/none", "live_status": "idle"}
     assert not mv.can_end_here(gone) and "quit it there" in mv.end_and_wait(gone, cfg)
+
+
+# -- resuming several at once (the Start screen's Enter) --------------------------------------------------------------
+def _many(monkeypatch, fail=()):
+    """new_session_window and show patched to record: what resume_many does is the order and the one show."""
+    made, shown = [], []
+
+    def win(s, ssh=None, extra=None):
+        if s["key"] in fail:
+            raise RuntimeError("cannot resume")
+        made.append(s["key"])
+        return object()
+
+    monkeypatch.setattr(tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tmux, "new_session_window", win)
+    monkeypatch.setattr(tmux, "show", lambda s, focus=True, ssh=None, extra=None: shown.append(s["key"]) or "showing")
+    return made, shown
+
+
+def _ended(n):
+    return [{"key": f"laptop/claude/s{i}", "harness": "claude", "session_id": f"s{i}", "host_id": "laptop",
+             "title": f"session {i}", "live_status": "ended", "cwd": "/r"} for i in range(1, n + 1)]
+
+
+def test_resume_many_makes_one_window_each_and_shows_the_last_once(monkeypatch):
+    made, shown = _many(monkeypatch)
+    assert tmux.resume_many(_ended(3), ssh={"devbox": "d"}) == "resumed 3: session 1, session 2, session 3"
+    assert made == ["laptop/claude/s1", "laptop/claude/s2", "laptop/claude/s3"]     # one window each, in order
+    assert shown == ["laptop/claude/s3"]                                            # one show, the last one
+
+
+def test_resume_many_carries_on_past_one_it_cannot_resume(monkeypatch):
+    made, shown = _many(monkeypatch, fail={"laptop/claude/s2"})
+    msg = tmux.resume_many(_ended(3))
+    assert made == ["laptop/claude/s1", "laptop/claude/s3"]                          # the other two still started
+    assert shown == ["laptop/claude/s3"]                                             # and the viewer got the last
+    assert msg.startswith("resumed 2: session 1, session 3") and " · failed: session 2: cannot resume" in msg
+
+
+def test_resume_many_with_nothing_to_do_says_so(monkeypatch):
+    made, shown = _many(monkeypatch)
+    assert tmux.resume_many([]) == "nothing to resume" and made == [] and shown == []
+    monkeypatch.setattr(tmux, "in_tmux", lambda: False)
+    assert tmux.resume_many(_ended(1)) == "not inside tmux" and made == [] and shown == []

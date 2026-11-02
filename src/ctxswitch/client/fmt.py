@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from ctxswitch.client import tmux
+
 GLYPH = {"busy": "●", "waiting": "◐", "idle": "○", "shell": "$", "unknown": "◌", "ended": "–"}
 HARNESS = {"claude": "cc", "pi": "pi", "claude-win": "cw", "agy": "agy", "shell": "sh"}
 
@@ -52,6 +54,34 @@ def display_title(s: dict) -> str:
         return s["title"]
     last = (s.get("last_turn") or {}).get("user_text") or ""
     return "" if last.lstrip().startswith("<") else last
+
+
+def recent_sessions(sessions: list[dict], reach: dict[str, str], n: int = 20) -> list[dict]:
+    """Ended sessions this board can bring back — its own ``resume`` or an ssh route to the host it ended on — newest
+    activity first, the first ``n``. The Start screen's list to resume."""
+    out = [s for s in sessions if session_state(s) == "ended" and reach.get(s.get("key", "")) in ("resume", "ssh")]
+    return sorted(out, key=lambda s: s.get("last_activity") or "", reverse=True)[:n]
+
+
+def recent_line(s: dict, reach: dict[str, str], now: datetime, width: int) -> str:
+    """One Start-screen row: ``↻ cc·laptop  3h  ctx switch  ctxswitch@main  ~/repos/ctxswitch`` — how Enter reaches
+    it, harness·host (as the board's rows say it), how long since it was last active, its title, its repo, where it
+    runs. The title and the directory give way until the row fits ``width``."""
+    import os
+    home = os.path.expanduser("~")
+    cwd = s.get("cwd") or ""
+    cwd = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + "/") else cwd
+    parts = [tmux.REACH_GLYPH.get(reach.get(s.get("key", ""), ""), "?"),
+             f"{harness_label(s)}·{s.get('host_id', '?')}", age(s.get("last_activity"), now),
+             display_title(s) or "(no prompt yet)", repo_label(s), cwd]
+
+    def line() -> str:
+        return "  ".join([f"{parts[0]} {parts[1]}", *parts[2:]])
+
+    while len(line()) > width and max(len(parts[3]), len(parts[5])) > 1:   # the title and the directory give way,
+        i = 5 if len(parts[5]) > len(parts[3]) else 3                      # whichever is longer losing one more
+        parts[i] = parts[i][:-1]
+    return line() if len(line()) <= width else line()[: max(0, width - 1)] + "…"
 
 
 def session_state(s: dict) -> str:

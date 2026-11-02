@@ -277,6 +277,36 @@ def new_session_window(s: dict, ssh: dict[str, str] | None = None, extra: list[s
     return next(p for p in ps if p.id == pane_id)
 
 
+def resume_many(sessions: list[dict], ssh: dict[str, str] | None = None) -> str:
+    """Resume each session in its own new window (the Start screen's Enter on several marked rows). A session that
+    can't be resumed is named in the message and the rest go on. One ``show`` at the end, for the last window that
+    came up: it lands in the viewer pane and names its window — per session it would rename them all."""
+    if not in_tmux():
+        return "not inside tmux"
+    if not sessions:
+        return "nothing to resume"
+    done: list[dict] = []
+    fails: list[str] = []
+    for s in sessions:
+        try:
+            new_session_window(s, ssh)
+            done.append(s)
+        except Exception as e:                          # noqa: BLE001 - one session's failure can't stop the rest
+            fails.append(f"{(s.get('title') or s.get('session_id') or s.get('key') or '?')[:20]}: {e}")
+    if done:                                            # the last window it made goes into the viewer pane
+        try:
+            show(done[-1], ssh=ssh)
+        except Exception as e:                          # noqa: BLE001 - the windows are up; only the viewer missed
+            fails.append(f"viewer: {e}")
+    said = "resumed " + str(len(done)) + (": " + ", ".join(_short_title(s) for s in done) if done else "")
+    return said + "".join(f" · failed: {f}" for f in fails)
+
+
+def _short_title(s: dict) -> str:
+    """A session's title as a summary names it: cut to 20 columns, its session id or key when it has no title."""
+    return (s.get("title") or s.get("session_id") or s.get("key") or "?")[:20]
+
+
 def new_agent(harness: str, cwd: str, extra: list[str] | None = None, focus: bool = True,
               profile: str | None = None, profiles: list | None = None) -> str:
     """Start a fresh claude/pi session in a new window of this tmux session and bring it into the viewer pane.

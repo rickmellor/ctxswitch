@@ -12,7 +12,8 @@ Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent ses
   │ state / open asks / last exchange / decisions│
   └──────────────────────────────────────────────┘
 Keys: ? opens the full list (Help). h host filter · e toggle ended · v mark viewed · enter show/resume · c/p new claude/pi session (asks for a
-directory, default = selected session's) · m message the selected session · M send it the tmux paste buffer (after
+directory, default = selected session's) · s the start screen (a key per profile, and the ended sessions to resume;
+opens by itself on a cold board) · m message the selected session · M send it the tmux paste buffer (after
 a y/n) · a answer its open question (a quick-reply message) · w group by workstream · r refresh · / filter · q quit
 Opening a session (enter) marks it viewed; the detail shows what changed since you last looked. New questions pop
 up on the tmux status line (client/notify.py; config notify / notify_idle).
@@ -167,6 +168,8 @@ HELP_KEYS = [
     (("select_slot",), "1…9", "on the board: select the session with that number, without opening it (Enter, k, m… then act on it)"),
     (("n",), "n", "new session: pick Claude Code (one entry per account), pi or Antigravity or a plain shell, then a "
                   "directory (default: the selected session's). For Claude, 'max: directory' also picks the account"),
+    (("s",), "s", "start: one key per profile to start new, and the recent sessions to resume (Space marks several, "
+                  "Enter resumes them all). Opens by itself when the board starts with nothing live"),
     (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
     (("W",), "W", "message the selected session's workstream: whichever session is, or next is, live on it"),
     (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
@@ -195,6 +198,9 @@ HELP_TIPS = [
      "list: every session, in the order it joined (so its number stays put); a waiting one says what it's waiting on "
      "(└), and the pool jobs it launched (saint-agent) sit nested under it (↳). Below it: the selected session's detail "
      "(recap, what you told it, its questions and answers, messages, what it cost, the last exchange).")),
+    ("Starting cold", ("`ctx tmux` with nothing live opens the Start screen (s) by itself: a digit starts that "
+     "profile in a window, and the ended sessions it can bring back are listed under it, newest first. Space marks "
+     "several of them and Enter resumes every one, each in its own window.")),
     ("Pool jobs", ("A session started with `saint-agent` records its job id, the session that launched it, its brief, "
      "how it ended and the tokens it used. The board nests it under that session with an estimate of what it cost to "
      "run here; `$` lists the jobs of the last 30 days with what they would have cost in the cloud.")),
@@ -437,6 +443,92 @@ class SpendScreen(Screen):
         self.app.pop_screen()
 
 
+START_KEYS = "↑↓ move · Space mark · Enter resume marked (or this one) · 1-9 start new · Esc close"
+
+
+class StartScreen(Screen):
+    """s, and on its own when the board starts with nothing live: one key to start each profile you have, and the
+    ended sessions this board can bring back, several at a time (Space marks, Enter resumes them all). Dismisses
+    ("new", harness, profile, cwd) or ("resume", [keys]), or None. Every key is handled here: none of the board's
+    (s, q, the arrows, k) reaches through this screen."""
+    DEFAULT_CSS = """
+    StartScreen > VerticalScroll { padding: 0 1; }
+    """
+
+    def __init__(self, options: list[tuple[str, str, str | None]], recents: list[dict], reach: dict[str, str],
+                 now: datetime | None = None):
+        super().__init__()
+        self.options = options                          # (label, harness, profile), as n's picker has them
+        self.recents = recents                          # ended sessions, newest activity first
+        self.reach = reach                              # key -> how Enter can reach it
+        self.now = now or datetime.now(timezone.utc)
+        self.cursor = 0
+        self.marked: set[str] = set()
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="start"):
+            yield Static(self.body(), id="start_text")
+
+    def _cwd(self) -> str | None:
+        """The directory a new session starts in: the cursor row's, so a start lands where that work was."""
+        return (self.recents[self.cursor].get("cwd") or None) if self.recents else None
+
+    def body(self) -> Text:
+        t = Text("START\n", style="bold")
+        opts = Text()
+        for n, (label, _, _) in enumerate(self.options, 1):
+            if n > 1:
+                opts.append("   ")
+            opts.append(f"{n} ", style="bold").append(label)
+        t.append(opts)
+        t.append("\n")
+        t.append(f"RECENT ({len(self.recents)})\n" if self.recents else "RECENT — nothing ended to resume\n", style="bold")
+        width = max(20, (self.size.width or 60) - 8)    # the pane's columns, less the "> " and the "[x] " mark
+        for i, s in enumerate(self.recents):
+            mark = s["key"] in self.marked
+            t.append("> " if i == self.cursor else "  ", style="reverse" if i == self.cursor else "")
+            t.append("[x] " if mark else "[ ] ", style="bold cyan" if mark else "dim")
+            t.append(fmt.recent_line(s, self.reach, self.now, width) + "\n",
+                     style=STATE_STYLE.get("ended", "dim"))
+        t.append(START_KEYS + "\n", style="dim")
+        return t
+
+    def redraw(self) -> None:
+        try:
+            self.query_one("#start_text", Static).update(self.body())
+        except Exception:                               # noqa: BLE001 - closed mid-key
+            pass
+
+    def on_key(self, ev) -> None:
+        ev.stop(); ev.prevent_default()                # nothing here is the board's key, not even s or q
+        if ev.key in ("up", "k"):
+            self.cursor = max(0, self.cursor - 1)
+        elif ev.key in ("down", "j"):
+            self.cursor = min(max(0, len(self.recents) - 1), self.cursor + 1)
+        elif ev.key == "space":
+            if self.recents:
+                key = self.recents[self.cursor]["key"]
+                self.marked ^= {key}
+        elif ev.key == "enter":
+            keys = [s["key"] for s in self.recents if s["key"] in self.marked] or \
+                   ([self.recents[self.cursor]["key"]] if self.recents else [])
+            self.dismiss(("resume", keys) if keys else None)
+            return
+        elif ev.key in ("escape", "q", "s"):
+            self.dismiss(None)
+            return
+        elif ev.key.isdigit() and 1 <= int(ev.key) <= len(self.options):
+            _, harness, profile = self.options[int(ev.key) - 1]
+            self.dismiss(("new", harness, profile, self._cwd()))
+            return
+        else:
+            return
+        self.redraw()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class CtxApp(App):
     CSS = """
     #summary { height: 2; padding: 0 1; background: $panel; }
@@ -451,6 +543,7 @@ class CtxApp(App):
     # the key bar (key_bar) wraps in the narrow pane: most-used first, short labels
     BINDINGS = [
         Binding("enter", "resume", "open", show=True), Binding("n", "new_session", "new"),
+        Binding("s", "start", "start"),
         Binding("m", "message", "msg"), Binding("a", "reply", "answer"), Binding("M", "message_buffer", show=False),
         Binding("k", "end_session", "end"), Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
@@ -493,6 +586,7 @@ class CtxApp(App):
         self.attention: list[dict] = []              # the latest attention list, for the pop-up settle timer
         self.settling = False
         self.spend: dict | None = None               # /v1/spend since local midnight; None = the hub can't say
+        self.start_shown = False                     # the Start screen has opened itself once this run (s is yours)
 
     def compose(self) -> ComposeResult:
         yield Static("", id="summary")
@@ -536,7 +630,7 @@ class CtxApp(App):
             self.visible_key = None
             self.on_screen = set()
             self.reach = {}
-        self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"], spend)
+        self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"], spend, True)
 
     def today_spend(self) -> dict | None:
         """What has gone since midnight here, for the header. A hub without /v1/spend (or a SAINT that's down) just
@@ -552,7 +646,7 @@ class CtxApp(App):
         self.sub_title = s
 
     def apply_data(self, sessions: list[dict], attention: list[dict], hosts: list[str], change: int,
-                   spend: dict | None = None) -> None:
+                   spend: dict | None = None, first_load: bool = False) -> None:
         self.change = change
         self.hosts = hosts
         self.sessions = sessions
@@ -564,6 +658,10 @@ class CtxApp(App):
         self.popup(attention)
         self.render_table()
         self.render_detail()
+        if first_load and not self.start_shown:           # once, on the board's first load: a cold start says what to start
+            self.start_shown = True
+            if tmux.in_tmux() and not live and len(self.screen_stack) == 1:
+                self.action_start()
 
     @work(exclusive=True, group="ws")
     async def listen_ws(self) -> None:
@@ -1108,15 +1206,53 @@ class CtxApp(App):
         if not choice:
             return
         harness, profile = choice
+        self._ask_dir(harness, profile)
+
+    def _ask_dir(self, harness: str, profile: str | None, cwd: str | None = None) -> None:
+        """The directory prompt a new session ends with, pre-filled with ``cwd`` (a Start row's) or the selected
+        session's."""
         what = f"{harness} · {profile}" if profile else {"agy": "antigravity"}.get(harness, harness)
         hint = ""
         if harness == "claude":
             others = [p.name for p in self.cfg.claude_profiles if p.name != profile]
             if others:
                 hint = f", or '{others[0]}: [path]' for that account"
+        default = cwd or self._selected_cwd()
         if harness == "shell":
-            self._show_input(f"new:{harness}:", "directory for the new shell, enter to start", self._selected_cwd()); return
-        self._show_input(f"new:{harness}:{profile or ''}", f"directory for the new {what} session, enter to start{hint}", self._selected_cwd())
+            self._show_input(f"new:{harness}:", "directory for the new shell, enter to start", default); return
+        self._show_input(f"new:{harness}:{profile or ''}", f"directory for the new {what} session, enter to start{hint}", default)
+
+    def action_start(self) -> None:
+        """s: the Start screen — a key per profile to start new, and the ended sessions to resume."""
+        if not tmux.in_tmux():
+            self.notify("starting sessions needs the tmux manager (ctx tmux)", severity="warning"); return
+        options = [*new_session_options(self.cfg), ("shell", "shell", None)]
+        self.push_screen(StartScreen(options, fmt.recent_sessions(self.sessions, self.reach), self.reach), self._started)
+
+    def _started(self, result: tuple | None) -> None:
+        if not result:
+            return
+        if result[0] == "new":
+            self._ask_dir(result[1], result[2], result[3])
+        elif result[0] == "resume":
+            if not tmux.in_tmux():
+                self.notify("resuming needs the tmux manager (ctx tmux)", severity="warning"); return
+            self.resume_many_sessions(list(result[1]))
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def resume_many_sessions(self, keys: list[str]) -> None:
+        """Resume each marked session in its own window, the last of them into the viewer pane (see tmux.resume_many)."""
+        by_key = {s["key"]: s for s in self.sessions}
+        sessions = [by_key[k] for k in keys if k in by_key]
+        try:
+            msg = tmux.resume_many(sessions, ssh=self.cfg.ssh)
+        except Exception as e:                          # noqa: BLE001
+            msg = f"tmux: {e}"
+        popup_log(f"resume {len(sessions)}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=8)
+        for s in sessions:
+            self.mark_opened(s["key"])
+        self.refresh_data()
 
     @work(exclusive=True, group="tmux", thread=True)
     def start_agent(self, harness: str, cwd: str, profile: str | None = None) -> None:

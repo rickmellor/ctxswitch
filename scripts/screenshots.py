@@ -6,6 +6,7 @@ session or transcript goes into them.
 board.svg   ctx in tmux: an agent on the left, the board on the right, tmux's status line
 legend.svg  every glyph on the board, in its colours (the legend part of `?`)
 help.svg    the `?` help screen as it opens
+start.svg   the `s` start screen: a key per profile, and the ended sessions to resume
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from textual.app import App
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Static
 
+from ctxswitch.client import fmt
 from ctxswitch.client.tui import app as tui
 from ctxswitch.common.config import Config
 from ctxswitch.hub.api import Hub
@@ -33,6 +35,7 @@ NOW = datetime.now(timezone.utc)
 WEB, API, DOCS, INFRA, UI, BENCH, OLD = ("laptop/claude/7f3a91c2", "devbox/claude/2b8e40d1", "laptop/pi/01a2b3c4",
                                          "gpu-host/claude/9c1d22e7", "laptop/claude/4e5f6a7b", "devbox/pi/01d4e5f6",
                                          "laptop/claude/0a0b0c0d")
+BENCH2 = "devbox/pi/02e5f6a7"                    # ended two days ago on devbox: the Start screen's ssh resume
 JOB = "laptop/claude/5d6e7f80"                 # a pool job WEB launched with saint-agent
 
 
@@ -59,13 +62,15 @@ def seed(store: Store) -> None:
         (UI, "settings page", "webapp", "feat/settings", "waiting", 1, [turn(0, "run the e2e suite", "", 1, complete=False)]),
         (BENCH, "load test", "bench", "main", "idle", 55, [turn(0, "run the 10k rps profile", "p99 41 ms; report in out/.", 55)]),
         (OLD, "CI cache", "webapp", "main", "ended", 300, [turn(0, "speed up CI", "Cached deps: 6m → 2m.", 300)]),
+        (BENCH2, "load test v2", "bench", "main", "ended", 2880,
+         [turn(0, "run the 20k rps profile", "p99 44 ms; the report is in out/.", 2880)]),
     ]
     for key, title, repo, branch, status, ago, turns in rows:
         host, harness, sid = key.split("/")
         store.upsert_session({"key": key, "host_id": host, "harness": harness, "session_id": sid, "title": title,
                               "cwd": f"/home/me/{repo}", "repo_root": f"/home/me/{repo}", "repo_remote": f"git@github.com:acme/{repo}.git",
                               "git_branch": branch, "last_activity": iso(ago), "started_at": iso(ago + 60)})
-        store.upsert_turns(key, turns, None)
+        store.upsert_turns(key, turns, None, ended=(status == "ended"))   # an "ended" row must read as ended
     # a pool job OAuth login launched with saint-agent: it nests under that row, with its own cost estimate
     store.upsert_session({"key": JOB, "host_id": "laptop", "harness": "claude", "session_id": JOB.rsplit("/", 1)[-1],
                           "title": "oauth-tests.md", "cwd": "/home/me/webapp", "repo_root": "/home/me/webapp",
@@ -136,16 +141,19 @@ class Demo(tui.CtxApp):
         yield Static(STATUS, id="tmux")
 
 
+# how Enter can reach each seeded session; the Start screen's list is the ended ones it can resume or ssh to
+REACH = {WEB: "pane", API: "pane", DOCS: "pane", INFRA: "remote", UI: "pane", BENCH: "foreign", OLD: "resume",
+         JOB: "pane"}
+
+
 def patch_tmux() -> None:
     """Pretend we're in ctx's tmux: OAuth login is on the left, the rest are in their own windows, one runs on
     another host and one in another terminal."""
-    reach = {WEB: "pane", API: "pane", DOCS: "pane", INFRA: "remote", UI: "pane", BENCH: "foreign", OLD: "resume",
-             JOB: "pane"}
     tui.tmux.reap_viewer = lambda *a, **k: None
     tui.tmux.panes = list
     tui.tmux.visible_key = lambda ps, sessions=None: WEB
     tui.tmux.on_screen_keys = lambda ps, sessions=None: {WEB}
-    tui.tmux.reach_all = lambda sessions, host, ssh=None: reach
+    tui.tmux.reach_all = lambda sessions, host, ssh=None: REACH
     tui.CtxApp.listen_ws = lambda self: None
     tui.CtxApp.join_tmux = lambda self: None
 
@@ -174,6 +182,7 @@ async def shoot(store: Store) -> None:
     app = Demo(cfg, None)
     app.client._c = TestClient(Hub(store, token="t").app(), headers={"Authorization": "Bearer t"})
     patch_spend(app)
+    app.start_shown = True                              # the board's own image, never the Start screen (see start.svg)
     async with app.run_test(size=(150, 52)) as pilot:
         await pilot.pause(1.5)
         t = app.query_one("#table")
@@ -184,9 +193,27 @@ async def shoot(store: Store) -> None:
     patch_spend(help_app)
     help_app.CSS = tui.CtxApp.CSS
     help_app.compose = lambda: tui.CtxApp.compose(help_app)
+    help_app.start_shown = True
     async with help_app.run_test(size=(62, 46)) as pilot:
         await pilot.pause(1.0); await pilot.press("question_mark"); await pilot.pause(0.5)
         (OUT / "help.svg").write_text(help_app.export_screenshot(title="ctx · ? help"))
+    start_app = Demo(cfg, None)                         # the Start screen over the same seeded board
+    start_app.client._c = app.client._c
+    patch_spend(start_app)
+    start_app.CSS = tui.CtxApp.CSS
+    start_app.compose = lambda: tui.CtxApp.compose(start_app)
+    start_app.start_shown = True
+    async with start_app.run_test(size=(62, 40)) as pilot:
+        await pilot.pause(1.0)
+        reach = {**REACH, BENCH2: "ssh"}                 # the ended ones Enter can bring back: OLD here, BENCH2 over ssh
+        screen = tui.StartScreen([*tui.new_session_options(cfg, which=lambda c: "/usr/bin/" + c),
+                                 ("shell", "shell", None)],
+                                fmt.recent_sessions(start_app.sessions, reach), reach)
+        start_app.push_screen(screen)
+        screen.marked = {OLD}
+        screen.redraw()
+        await pilot.pause(0.5)
+        (OUT / "start.svg").write_text(start_app.export_screenshot(title="ctx · s start"))
 
 
 class LegendApp(App):

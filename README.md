@@ -218,6 +218,13 @@ A **workstream** is the repo plus the branch. The repo is the remote's `owner/na
 machines match even when their remotes use different ssh aliases. A checkout with no remote matches only itself on
 that host. With `w`, the list groups sessions under one header per workstream. Select a header to list its sessions.
 
+**Start screen** (`s`, and on its own when the board starts with nothing live): a digit starts that profile — Claude
+Code per account, pi, Antigravity, a plain shell — in its own window, and under it are the ended sessions this board
+can bring back, newest first. `Space` marks as many of them as you want and `Enter` resumes them all, each in its own
+window, the last one on the left.
+
+<p align="center"><img src="docs/img/start.svg" alt="the s start screen: one key per profile, and the recent sessions to resume" width="50%"></p>
+
 ## 4. Keys
 `?` shows all of this on the board itself:
 
@@ -230,6 +237,7 @@ that host. With `w`, the list groups sessions under one header per workstream. S
 | `1`…`9` | select the session with that number (its detail shows) without opening it; Enter, `k`, `m` and the rest then act on it |
 | `Alt+1`…`Alt+9` | open the session with that number (the list's first column; numbers follow the order shown). Works from any pane of the ctx session, agents included; outside it the key goes through as typed |
 | `n` | new session: a one-key picker (Claude Code per `[[claude_profiles]]` account, pi, Antigravity or a plain shell; only what's installed), then a directory (default: the selected session's). For Claude, `max: ~/repos/x` also picks the account |
+| `s` | start: one key per profile to start something new, and the recent ended sessions to resume (`Space` marks several, `Enter` resumes them all, each in its own window). Opens by itself when the board starts with nothing live |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
