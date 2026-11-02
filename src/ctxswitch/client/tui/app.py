@@ -749,6 +749,7 @@ class CtxApp(App):
             t.move_cursor(row=t.get_row_index(key))
         except Exception:                               # noqa: BLE001 - filtered out of the table: still selected
             pass
+        self.load_detail()                              # now, not on the next refresh: the highlight handler sees no change
         return True
 
     def open_key(self, key: str) -> None:

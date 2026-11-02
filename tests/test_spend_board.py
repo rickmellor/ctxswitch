@@ -454,6 +454,7 @@ async def test_the_detail_card_reads_recap_asks_spend_session_last_exchange_then
 
 async def test_pressing_a_digit_moves_the_cursor_and_enter_then_opens_that_row(monkeypatch):
     app = _board(monkeypatch, [_sess(P1), _sess(C1, title="second one")], reports={})
+    app.client.detail = {k: {**_sess(k, title=t), "turns": [], "children_keys": []} for k, t in ((P1, "first"), (C1, "second one"))}
     opened = []
     monkeypatch.setattr(tui.CtxApp, "action_resume", lambda self: opened.append(self.selected))
     async with app.run_test(size=(70, 30)) as pilot:
@@ -462,6 +463,8 @@ async def test_pressing_a_digit_moves_the_cursor_and_enter_then_opens_that_row(m
         await pilot.press("2"); await pilot.pause(0.3)
         assert app.selected == C1 and opened == []                       # selected, shown, not opened
         assert app.query_one("#table").cursor_row == app.query_one("#table").get_row_index(C1)
+        await pilot.pause(0.5)
+        assert "second one" in app.query_one("#detail_text").render().plain   # its detail, now, not on the next refresh
         await pilot.press("enter"); await pilot.pause(0.3)
         assert opened == [C1]
         await pilot.press("9"); await pilot.pause(0.3)
