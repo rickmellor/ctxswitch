@@ -483,3 +483,11 @@ def test_the_tracker_llm_is_set_by_env_without_a_config_file(monkeypatch):
     assert (s.url, s.model, s.api_key) == ("http://llm:8000/v1", "qwen3-30b", "k")
     monkeypatch.setenv("CTXSWITCH_SEAT_MODEL", "")                     # compose passes unset ones as ""
     assert SeatConfig().model == "saint-local-text"
+
+
+def test_the_suite_never_writes_the_real_popup_log_or_sees_the_real_tmux():
+    import os
+    from pathlib import Path
+    from ctxswitch.client import notify
+    assert notify.LOG != Path.home() / ".local/state/ctxswitch/popup.log"
+    assert "TMUX" not in os.environ and "TMUX_PANE" not in os.environ

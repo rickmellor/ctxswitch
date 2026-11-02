@@ -12,6 +12,17 @@ def _private_shells(tmp_path_factory, monkeypatch):
         monkeypatch.setenv("CTXSWITCH_SHELLS", str(tmp_path_factory.mktemp("shells")))
 
 
+@pytest.fixture(autouse=True)
+def _no_real_tmux_or_popup_log(tmp_path, monkeypatch):
+    """No test writes the operator's ~/.local/state/ctxswitch/popup.log, and none can reach their tmux server: the
+    suite is often run from a pane of it, and TMUX would point a real display-popup or display-message at their
+    screen. A test that wants tmux patches the calls it expects."""
+    from ctxswitch.client import notify
+    monkeypatch.setattr(notify, "LOG", tmp_path / "popup.log")
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+
 @pytest.fixture
 def jsonl(tmp_path: Path):
     """Write dict rows as a JSONL file; returns (path, offsets-after-each-line)."""
