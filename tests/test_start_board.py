@@ -119,11 +119,18 @@ def test_recent_line_reads_like_a_board_row():
     assert fmt.recent_line(_sess(K1, cwd=HOME), {K1: "resume"}, NOW, 120).endswith("~")
 
 
-def test_recent_line_shortens_the_title_and_the_directory_to_fit():
+def test_recent_line_drops_the_directory_before_it_touches_the_title():
     s = _sess(K1, title="a title far too long for this pane", cwd=f"{HOME}/repos/ctxswitch")
     full = fmt.recent_line(s, {K1: "resume"}, NOW, 200)
     assert len(fmt.recent_line(s, {K1: "resume"}, NOW, len(full))) == len(full)      # room: nothing cut
-    assert len(fmt.recent_line(s, {K1: "resume"}, NOW, 30)) <= 30                    # tight: it fits anyway
+    tight = fmt.recent_line(s, {K1: "resume"}, NOW, len(full) - 1)
+    assert "~/repos" not in tight and "a title far too long for this pane" in tight  # the directory went, whole
+    assert len(fmt.recent_line(s, {K1: "resume"}, NOW, 30)) <= 30                    # tighter: the title gives way
+
+
+def test_recent_sessions_leaves_out_pool_job_workers():
+    rows = [_sess(K1), {**_sess(K2), "job": "sa-20261101-1", "parent_key": K1}]
+    assert [s["key"] for s in fmt.recent_sessions(rows, {K1: "resume", K2: "resume"})] == [K1]
 
 
 # -- the screen's keys and its text ---------------------------------------------------------------------------------

@@ -59,7 +59,8 @@ def display_title(s: dict) -> str:
 def recent_sessions(sessions: list[dict], reach: dict[str, str], n: int = 20) -> list[dict]:
     """Ended sessions this board can bring back — its own ``resume`` or an ssh route to the host it ended on — newest
     activity first, the first ``n``. The Start screen's list to resume."""
-    out = [s for s in sessions if session_state(s) == "ended" and reach.get(s.get("key", "")) in ("resume", "ssh")]
+    out = [s for s in sessions if session_state(s) == "ended" and reach.get(s.get("key", "")) in ("resume", "ssh")
+           and not s.get("job")]                     # a pool job's worker is nobody's to resume
     return sorted(out, key=lambda s: s.get("last_activity") or "", reverse=True)[:n]
 
 
@@ -76,11 +77,12 @@ def recent_line(s: dict, reach: dict[str, str], now: datetime, width: int) -> st
              display_title(s) or "(no prompt yet)", repo_label(s), cwd]
 
     def line() -> str:
-        return "  ".join([f"{parts[0]} {parts[1]}", *parts[2:]])
+        return "  ".join([f"{parts[0]} {parts[1]}", *(p for p in parts[2:] if p)])
 
-    while len(line()) > width and max(len(parts[3]), len(parts[5])) > 1:   # the title and the directory give way,
-        i = 5 if len(parts[5]) > len(parts[3]) else 3                      # whichever is longer losing one more
-        parts[i] = parts[i][:-1]
+    if len(line()) > width:                          # too tight for everything: the directory goes first (the repo
+        parts[5] = ""                                # label says where it was), then the title gives way
+    while len(line()) > width and len(parts[3]) > 1:
+        parts[3] = parts[3][:-1]
     return line() if len(line()) <= width else line()[: max(0, width - 1)] + "…"
 
 
