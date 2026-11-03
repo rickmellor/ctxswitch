@@ -195,7 +195,17 @@ it's on, its `⌂` and its account label turn yellow: run `/local-pool` in it, o
 | `↻` | resumes it (`claude --resume` / `pi --session`) in a new window, then brings it left |
 | `⊘` | can't: it's running in a terminal outside tmux. Quit it there, then Enter resumes it here |
 | `↗` | it ended on another host: resumes it there over ssh, in a new window here (see `[ssh]`) |
+| `⇄` | it's live in a tmux on another host: Enter shows it here over ssh (see `[ssh]`) |
 | `⇢` | can't: it's live on another host, or there's no ssh route to it. The detail pane says which and what to run |
+
+### Sessions on other hosts
+`n` and `s` can start on another host — the board lists the ones `[ssh]` reaches, this one first. It runs in a tmux
+named `ctx` **on that host**, as its own user, so it keeps working when the ssh drops or the laptop sleeps; the window
+that opens here is only a view of it. A `⇄` row is live over there: `Enter` shows it here (`ctx`'s keys still work,
+the view has none of its own, and detaching leaves the agent running). An ended one (`↗`) resumes back into that same
+tmux, and `k` ends it there — the transcript stays resumable. Its profiles are its own, so from here you pick the
+harness (Claude Code, pi, a shell) and a directory, `~` being that machine's home. This works laptop→others: a host
+that can't be reached by ssh is still on the board and still takes messages, it just can't be opened from here.
 
 **Detail pane** for the selected session, most useful first:
 - its title;

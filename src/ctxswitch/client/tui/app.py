@@ -161,6 +161,12 @@ def legend() -> Text:
     return t
 
 
+def _here(board) -> str | None:
+    """Which host a board runs on, or None for a board that never got as far as naming it (a stub in a test): on
+    such a board nothing can be called remote, and there is no "here" to name in a picker."""
+    return getattr(board, "this_host", None)
+
+
 def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
     """``"max: ~/repos/x"`` -> ("max", "~/repos/x") when ``max`` is a profile name; else (None, value). A bare
     profile name (no directory) keeps the directory empty, which new_agent turns into ``~``."""
@@ -1258,17 +1264,20 @@ class CtxApp(App):
 
     def _remote_hosts(self) -> list[str]:
         """The other hosts n and s can start an agent on: every host the config's [ssh] table reaches from here
-        ("" = not reachable), this host left out — it has its own picker, with its own accounts' profiles."""
-        return [h for h in dict.fromkeys(self.hosts) if h and h != self.this_host and tmux.ssh_target(h, self.cfg.ssh)]
+        ("" = not reachable), this host left out — it has its own picker, with its own accounts' profiles. A board
+        that hasn't loaded its hosts yet has none to offer."""
+        return [h for h in dict.fromkeys(getattr(self, "hosts", None) or [])
+                if h and h != _here(self) and tmux.ssh_target(h, self.cfg.ssh)]
 
     def action_new_session(self) -> None:
         """n: pick the host when others are reachable, the agent (Claude per account, pi, Antigravity, or a plain
         shell), then the directory."""
         if not tmux.in_tmux():
             self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
-        hosts = [self.this_host, *self._remote_hosts()]
+        here = _here(self)
+        hosts = [here, *self._remote_hosts()] if here else []   # no host named yet: nothing to pick between
         if len(hosts) > 1:                            # another host reachable: say up front which one it lands on
-            opts = [(f"{h} (here)" if h == self.this_host else h, h, None) for h in hosts]
+            opts = [(f"{h} (here)" if h == here else h, h, None) for h in hosts]
             self.push_screen(Picker(opts, "new session on: "), lambda h: self._picked_host(h))
             return
         options = [*new_session_options(self.cfg), ("shell", "shell", None)]   # the shell is here only, not in x's list
@@ -1280,7 +1289,7 @@ class CtxApp(App):
         if not choice:
             return
         host = choice[0]
-        if host == self.this_host:
+        if host == _here(self):
             options = [*new_session_options(self.cfg), ("shell", "shell", None)]
             self.push_screen(Picker(options), self._picked)
             return
@@ -1319,8 +1328,9 @@ class CtxApp(App):
         if not tmux.in_tmux():
             self.notify("starting sessions needs the tmux manager (ctx tmux)", severity="warning"); return
         options = [*new_session_options(self.cfg), ("shell", "shell", None)]
+        here = _here(self)
         self.push_screen(StartScreen(options, fmt.recent_sessions(self.sessions, self.reach), self.reach,
-                                     hosts=[self.this_host, *self._remote_hosts()]), self._started)
+                                     hosts=([here] if here else []) + self._remote_hosts()), self._started)
 
     def _started(self, result: tuple | None) -> None:
         if not result:
@@ -1601,7 +1611,10 @@ class CtxApp(App):
             self.notify("k ends sessions in ctx's tmux (ctx tmux); quit this one where it runs", severity="warning"); return
         reach = self.reach.get(s["key"], "")
         p = tmux.agent_pane(s["key"])
-        if tmux._is_remote(s, self.this_host) and (reach == "attach" or p is not None):
+        # a board that hasn't settled which host it itself runs on has nothing to call remote, so it ends what it
+        # can see the way it always did.
+        here = _here(self)
+        if here is not None and tmux._is_remote(s, here) and (reach == "attach" or p is not None):
             self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)} ({fmt.HARNESS.get(s['harness'], s['harness'])}"
                          f"·{s['host_id']}) on {s['host_id']}?",
                          lambda: self.end_remote_session(s))
