@@ -169,6 +169,16 @@ starts (the worker's session id and the parent's `CLAUDE_CODE_SESSION_ID`) and o
 on that host reads it. Older ledger lines (before 2026-10-30) have no session id and are matched by work directory
 and time instead. The waiting line under a row now starts `└`, so `↳` means "subordinate".
 
+### Local pool (`⚙`)
+A Claude session's row carries `⚙` (magenta) when it was last told the local pool is on, and a dim `⚙` when it was
+told on but SAINT couldn't be reached. Nothing shows when it was told off. A session only learns the pool switch at a
+SessionStart (start, resume, `/clear`, compaction), from the `saint-pool --hook` hook, or when `saint-pool on|off|status`
+runs in it (`/local-pool`); the collector reads the last of those from its transcript. Each host's collector also
+reports the switch itself (`~/.claude/saint-pool`, plus a SAINT health check, once a minute), shown in the header as
+`pool on|unreachable|off` for this host. When the two disagree, say you turned the pool off and a session still thinks
+it's on, its badge turns into a yellow `⚙!`: run `/local-pool` in it, or resume it. The detail pane says which:
+`pool: on (told at resume, 2h ago) · host switch: on`. pi and shell sessions don't use the pool rule and show nothing.
+
 | State | Meaning |
 |---|---|
 | `●` green | busy: the agent is working |

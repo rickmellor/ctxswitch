@@ -215,7 +215,7 @@ def test_the_legend_and_the_help_both_say_what_a_gear_means():
     assert [g[0] for g in row] == ["⚙", "⚙!"]
     assert row[0][1] == "bold magenta" and row[1][1] == "bold yellow"
     assert "local pool on" in row[0][2] and "/local-pool" in row[1][2]
-    tip = " ".join(next(w for t, w in tui.HELP_TIPS if t == "Local pool"))
+    tip = next(w for t, w in tui.HELP_TIPS if t == "Local pool")
     assert "⚙" in tip and "⚙!" in tip and "/local-pool" in tip and "transcript" in tip
 
 
@@ -276,8 +276,8 @@ async def test_a_stale_detail_line_is_painted_yellow(monkeypatch):
         t = app.query_one("#detail_text").render()
         at = t.plain.index("pool:")
         assert t.plain.splitlines()[t.plain[:at].count("\n")].endswith(fmt.POOL_STALE)
-        assert any(sp.style.bold and sp.style.color == "yellow"
-                   for sp in t.spans if sp.start <= at < sp.end)
+        assert any({"bold"} <= set(str(sp.style).split()) and "yellow" in str(sp.style) for sp in t.spans if sp.start <= at < sp.end), \
+        [(sp.start, sp.end, str(sp.style)) for sp in t.spans if sp.start <= at < sp.end]
 
 
 async def test_a_pool_job_row_wears_no_badge_of_its_own(monkeypatch):
