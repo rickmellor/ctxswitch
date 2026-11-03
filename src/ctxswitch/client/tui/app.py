@@ -668,6 +668,8 @@ class CtxApp(App):
     def refresh_data(self) -> None:
         try:
             data = self.client.sessions(self.host_filter, live_only=False)
+            if self.host_filter and self.host_filter == self.this_host:
+                data["sessions"] += self.driven_from_here(data["sessions"])
             att = self.client.attention(self.host_filter)["items"]
             rows = self.client.hosts()
             hosts = [h["host_id"] for h in rows]
@@ -687,6 +689,19 @@ class CtxApp(App):
             self.on_screen = set()
             self.reach = {}
         self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"], spend, True, pools)
+
+    def driven_from_here(self, have: list[dict]) -> list[dict]:
+        """With the board on this host: the live sessions on other hosts that are run from here too — in that host's
+        ctx tmux (what n/s and resume start there), or with a window in this tmux. Other tmux sessions over there
+        stay under that host's own filter."""
+        try:
+            others = self.client.sessions(None, live_only=True)["sessions"]
+            mine = {p.key for p in tmux.panes() if p.key}
+        except Exception:                               # noqa: BLE001 - extras, never worth failing a refresh for
+            return []
+        seen = {s["key"] for s in have}
+        return [s for s in others if s["key"] not in seen and s.get("host_id") != self.this_host
+                and ((s.get("tmux_at") or "").split(":", 1)[0] == tmux.REMOTE_SESSION or s["key"] in mine)]
 
     def today_spend(self) -> dict | None:
         """What has gone since midnight here, for the header. A hub without /v1/spend (or a SAINT that's down) just
@@ -913,7 +928,8 @@ class CtxApp(App):
             when = s.get("status_since") if s.get("live_status") in LIVE else s.get("last_activity")
             style = STATE_STYLE.get(st, "")
             harness = fmt.harness_label(s, self.cfg.claude_profiles)
-            where = harness if self.host_filter else f"{harness}·{s.get('host_id', '?')}"   # a host filter implies the host
+            # a host filter implies the host, except for another host's session run from here
+            where = harness if self.host_filter == s.get("host_id") else f"{harness}·{s.get('host_id', '?')}"
             kid = s["key"] in nested                     # nested under the session that launched it
             job = kid or bool(fmt.link(s, "job") or fmt.link(s, "job_brief"))
             label = Text()

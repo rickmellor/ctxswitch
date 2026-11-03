@@ -147,7 +147,11 @@ def fill_tmux_at(items: list[Liveness], panes: list[tuple[str, str, str, int]], 
     ancestor of it (the session runs inside the pane's shell). Same walk as client/tmux.pane_for_pid."""
     if not panes:
         return
-    by_pid = {p[3]: f"{p[0]}:{p[1]}.{p[2]}" for p in panes}
+    # a pane in a grouped session is listed once per session: its own (ctx) beats a board's temporary view of it
+    # (ctxview-…), which goes away when the viewer detaches
+    by_pid: dict[int, str] = {}
+    for p in sorted(panes, key=lambda p: p[0].startswith("ctxview-")):
+        by_pid.setdefault(p[3], f"{p[0]}:{p[1]}.{p[2]}")
     for it in items:
         if it.tmux_at or not it.pid:
             continue

@@ -392,3 +392,24 @@ def test_the_remote_script_finds_ctx_over_there_not_by_this_hosts_path():
     assert 'command -v ctx || echo "$HOME/repos/ctxswitch/.venv/bin/ctx"' in shlex.split(script.split("w=$(", 1)[1])[-1] \
         or "command -v ctx" in script
     assert "shell --id X1" in script
+
+
+async def test_a_board_on_this_host_also_lists_what_it_runs_on_other_hosts(monkeypatch):
+    """Filtered to this host, the board still shows a remote session in that host's ctx tmux (started from here),
+    with its host on the row; another tmux over there stays under that host's own filter."""
+    here = _sess("laptop/claude/a1", status="busy", ended=False)
+    ours = _sess("specul8/shell/s1", status="idle", ended=False, tmux_at="ctx:@0.%0")
+    theirs = _sess("specul8/claude/c1", status="idle", ended=False, tmux_at="work:@2.%5")
+    app = _board(monkeypatch, [here, ours, theirs], hosts=["laptop", "specul8"], ssh={"specul8": "rick@specul8"})
+    sessions = app.client.sessions
+    monkeypatch.setattr(app.client, "sessions", lambda host=None, live_only=False: (
+        {"sessions": [here], "change": 1} if host == "laptop" else sessions(host, live_only)))
+    monkeypatch.setattr(tui.tmux, "panes", lambda: [])
+    app.host_filter = "laptop"
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(1)
+        keys = {s["key"] for s in app.sessions}
+        assert keys == {"laptop/claude/a1", "specul8/shell/s1"}
+        t = app.query_one("#table")
+        labels = [t.get_row_at(i)[3].plain for i in range(t.row_count)]
+        assert any("sh·specul8" in lb for lb in labels) and not any("·laptop" in lb for lb in labels)

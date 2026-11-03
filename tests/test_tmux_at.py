@@ -163,3 +163,13 @@ def test_an_older_database_gains_the_tmux_at_column(tmp_path):
     assert "tmux_at" in {r[1] for r in store.db.execute("PRAGMA table_info(sessions)")}
     store.set_liveness("work", [{"key": "work/claude/s1", "status": "busy", "pid": 100, "tmux_at": "ctx:@1.%2"}])
     assert store.session("work/claude/s1")["tmux_at"] == "ctx:@1.%2"
+
+
+def test_a_grouped_pane_is_placed_in_its_own_session_not_a_boards_view_of_it(tmp_path):
+    from ctxswitch.collector.liveness import fill_tmux_at
+    from ctxswitch.common.schema import Liveness
+    for order in ([("ctxview-d82424", "@0", "%0", 500), ("ctx", "@0", "%0", 500)],
+                  [("ctx", "@0", "%0", 500), ("ctxview-d82424", "@0", "%0", 500)]):   # whichever tmux lists first
+        it = Liveness(key="specul8/shell/x", status="idle", pid=500)
+        fill_tmux_at([it], order, proc=str(tmp_path))
+        assert it.tmux_at == "ctx:@0.%0", order
