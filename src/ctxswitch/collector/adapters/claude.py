@@ -51,11 +51,25 @@ def _result_text(r: dict) -> str:
     return t if isinstance(t, str) else ""
 
 
+def pool_catch_up(data: bytes) -> dict[str, str]:
+    """The pool state an already-read transcript holds (``pool``/``pool_at``/``pool_how``, {} when none): for a saved
+    parser state from before the pool was tracked, read once. Only lines that mention saint-pool are parsed."""
+    from ctxswitch.collector.indexer import parse_json_line
+    p = ClaudeParser()
+    for line in data.split(b"\n"):
+        if b"saint-pool" in line:
+            e = parse_json_line(line)
+            if e is not None:
+                p.feed(e, 0)
+    return {k: p.meta[k] for k in ("pool", "pool_at", "pool_how") if p.meta.get(k)}
+
+
 class ClaudeParser:
     def __init__(self, max_text: int = 4000):
         self.max_text = max_text
-        self.meta: dict[str, Any] = {}          # cwd, git_branch, harness_version, title, name, model, permission_mode,
-                                                # started_at, last_activity, session_id
+        self.meta: dict[str, Any] = {"pool_seen": True}   # cwd, git_branch, harness_version, title, name, model,
+                                                # permission_mode, started_at, last_activity, session_id, pool*;
+                                                # pool_seen: read since the pool was tracked (no catch-up needed)
         self._done: list[Turn] = []
         self._cur: Turn | None = None
         self._n = 0

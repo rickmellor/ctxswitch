@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ctxswitch.collector.adapters import parse_json_line
-from ctxswitch.collector.adapters.claude import ClaudeParser
+from ctxswitch.collector.adapters.claude import ClaudeParser, pool_catch_up
 from ctxswitch.collector.adapters.pi import PiParser
 from ctxswitch.collector.adapters.shell import ShellParser
 from ctxswitch.collector.adapters import agy as agy_store
@@ -151,6 +151,15 @@ class Indexer:
         args = (path.with_suffix(".out"),) if harness == "shell" else ()
         parser = pcls.from_state(rec["parser_state"], self.cfg.max_text_chars, *args) if rec and rec["parser_state"] \
             else pcls(self.cfg.max_text_chars, *args)
+        if rec and harness == "claude" and "pool_seen" not in parser.meta:
+            # saved before the pool was tracked: what it was told so far is in the part already read; read it once
+            try:
+                with open(path, "rb") as f:
+                    parser.meta.update(pool_catch_up(f.read(rec["offset"])))
+            except OSError:
+                pass
+            parser.meta["pool_seen"] = True
+            rec = {**rec, "ended": False}             # so this pass resends the meta, ended and unchanged or not
         if rec and rec["ended"] and st.st_size == rec["size"]:
             # ended and unchanged: nothing to parse, but once per collector run resend its meta (no turns, no reset),
             # so what this collector derives from its config (the account/profile name) reaches the hub for old

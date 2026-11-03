@@ -261,3 +261,33 @@ async def test_a_collector_with_no_switch_file_runs_no_pool_loop(tmp_path, monke
     monkeypatch.setattr(C, "read_pool", lambda path, get=None: got.append(path) or None)
     await col.pool_loop()
     assert got == [] and col.state.pending() == []
+
+
+def test_a_transcript_read_before_the_pool_was_tracked_catches_up_once(tmp_path):
+    """A saved parser state from an older collector has read past the pool lines: they're read again, once."""
+    import json as _json
+    from ctxswitch.collector.indexer import Indexer
+    from ctxswitch.collector.state import CollectorState
+    from ctxswitch.common.config import CollectorConfig
+    root = tmp_path / "projects"; (root / "p").mkdir(parents=True)
+    f = root / "p" / "s1.jsonl"
+    hook = {"type": "attachment", "timestamp": "2026-11-01T10:00:00Z", "sessionId": "s1", "cwd": "/w",
+            "attachment": {"type": "hook_success", "hookName": "SessionStart:resume", "hookEvent": "SessionStart",
+                           "stdout": "LOCAL POOL ON (http://x:4000): ...", "command": "/u/bin/saint-pool --hook"}}
+    rows = [hook, user("go", "2026-11-01T10:00:01Z")]
+    f.write_text("".join(_json.dumps(r) + "\n" for r in rows))
+    cfg = CollectorConfig(claude_roots=[str(root)], pi_roots=[], claude_win_roots=[], agy_roots=[], shell_roots=[])
+    state, sent = CollectorState(tmp_path / "s.db"), []
+    ix = Indexer(cfg, "laptop", state, lambda kind, p: sent.append((kind, p)))
+    ix.process(f, "claude")
+    rec = state.file(str(f))
+    old = _json.loads(_json.dumps(rec["parser_state"]))
+    for k in ("pool", "pool_at", "pool_how", "pool_seen"):                 # as an older collector saved it
+        old["meta"].pop(k, None)
+    state.save_file(str(f), "claude", rec["session_key"], rec["offset"], old, rec["size"], rec["mtime"], rec["turns_emitted"], True)
+    sent.clear()
+    ix2 = Indexer(cfg, "laptop", state, lambda kind, p: sent.append((kind, p)))
+    ix2.process(f, "claude")
+    metas = [p for k, p in sent if k == "session"]
+    assert metas and (metas[-1]["pool"], metas[-1]["pool_how"]) == ("on", "resume")
+    assert state.file(str(f))["parser_state"]["meta"]["pool_seen"] is True    # saved: next time, no second read
