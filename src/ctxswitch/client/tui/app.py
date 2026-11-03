@@ -1307,12 +1307,13 @@ class CtxApp(App):
         """The directory prompt a new session ends with, pre-filled with ``cwd`` (a Start row's) or the selected
         session's. For another host it defaults to ``~`` — that machine's own home, not this one's — and carries the
         host in the input mode, so submitting starts it there."""
+        what = {"agy": "antigravity"}.get(harness, harness)
         if host:
-            what = {"agy": "antigravity"}.get(harness, harness)
             self._show_input(f"new@{host}:{harness}:", f"directory for the new {what} on {host}, enter to start",
                              cwd or "~")
             return
-        what = f"{harness} · {profile}" if profile else {"agy": "antigravity"}.get(harness, harness)
+        if profile:
+            what = f"{harness} · {profile}"
         hint = ""
         if harness == "claude":
             others = [p.name for p in self.cfg.claude_profiles if p.name != profile]
@@ -1614,6 +1615,8 @@ class CtxApp(App):
         # a board that hasn't settled which host it itself runs on has nothing to call remote, so it ends what it
         # can see the way it always did.
         here = _here(self)
+        # reach "attach", or a window here carrying its tag: either way the agent itself runs over there, so that's
+        # where k has to end it.
         if here is not None and tmux._is_remote(s, here) and (reach == "attach" or p is not None):
             self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)} ({fmt.HARNESS.get(s['harness'], s['harness'])}"
                          f"·{s['host_id']}) on {s['host_id']}?",
