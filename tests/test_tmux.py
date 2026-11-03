@@ -324,7 +324,7 @@ def test_another_hosts_session_resumes_there_over_ssh(server, monkeypatch, tmp_p
     assert argv[0] == "-t" and argv[-4] == "me@devbox.lan" and argv[-3:-1] == ["sh", "-c"]
     # it starts there in that host's own tmux and shows it: the remote script carries the resume command
     script = shlex.split(argv[-1])[0]
-    assert "exec claude --resume far" in script and "/home/me/my repo" in script and "tmux new-window -d -t ctx:" in script
+    assert "claude --resume far; rc=$?" in script and "/home/me/my repo" in script and "tmux new-window -d -t ctx:" in script
     ps = tmux.panes()
     assert tmux.viewer_pane(ps).key == "devbox/claude/far" and tmux.viewer_pane(ps).window_name == "mgr"
     assert next(p for p in ps if p.id == viewer.id).window_name == "devbox/Far one"   # the old viewer's new home

@@ -279,7 +279,17 @@ def remote_script(name: str, cwd: str, agent: list[str], key: str | None) -> str
     itself when it isn't up yet), tag its pane with @ctx_key when a key is known, then attach a view of it that ends
     when you detach. A login shell for the agent: agents are often only on a login PATH."""
     d, s = _remote_dir(cwd), shlex.quote(REMOTE_SESSION)
-    cmd = shlex.quote(f"bash -lc {shlex.quote('exec ' + shlex.join(agent))}")
+    if agent and os.path.basename(agent[0]).startswith("ctx"):
+        # this host's ctx path means nothing over there: its own ctx on the login PATH, else the venv a collector
+        # install leaves (~/repos/ctxswitch/.venv/bin/ctx)
+        run = ('c=$(command -v ctx || echo "$HOME/repos/ctxswitch/.venv/bin/ctx"); "$c" '
+               + shlex.join(agent[1:]))
+    else:
+        run = shlex.join(agent)
+    # an agent that fails keeps its window, with why, instead of closing it (and the ctx session, when it was the
+    # only window) out from under the view; one that exits cleanly closes it
+    run += '; rc=$?; [ "$rc" -eq 0 ] || { echo; echo "[ctx] it exited with $rc: Enter closes this"; read -r _; }'
+    cmd = shlex.quote(f"bash -lc {shlex.quote(run)}")
     mk = f"tmux new-session -d -s {s} -n {shlex.quote(name)} -c \"$d\" -P -F '#{{window_id}}' {cmd}"
     win = f"tmux new-window -d -t {s}: -n {shlex.quote(name)} -c \"$d\" -P -F '#{{window_id}}' {cmd}"
     tagline = f' tmux set-option -p -t "$w" @ctx_key {shlex.quote(key)};' if key else ""   # the window's one pane
@@ -342,7 +352,7 @@ def new_remote_agent(host: str, harness: str, cwd: str, ssh: dict[str, str]) -> 
     pane_id = _agent_window(target_session, os.path.expanduser("~"), name, argv)
     if key:
         tag(pane_id, key)
-    _run("set-option", "-w", "-t", pane_id, "@ctx_remote", f"{host}|pending", check=False)
+    _run("set-option", "-p", "-t", pane_id, "@ctx_remote", f"{host}|pending", check=False)
     _run("swap-pane", "-s", pane_id, "-t", viewer.id)
     return f"new {harness} on {host} in {cwd}"
 
@@ -396,7 +406,7 @@ def new_session_window(s: dict, ssh: dict[str, str] | None = None, extra: list[s
     target_session = next((p.session for p in panes() if p.id == os.environ.get("TMUX_PANE")), SESSION)
     pane_id = _agent_window(target_session, cwd, name, argv, role=role)
     if remote:
-        _run("set-option", "-w", "-t", pane_id, "@ctx_remote", f"{s.get('host_id')}|pending", check=False)
+        _run("set-option", "-p", "-t", pane_id, "@ctx_remote", f"{s.get('host_id')}|pending", check=False)
     tag(pane_id, s["key"])
     ps = panes()
     return next(p for p in ps if p.id == pane_id)
@@ -532,7 +542,7 @@ def _remote_view(s: dict, ssh: dict[str, str], viewer: Pane) -> Pane:
                             remote_argv(target or "", view_command(f"{sess}:{window}", pane)))
     if s.get("key"):
         tag(pane_id, s["key"])
-    _run("set-option", "-w", "-t", pane_id, "@ctx_remote", f"{s.get('host_id')}|{s.get('tmux_at')}", check=False)
+    _run("set-option", "-p", "-t", pane_id, "@ctx_remote", f"{s.get('host_id')}|{s.get('tmux_at')}", check=False)
     return next(p for p in panes() if p.id == pane_id)
 
 

@@ -160,7 +160,10 @@ def test_the_remote_script_makes_a_window_in_the_ctx_session_that_is_already_up(
     assert made, calls
     assert made[0][made[0].index("-c") + 1] == cwd    # a directory with a quote and a space in it lands whole
     wrapped = [shlex.split(a) for a in made[0] if a.startswith("bash -lc ")]
-    assert wrapped == [["bash", "-lc", f"exec {shlex.join(AGENT)}"]]   # an agent argument carrying a quote survives
+    assert len(wrapped) == 1 and wrapped[0][:2] == ["bash", "-lc"]
+    assert wrapped[0][2].startswith(f"{shlex.join(AGENT)}; rc=$?;")       # an agent argument carrying a quote survives
+    assert "read -r _" in wrapped[0][2]                                   # and one that fails keeps its window
+
     assert ["set-option", "-p", "-t", "@9", "@ctx_key", K3] in [c for c in calls if "@ctx_key" in c]
     view = [c for c in calls if "ctxview-" in " ".join(c)]       # it ends by attaching a view that dies on detach
     assert view and "destroy-unattached" in view[0] and "-t" in view[0][:6]
@@ -380,3 +383,12 @@ def test_the_remote_helpers_are_the_contract_the_board_builds_on():
     assert tmux._is_remote({"host_id": "specul8"}, "laptop") and not tmux._is_remote({"host_id": "laptop"}, "laptop")
     assert tmux.ssh_target("specul8", {"specul8": "rick@specul8"}) == "rick@specul8"
     assert tmux.ssh_target("specul8", {"specul8": ""}) is None
+
+
+def test_the_remote_script_finds_ctx_over_there_not_by_this_hosts_path():
+    """ctx's own path here means nothing on the other host: there it's ctx on the login PATH, else the venv."""
+    script = tmux.remote_script("s/sh", "~", ["/home/rick/.local/bin/ctx", "shell", "--id", "X1"], "h/shell/X1")
+    assert "/home/rick/.local/bin/ctx" not in script
+    assert 'command -v ctx || echo "$HOME/repos/ctxswitch/.venv/bin/ctx"' in shlex.split(script.split("w=$(", 1)[1])[-1] \
+        or "command -v ctx" in script
+    assert "shell --id X1" in script
