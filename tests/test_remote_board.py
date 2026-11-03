@@ -183,7 +183,7 @@ def test_the_view_command_shows_one_window_of_a_running_session_without_taking_o
     cmd = tmux.view_command("ctx:@3.%7")
     assert "tmux new-session -t ctx -s ctxview-" in cmd and "destroy-unattached on" in cmd
     assert "status off" in cmd and "prefix None" in cmd
-    assert "select-window -t @3" in cmd and "select-pane -t %7" in cmd
+    assert "select-window -t %7" in cmd and "select-pane -t %7" in cmd   # by its pane: the window may have moved
     assert tmux.view_command("@3").count("select-window") == 1   # a bare window id: nothing to name or select by
     grouped = tmux.view_command("other:@1")
     assert "-t other " in grouped and "select-window -t @1" in grouped and "select-pane" not in grouped

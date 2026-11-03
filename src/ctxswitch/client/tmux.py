@@ -297,8 +297,11 @@ def view_command(target_window: str, pane: str | None = None) -> str:
     grouped session that dies when you detach, with no status line and no prefix of its own — the tmux you drive is
     the local one. ``target_window`` is a window id (``@1``), a ``S:@w`` tmux_at, or a variable holding one."""
     sess, window, at_pane = _tmux_at_parts(target_window or "")
-    sel = f" \\; select-window -t {_arg(window)}" if window else ""
-    sel += f" \\; select-pane -t {_arg(pane or at_pane)}" if (pane or at_pane) else ""
+    pane = pane or at_pane
+    # a pane id names its window wherever the pane is now: ctx swaps panes between windows, so the window a session
+    # was recorded in at start goes stale while its pane id doesn't
+    sel = f" \\; select-window -t {_arg(pane or window)}" if (pane or window) else ""
+    sel += f" \\; select-pane -t {_arg(pane)}" if pane else ""
     return (f"tmux new-session -t {shlex.quote(sess)} -s ctxview-{uuid.uuid4().hex[:6]}"
             f" \\; set-option destroy-unattached on \\; set-option status off \\; set-option prefix None{sel}")
 
