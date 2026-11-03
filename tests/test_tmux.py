@@ -562,3 +562,20 @@ def test_a_fresh_ctx_tmux_starts_with_the_board_focused(server, monkeypatch, tmp
     tm("new-session", "-d", "-s", "keep"); tm("kill-session", "-t", "ctx")     # the last session would end the server
     tmux.bootstrap("20")
     assert tm("display-message", "-p", "-t", "ctx:mgr", "#{pane_index}") == "1"     # the board's pane is the active one
+
+
+def test_a_background_job_is_found_through_the_window_that_shows_it(server, monkeypatch):
+    """A Claude window parked its conversation into a background job: the job's own process is in no pane, the
+    window's process is, and the window's pane still carries the old (now ended) session's tag."""
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    monkeypatch.setenv("TMUX_PANE", tui.id)
+    tmux.tag(viewer.id, "laptop/claude/window")
+    old = {"key": "laptop/claude/window", "pid": None, "live_status": "ended", "host_id": "laptop", "harness": "claude"}
+    job = {"key": "laptop/claude/job", "pid": 999999, "via_pid": viewer.pid, "live_status": "busy",
+           "host_id": "laptop", "harness": "claude", "session_id": "job"}
+    assert tmux.pane_for_session(job).id == viewer.id                 # its pid is nowhere; the window's pid is
+    assert tmux.pane_for_session({**job, "via_pid": None}) is None
+    assert tmux.visible_key(tmux.panes(), [old, job]) == "laptop/claude/job"   # the ended tag gives way
+    assert tmux.viewer_pane().key == "laptop/claude/job"                     # and the pane is re-tagged
+    assert tmux.show(job, focus=False) == "already showing"

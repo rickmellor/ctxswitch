@@ -66,6 +66,7 @@ def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> d
     out: dict[str, Liveness] = {}
     if not sessions_dir.is_dir():
         return out
+    entries = []
     for p in sessions_dir.glob("*.json"):
         try:
             with open(p) as f:
@@ -75,14 +76,29 @@ def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> d
         pid, sid = d.get("pid"), d.get("sessionId")
         if not isinstance(pid, int) or not isinstance(sid, str):
             continue
-        if not alive(pid, d):
+        if alive(pid, d):
+            entries.append(d)
+    # A window can park its conversation into a background job (the window's entry names it parkedJobId, the job's
+    # entry jobId): the job is the conversation now, forked under a new session id, and the window only shows it.
+    # Report the job, as shown by the window's process, and not the window's frozen session as a second live one.
+    jobs = {d["jobId"]: d for d in entries if isinstance(d.get("jobId"), str) and d["jobId"]}
+    via: dict[int, int] = {}
+    for d in entries:
+        job = jobs.get(d.get("parkedJobId")) if isinstance(d.get("parkedJobId"), str) else None
+        if job is not None and job is not d:
+            via[job["pid"]] = d["pid"]
+    parked = {id(d) for d in entries if isinstance(d.get("parkedJobId"), str) and d["parkedJobId"] in jobs
+              and jobs[d["parkedJobId"]] is not d}
+    for d in entries:
+        if id(d) in parked:
             continue
+        pid, sid = d["pid"], d["sessionId"]
         status = d.get("status") if d.get("status") in LIVE else "unknown"
         out[session_key(host_id, harness, sid)] = Liveness(
             key=session_key(host_id, harness, sid), status=status,
             status_since=_iso_ms(d.get("statusUpdatedAt") or d.get("updatedAt")), pid=pid,
             socket=d.get("messagingSocketPath") if isinstance(d.get("messagingSocketPath"), str) else None,
-            name=_user_name(d))
+            name=_user_name(d), via_pid=via.get(pid))
     return out
 
 

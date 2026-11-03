@@ -87,3 +87,22 @@ def test_registry_user_name_survives_to_the_hub_title(tmp_path):
     assert [s["title"] for s in store.sessions("h")] == ["Netflow"]     # listed (live, no turns) under the name
     store.set_liveness("h", [])                                         # exited: back to the transcript's title
     assert store.session(key)["title"] == "Ubiquiti Dream Wall network monitoring"
+
+
+def test_a_window_parked_into_a_background_job_is_reported_as_the_job_shown_by_the_window(tmp_path):
+    """Claude Code can park a window's conversation into a background job: the job forks it under a new session id
+    (its entry: kind bg, jobId J), the window's entry keeps the old id with parkedJobId J and only shows the job.
+    One conversation: report the job, with the window's process as the one showing it, and not the window's."""
+    proc = _fake_proc(tmp_path, 100, "11")
+    _fake_proc(tmp_path, 200, "22"); _fake_proc(tmp_path, 300, "33")
+    reg = tmp_path / "sessions"; reg.mkdir()
+    (reg / "100.json").write_text(json.dumps({"pid": 100, "sessionId": "s-window", "procStart": "11", "status": "busy",
+                                               "kind": "interactive", "parkedJobId": "7c4a8b08", "tmux": "ctx:@1.%2"}))
+    (reg / "200.json").write_text(json.dumps({"pid": 200, "sessionId": "s-job", "procStart": "22", "status": "busy",
+                                               "kind": "bg", "jobId": "7c4a8b08"}))
+    (reg / "300.json").write_text(json.dumps({"pid": 300, "sessionId": "s-other", "procStart": "33", "status": "idle",
+                                               "kind": "interactive", "parkedJobId": "nosuchjob"}))
+    live = read_claude_registry(reg, "laptop", proc=str(proc))
+    assert set(live) == {"laptop/claude/s-job", "laptop/claude/s-other"}       # the frozen window session is gone
+    assert live["laptop/claude/s-job"].pid == 200 and live["laptop/claude/s-job"].via_pid == 100
+    assert live["laptop/claude/s-other"].via_pid is None                         # its job isn't running: it stays

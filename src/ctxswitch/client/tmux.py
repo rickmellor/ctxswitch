@@ -103,7 +103,8 @@ def pane_for_session(s: dict, ps: list[Pane] | None = None) -> Pane | None:
     tagged = next((p for p in ps if p.key == key), None)
     if tagged:
         return tagged
-    return pane_for_pid(s.get("pid"), ps)
+    # its own process, else the one showing it (a Claude window whose conversation went to a background job)
+    return pane_for_pid(s.get("pid"), ps) or pane_for_pid(s.get("via_pid"), ps)
 
 
 def viewer_pane(ps: list[Pane] | None = None) -> Pane | None:
@@ -540,13 +541,14 @@ def visible_key(ps: list[Pane] | None = None, sessions: list[dict] | None = None
     if v is None:
         return None
     known = {s["key"] for s in sessions or []}
-    if v.key and (not known or v.key in known):
+    gone = {s["key"] for s in sessions or [] if s.get("live_status") == "ended"}
+    if v.key and (not known or v.key in known) and v.key not in gone:
         return v.key
     here = _this_host()
-    for s in sessions or []:                            # untagged (or stale tag): map by the agent's pid
-        if _is_remote(s, here):
+    for s in sessions or []:                            # untagged, stale or ended tag: map by the agent's pid, or by
+        if _is_remote(s, here) or s.get("live_status") == "ended":      # the window showing a parked background job
             continue                                    # its pid is another machine's
-        p = pane_for_pid(s.get("pid"), ps)
+        p = pane_for_pid(s.get("pid"), ps) or pane_for_pid(s.get("via_pid"), ps)
         if p and p.id == v.id:
             tag(v.id, s["key"])
             return s["key"]

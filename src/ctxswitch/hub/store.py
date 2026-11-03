@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at TEXT, last_activity TEXT, ended INTEGER NOT NULL DEFAULT 0,
     live_status TEXT NOT NULL DEFAULT 'unknown', status_since TEXT, pid INTEGER, socket TEXT,
     last_viewed_at TEXT, updated REAL NOT NULL, recap TEXT, recap_anchor TEXT, recap_at REAL, live_name TEXT, reentry TEXT,
-    parent_key TEXT, job TEXT, job_status TEXT, job_brief TEXT
+    parent_key TEXT, job TEXT, job_status TEXT, job_brief TEXT, via_pid INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_host ON sessions(host_id);
 CREATE TABLE IF NOT EXISTS turns (
@@ -147,7 +147,8 @@ class Store:
         self.db.executescript(SCHEMA)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}
         for col, typ in (("recap", "TEXT"), ("recap_anchor", "TEXT"), ("recap_at", "REAL"), ("live_name", "TEXT"), ("reentry", "TEXT"),
-                         ("parent_key", "TEXT"), ("job", "TEXT"), ("job_status", "TEXT"), ("job_brief", "TEXT")):   # older databases
+                         ("parent_key", "TEXT"), ("job", "TEXT"), ("job_status", "TEXT"), ("job_brief", "TEXT"),
+                         ("via_pid", "INTEGER")):   # older databases
             if col not in cols:
                 self.db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
         mcols = {r[1] for r in self.db.execute("PRAGMA table_info(messages)")}
@@ -236,13 +237,13 @@ class Store:
             now = time.time()
             live_keys = {i["key"] for i in items}
             for i in items:
-                self.db.execute("UPDATE sessions SET live_status=?, status_since=?, pid=?, socket=?, live_name=?, ended=0, updated=? WHERE key=?",
-                                (i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), i.get("name"), now, i["key"]))
+                self.db.execute("UPDATE sessions SET live_status=?, status_since=?, pid=?, socket=?, live_name=?, via_pid=?, ended=0, updated=? WHERE key=?",
+                                (i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), i.get("name"), i.get("via_pid"), now, i["key"]))
                 if self.db.execute("SELECT changes()").fetchone()[0] == 0:
                     # live but transcript not indexed yet: placeholder row so the TUI shows it
                     h, harness, sid = i["key"].split("/", 2)
-                    self.db.execute("INSERT OR IGNORE INTO sessions(key,host_id,harness,session_id,meta,live_status,status_since,pid,socket,live_name,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                                    (i["key"], h, harness, sid, "{}", i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), i.get("name"), now))
+                    self.db.execute("INSERT OR IGNORE INTO sessions(key,host_id,harness,session_id,meta,live_status,status_since,pid,socket,live_name,via_pid,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    (i["key"], h, harness, sid, "{}", i["status"], i.get("status_since"), i.get("pid"), i.get("socket"), i.get("name"), i.get("via_pid"), now))
             # Claude shows a dialog only while "waiting": idle means any hook ask from before then was dismissed
             # (Esc on a permission prompt fires no hook at all).
             for i in items:
@@ -257,7 +258,7 @@ class Store:
                 if r["key"] in live_keys:
                     continue
                 if r["harness"] == "claude" or r["live_status"] in LIVE:
-                    self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, live_name=NULL, updated=? WHERE key=?", (now, r["key"]))
+                    self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, live_name=NULL, via_pid=NULL, updated=? WHERE key=?", (now, r["key"]))
             self._bump()
 
     # -- messages ---------------------------------------------------------------------------------------------------

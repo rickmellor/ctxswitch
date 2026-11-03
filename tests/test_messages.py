@@ -202,3 +202,12 @@ def test_notes_say_where_a_message_is():
     assert "queued" in fmt.message_note(s | {"live_status": "ended"}, {"status": "queued"})
     assert "approval in plan mode" in fmt.message_note(s, {"status": "sent"})
     assert fmt.can_message({"harness": "claude-win"}) and not fmt.can_message(s)
+
+
+def test_liveness_keeps_and_clears_the_process_that_shows_a_session(tmp_path):
+    from ctxswitch.hub.store import Store
+    st = Store(tmp_path / "h.db")
+    st.set_liveness("laptop", [{"key": "laptop/claude/job", "status": "busy", "pid": 200, "via_pid": 100}])
+    assert st.session("laptop/claude/job", turns=0)["via_pid"] == 100
+    st.set_liveness("laptop", [])                                      # it ended: nothing shows it any more
+    assert st.session("laptop/claude/job", turns=0)["via_pid"] is None
