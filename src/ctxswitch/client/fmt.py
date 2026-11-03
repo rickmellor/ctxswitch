@@ -296,6 +296,7 @@ def header_budget(budgets: dict | None) -> str:
     return f" · ${int(min(left, key=lambda x: x[0])[0])} left"
 
 
+POOL_OFF_STYLE = "grey50"                                     # the ⌂ of a session told the pool is off
 POOL_STALE = "stale: run /local-pool or resume it"            # the detail line's tail; the legend has the long version
 POOL_HOW = {"startup": "told at startup", "resume": "told at resume", "clear": "told at clear",
             "compact": "told at compact", "command": "told by a command"}
@@ -323,16 +324,18 @@ def pool_stale(s: dict, host_pools: dict | None) -> bool:
 
 
 def pool_mark(s: dict, host_pools: dict | None) -> tuple[str, str]:
-    """The badge after a row's harness·host label: ``(text, style)``, ``("", "")`` when there's nothing to say — a
-    session that works the cloud (anything but Claude), or one told the pool is off with the switch agreeing."""
+    """The badge after a row's harness·host label: ``(text, style)``. Green ⌂ told on (dim green: on, but SAINT didn't
+    answer), grey ⌂ told off, yellow ⌂ stale. ``("", "")`` for anything but Claude, and for a session never told."""
     if s.get("harness") != "claude":
         return "", ""
     if pool_stale(s, host_pools):                                  # told one thing, the file says the other — which
         return "⌂", "bold yellow"                                  # ever way round, including a session saying "off"
     mine = _pool_state(s)
+    if mine == "off":
+        return "⌂", POOL_OFF_STYLE
     if mine not in ("on", "unreachable"):
         return "", ""
-    return "⌂", "dim magenta" if mine == "unreachable" else "bold magenta"
+    return "⌂", "dim green" if mine == "unreachable" else "bold green"
 
 
 def pool_line(s: dict, host_pools: dict | None, now: datetime | None = None) -> str:

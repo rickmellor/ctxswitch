@@ -165,17 +165,17 @@ def test_the_badge_says_what_the_session_was_told_and_shouts_when_that_stale_is_
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": quiet}, host_on) == ("", "")  # told nothing
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": quiet}, {}) == ("", "")
     assert fmt.pool_mark({"harness": "pi", "host_id": "laptop", "meta": on}, host_on) == ("", "")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, host_on) == ("⌂", "bold magenta")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": gone}, host_on) == ("⌂", "dim magenta")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, {}) == ("⌂", "bold magenta")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, host_on) == ("⌂", "bold green")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": gone}, host_on) == ("⌂", "dim green")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, {}) == ("⌂", "bold green")
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, host_off) == ("⌂", "bold yellow")
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_on) == ("⌂", "bold yellow")
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_gone) == ("⌂", "bold yellow")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_off) == ("", "")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_off) == ("⌂", "grey50")
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": quiet}, host_off) == ("", "")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, {}) == ("", "")   # host silent
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, {}) == ("⌂", "grey50")   # host silent
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on},
-                         {"other": {"state": "off"}}) == ("⌂", "bold magenta")   # another host's switch says nothing
+                         {"other": {"state": "off"}}) == ("⌂", "bold green")   # another host's switch says nothing
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": {}}, None) == ("", "")   # an old hub
 
 
@@ -221,9 +221,9 @@ def test_the_header_tags_the_host_it_is_about_and_only_when_that_host_said():
 
 def test_the_legend_and_the_help_both_say_what_a_gear_means():
     row = [g for _, rows in tui.legend_sections() for g in rows if g[0] == "⌂"]
-    assert [g[0] for g in row] == ["⌂", "⌂"]
-    assert row[0][1] == "bold magenta" and row[1][1] == "bold yellow"
-    assert "local pool on" in row[0][2] and "/local-pool" in row[1][2]
+    assert [g[0] for g in row] == ["⌂", "⌂", "⌂"]
+    assert [g[1] for g in row] == ["bold green", "grey50", "bold yellow"]
+    assert "local pool on" in row[0][2] and "local pool off" in row[1][2] and "/local-pool" in row[2][2]
     tip = next(w for t, w in tui.HELP_TIPS if t == "Local pool")
     assert "⌂" in tip and "yellow" in tip and "/local-pool" in tip and "transcript" in tip
 
@@ -237,7 +237,7 @@ async def test_a_row_wears_its_pool_badge_after_the_host_and_flags_a_stale_one(m
         await pilot.pause(1)
         assert app.host_pools == {"laptop": app.client.pools["laptop"]}
         assert "cc·laptop ⌂" in _labels(app)[P1]                       # right after the harness·host label
-        assert _styles(app, P1) == ("dim", "bold magenta")                  # agreeing: the account stays dim
+        assert _styles(app, P1) == ("dim", "bold green")                  # agreeing: the account stays dim
         head = app.query_one("#summary").render().plain.splitlines()[0]
         assert head.endswith(" · pool on")                                  # this host's switch, in the header
 
@@ -260,7 +260,12 @@ async def test_a_row_wears_its_pool_badge_after_the_host_and_flags_a_stale_one(m
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(1)
         assert "cc·laptop ⌂" in _labels(app)[P1]
-        assert _styles(app, P1) == ("dim", "dim magenta")
+        assert _styles(app, P1) == ("dim", "dim green")
+
+    app = _board(monkeypatch, [_sess(P1, pool="off", pool_how="command")], pools={"laptop": _pool(state="off")})
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(1)
+        assert "cc·laptop ⌂" in _labels(app)[P1] and _styles(app, P1) == ("dim", "grey50")   # off, agreeing: grey
 
     app = _board(monkeypatch, [_sess(P1), _sess("devbox/pi/p2", host="devbox", harness="pi", pool="on")])
     async with app.run_test(size=(100, 30)) as pilot:                        # told nothing, or not a Claude: nothing

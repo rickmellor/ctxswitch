@@ -101,7 +101,7 @@ def summary_line(sessions: list[dict], host: str | None, host_pools: dict | None
     waiting = sum(1 for x in sessions if fmt.session_state(x) == "waiting")
     t = Text.assemble(("ctx", "bold"), f" · {host or 'all'} · {live} live")
     t.append(f" · {waiting} waiting on you" if waiting else " · nothing waiting", style="bold yellow" if waiting else "dim")
-    t.append(fmt.header_pool(host_pools, host if pool_host is None else pool_host), style="magenta")
+    t.append(fmt.header_pool(host_pools, host if pool_host is None else pool_host), style="green")
     return t
 
 
@@ -129,8 +129,9 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
           ("↳", "dim", ("a pool job launched by the session above (indented under it): its brief, how it ended, its "
                         "turns. It has no number: Alt+N never opens one.")),
           ("~$0.03", "dim", "a job's estimated local cost (energy); the Spend screen ($) has the rest"),
-          ("⌂", "bold magenta", ("local pool on in this session (what it was last told); dim: on but SAINT was "
-                                 "unreachable when it was told")),
+          ("⌂", "bold green", ("local pool on in this session (what it was last told); dim: on but SAINT was "
+                               "unreachable when it was told")),
+          ("⌂", fmt.POOL_OFF_STYLE, "local pool off in this session (no mark: it was never told, as with pi or a pool job)"),
           ("⌂", "bold yellow", ("stale (with its account in yellow): the session's pool state no longer matches its host's switch — run /local-pool "
                                  "in it, or resume it"))]),
         ("WAITING ON YOU", [("└", "yellow", ("under a waiting row: what it's waiting on — the question it asked, or the "
@@ -213,8 +214,8 @@ HELP_TIPS = [
     ("Pool jobs", ("A session started with `saint-agent` records its job id, the session that launched it, its brief, "
      "how it ended and the tokens it used. The board nests it under that session with an estimate of what it cost to "
      "run here; `$` lists the jobs of the last 30 days with what they would have cost in the cloud.")),
-    ("Local pool", ("A Claude row with ⌂ was told its local pool (SAINT) is on — dim when SAINT couldn't be reached "
-     "when it was told — and a yellow ⌂, its account yellow too, when the switch on its host has since moved the other way, so run /local-pool in it "
+    ("Local pool", ("A Claude row with a green ⌂ was told its local pool (SAINT) is on — dim when SAINT couldn't be "
+     "reached when it was told — a grey ⌂ that it's off, and a yellow ⌂, its account yellow too, when the switch on its host has since moved the other way, so run /local-pool in it "
      "or resume it. That state comes from the session's own transcript (the SessionStart hook, or a `saint-pool` "
      "command run in it), while the header's `pool on|off|unreachable` is what the switch file on this host says now.")),
     ("Sending a message", ("m types a message into the session as a new prompt: now if it's live, else when it next runs. Its "

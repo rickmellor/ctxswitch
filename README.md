@@ -170,8 +170,8 @@ on that host reads it. Older ledger lines (before 2026-10-30) have no session id
 and time instead. The waiting line under a row now starts `└`, so `↳` means "subordinate".
 
 ### Local pool (`⌂`)
-A Claude session's row carries `⌂` (magenta) when it was last told the local pool is on, and a dim `⌂` when it was
-told on but SAINT couldn't be reached. Nothing shows when it was told off. A session only learns the pool switch at a
+A Claude session's row carries a green `⌂` when it was last told the local pool is on (dim green: told on, but SAINT
+couldn't be reached), and a grey `⌂` when it was told off. A session that was never told shows nothing. A session only learns the pool switch at a
 SessionStart (start, resume, `/clear`, compaction), from the `saint-pool --hook` hook, or when `saint-pool on|off|status`
 runs in it (`/local-pool`); the collector reads the last of those from its transcript. Each host's collector also
 reports the switch itself (`~/.claude/saint-pool`, plus a SAINT health check, once a minute), shown in the header as
