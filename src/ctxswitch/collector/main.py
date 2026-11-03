@@ -50,6 +50,8 @@ log = logging.getLogger("ctxswitch.collector")
 WIN_POLL_S = 30
 POOL_POLL_S = 60                           # how often this host's saint-pool switch is read
 POOL_HEARTBEAT_S = 600                     # ... and how often it is pushed even when it hasn't moved
+POOL_TIMEOUT_S = 5                         # per health request: SAINT has been seen taking 3.3 s
+POOL_TRIES = 2                             # requests before a host's pool is called unreachable
 _budget_warned: set[str] = set()           # one WARNING per distinct way the budget command is failing, not one a poll
 
 
@@ -128,10 +130,13 @@ def read_pool(path: str, get=httpx.get) -> dict[str, Any] | None:
     if not url:
         state = "off"
     else:
-        try:
-            state = "on" if get(url.rstrip("/") + "/health", timeout=2).status_code == 200 else "unreachable"
-        except Exception:                  # noqa: BLE001 - down, unresolvable, timed out: the board says so either way
-            state = "unreachable"
+        state = "unreachable"
+        for _ in range(POOL_TRIES):        # SAINT's /health can take >3 s to answer once (then ~10 ms): one slow
+            try:                           # answer mustn't flag every session on the host as stale
+                if get(url.rstrip("/") + "/health", timeout=POOL_TIMEOUT_S).status_code == 200:
+                    state = "on"; break
+            except Exception:              # noqa: BLE001 - down, unresolvable, timed out: try once more, then say so
+                pass
     return {"host_id": "", "state": state, "url": url,
             "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
 

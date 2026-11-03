@@ -197,13 +197,28 @@ def test_a_switch_that_names_a_SAINT_probes_its_health(tmp_path):
     d = C.read_pool(_switch(tmp_path, " http://saint.home.arpa:4000/ \n# a later line is no URL\n"),
                     get=lambda url, **kw: seen.append((url, kw)) or _Resp(200))
     assert (d["state"], d["url"]) == ("on", "http://saint.home.arpa:4000/")     # the line as written, minus whitespace
-    assert seen == [("http://saint.home.arpa:4000/health", {"timeout": 2})]     # ... but one slash on the probe
+    assert seen == [("http://saint.home.arpa:4000/health", {"timeout": 5})]     # ... but one slash on the probe
 
 
 @pytest.mark.parametrize("get", [lambda url, **kw: _Resp(503), lambda url, **kw: _Resp(404),
                                  lambda url, **kw: (_ for _ in ()).throw(ConnectionError("down"))])
 def test_a_SAINT_that_does_not_answer_is_unreachable(get, tmp_path):
     assert C.read_pool(_switch(tmp_path), get=get)["state"] == "unreachable"
+
+
+def test_one_slow_answer_is_tried_again_before_the_host_is_called_unreachable(tmp_path):
+    """SAINT's /health once took 3.3 s, then 10 ms: a single timeout mustn't flag every session on the host stale."""
+    calls = []
+
+    def get(url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            raise TimeoutError("read timed out")
+        return _Resp(200)
+    assert C.read_pool(_switch(tmp_path), get=get)["state"] == "on" and len(calls) == 2
+    calls.clear()
+    assert C.read_pool(_switch(tmp_path), get=lambda url, **kw: calls.append(url) or _Resp(503))["state"] == "unreachable"
+    assert len(calls) == 2                                                      # and twice is all it tries
 
 
 # -- the loop that reports it ------------------------------------------------------------------------------------
