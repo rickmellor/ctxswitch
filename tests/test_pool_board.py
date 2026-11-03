@@ -1,6 +1,6 @@
 """The local-pool switch on the board: a host's collector pushes its ``~/.claude/saint-pool`` state, each Claude
-session carries what it was last told (its meta ``pool`` / ``pool_at`` / ``pool_how``), and the board shows a ⚙ on the
-row — ⚙! when the session's belief and the host's switch no longer agree — with the host's switch in the header and
+session carries what it was last told (its meta ``pool`` / ``pool_at`` / ``pool_how``), and the board shows a ⌂ on the
+row — yellow, with its account, when the session's belief and the host's switch no longer agree — with the host's switch in the header and
 both sides in the detail pane.
 
 The collector side lives on another branch, so every test here hands the hub a hand-made ``pool`` event and the client
@@ -86,6 +86,15 @@ def _board(monkeypatch, rows, pools=None) -> tui.CtxApp:
     return app
 
 
+def _styles(app, key: str) -> tuple[str, str]:
+    """(the account label's style, the ⌂'s style) on a session's row."""
+    t = app.query_one("#table")
+    cell = next(t.get_row_at(i)[3] for i in range(t.row_count) if t.coordinate_to_cell_key((i, 0)).row_key.value == key)
+    def at(i):
+        return " ".join(" ".join(sorted(str(sp.style).split())) for sp in cell.spans if sp.start <= i < sp.end) if i >= 0 else ""
+    return at(cell.plain.find("cc·laptop")), at(cell.plain.find("⌂"))
+
+
 def _labels(app) -> dict[str, str]:
     t = app.query_one("#table")
     return {t.coordinate_to_cell_key((i, 0)).row_key.value: t.get_row_at(i)[3].plain
@@ -156,17 +165,17 @@ def test_the_badge_says_what_the_session_was_told_and_shouts_when_that_stale_is_
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": quiet}, host_on) == ("", "")  # told nothing
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": quiet}, {}) == ("", "")
     assert fmt.pool_mark({"harness": "pi", "host_id": "laptop", "meta": on}, host_on) == ("", "")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, host_on) == ("⚙", "bold magenta")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": gone}, host_on) == ("⚙", "dim magenta")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, {}) == ("⚙", "bold magenta")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, host_off) == ("⚙!", "bold yellow")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_on) == ("⚙!", "bold yellow")
-    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_gone) == ("⚙!", "bold yellow")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, host_on) == ("⌂", "bold magenta")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": gone}, host_on) == ("⌂", "dim magenta")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, {}) == ("⌂", "bold magenta")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on}, host_off) == ("⌂", "bold yellow")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_on) == ("⌂", "bold yellow")
+    assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_gone) == ("⌂", "bold yellow")
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, host_off) == ("", "")
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": quiet}, host_off) == ("", "")
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": off}, {}) == ("", "")   # host silent
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": on},
-                         {"other": {"state": "off"}}) == ("⚙", "bold magenta")   # another host's switch says nothing
+                         {"other": {"state": "off"}}) == ("⌂", "bold magenta")   # another host's switch says nothing
     assert fmt.pool_mark({"harness": "claude", "host_id": "laptop", "meta": {}}, None) == ("", "")   # an old hub
 
 
@@ -211,12 +220,12 @@ def test_the_header_tags_the_host_it_is_about_and_only_when_that_host_said():
 
 
 def test_the_legend_and_the_help_both_say_what_a_gear_means():
-    row = [g for _, rows in tui.legend_sections() for g in rows if g[0].startswith("⚙")]
-    assert [g[0] for g in row] == ["⚙", "⚙!"]
+    row = [g for _, rows in tui.legend_sections() for g in rows if g[0] == "⌂"]
+    assert [g[0] for g in row] == ["⌂", "⌂"]
     assert row[0][1] == "bold magenta" and row[1][1] == "bold yellow"
     assert "local pool on" in row[0][2] and "/local-pool" in row[1][2]
     tip = next(w for t, w in tui.HELP_TIPS if t == "Local pool")
-    assert "⚙" in tip and "⚙!" in tip and "/local-pool" in tip and "transcript" in tip
+    assert "⌂" in tip and "yellow" in tip and "/local-pool" in tip and "transcript" in tip
 
 
 # -- the board -----------------------------------------------------------------------------------------------------
@@ -227,32 +236,36 @@ async def test_a_row_wears_its_pool_badge_after_the_host_and_flags_a_stale_one(m
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(1)
         assert app.host_pools == {"laptop": app.client.pools["laptop"]}
-        assert "cc·laptop ⚙" in _labels(app)[P1]                       # right after the harness·host label
+        assert "cc·laptop ⌂" in _labels(app)[P1]                       # right after the harness·host label
+        assert _styles(app, P1) == ("dim", "bold magenta")                  # agreeing: the account stays dim
         head = app.query_one("#summary").render().plain.splitlines()[0]
         assert head.endswith(" · pool on")                                  # this host's switch, in the header
 
     app = _board(monkeypatch, [on], pools={"laptop": _pool(state="off")})   # the switch moved under it
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(1)
-        assert "cc·laptop ⚙!" in _labels(app)[P1]
-        assert "⚙" not in app.query_one("#detail_text").render().plain      # the detail says it in words, not a glyph
+        assert "cc·laptop ⌂" in _labels(app)[P1]
+        assert _styles(app, P1) == ("yellow", "bold yellow")                # stale: the account and its ⌂ go yellow
+        assert "⌂" not in app.query_one("#detail_text").render().plain      # the detail says it in words, not a glyph
         assert fmt.POOL_STALE in app.query_one("#detail_text").render().plain
 
     app = _board(monkeypatch, [_sess(P1, pool="off", pool_at=_ago(minutes=5), pool_how="command")],
                  pools={"laptop": _pool(state="on")})                        # it thinks off, the file says on
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(1)
-        assert "cc·laptop ⚙!" in _labels(app)[P1]
+        assert "cc·laptop ⌂" in _labels(app)[P1]
+        assert _styles(app, P1) == ("yellow", "bold yellow")
 
     app = _board(monkeypatch, [_sess(P1, pool="unreachable")], pools={"laptop": _pool(state="unreachable")})
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(1)
-        assert "cc·laptop ⚙" in _labels(app)[P1]
+        assert "cc·laptop ⌂" in _labels(app)[P1]
+        assert _styles(app, P1) == ("dim", "dim magenta")
 
     app = _board(monkeypatch, [_sess(P1), _sess("devbox/pi/p2", host="devbox", harness="pi", pool="on")])
     async with app.run_test(size=(100, 30)) as pilot:                        # told nothing, or not a Claude: nothing
         await pilot.pause(1)
-        assert all("⚙" not in label for label in _labels(app).values())
+        assert all("⌂" not in label for label in _labels(app).values())
 
 
 async def test_the_detail_pane_shows_both_sides_under_the_model_line(monkeypatch):
@@ -288,8 +301,8 @@ async def test_a_pool_job_row_wears_no_badge_of_its_own(monkeypatch):
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(1)
         labels = _labels(app)
-        assert "cc·laptop ⚙" in labels[P1]
-        assert "⚙" not in labels[C1] and labels[C1].startswith("  ↳ ")
+        assert "cc·laptop ⌂" in labels[P1]
+        assert "⌂" not in labels[C1] and labels[C1].startswith("  ↳ ")
 
 
 async def test_a_hub_that_sends_no_pool_state_boards_exactly_as_it_did(monkeypatch):
@@ -299,6 +312,6 @@ async def test_a_hub_that_sends_no_pool_state_boards_exactly_as_it_did(monkeypat
         await pilot.pause(1)
         assert app.host_pools == {}
         assert "pool" not in app.query_one("#summary").render().plain
-        assert "⚙" not in "".join(_labels(app).values())
+        assert "⌂" not in "".join(_labels(app).values())
         app.render_detail(_sess(P1))
         assert "pool" not in app.query_one("#detail_text").render().plain

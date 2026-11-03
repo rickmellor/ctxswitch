@@ -129,9 +129,9 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
           ("↳", "dim", ("a pool job launched by the session above (indented under it): its brief, how it ended, its "
                         "turns. It has no number: Alt+N never opens one.")),
           ("~$0.03", "dim", "a job's estimated local cost (energy); the Spend screen ($) has the rest"),
-          ("⚙", "bold magenta", ("local pool on in this session (what it was last told); dim: on but SAINT was "
+          ("⌂", "bold magenta", ("local pool on in this session (what it was last told); dim: on but SAINT was "
                                  "unreachable when it was told")),
-          ("⚙!", "bold yellow", ("stale: the session's pool state no longer matches its host's switch — run /local-pool "
+          ("⌂", "bold yellow", ("stale (with its account in yellow): the session's pool state no longer matches its host's switch — run /local-pool "
                                  "in it, or resume it"))]),
         ("WAITING ON YOU", [("└", "yellow", ("under a waiting row: what it's waiting on — the question it asked, or the "
                                              "dialog it has up")),
@@ -213,8 +213,8 @@ HELP_TIPS = [
     ("Pool jobs", ("A session started with `saint-agent` records its job id, the session that launched it, its brief, "
      "how it ended and the tokens it used. The board nests it under that session with an estimate of what it cost to "
      "run here; `$` lists the jobs of the last 30 days with what they would have cost in the cloud.")),
-    ("Local pool", ("A Claude row with ⚙ was told its local pool (SAINT) is on — dim when SAINT couldn't be reached "
-     "when it was told — and ⚙! when the switch on its host has since moved the other way, so run /local-pool in it "
+    ("Local pool", ("A Claude row with ⌂ was told its local pool (SAINT) is on — dim when SAINT couldn't be reached "
+     "when it was told — and a yellow ⌂, its account yellow too, when the switch on its host has since moved the other way, so run /local-pool in it "
      "or resume it. That state comes from the session's own transcript (the SessionStart hook, or a `saint-pool` "
      "command run in it), while the header's `pool on|off|unreachable` is what the switch file on this host says now.")),
     ("Sending a message", ("m types a message into the session as a new prompt: now if it's live, else when it next runs. Its "
@@ -899,7 +899,8 @@ class CtxApp(App):
                 seen_mark = ""
             if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
                 ask_mark = ""
-            label.append(f"{where} ", style="dim")
+            # stale: the account (harness·host) turns yellow with its ⌂, so it reads at a glance with no extra column
+            label.append(f"{where} ", style="yellow" if badge and fmt.pool_stale(s, self.host_pools) else "dim")
             if mark:
                 label.append(mark, style=badge_style)
             if job:                                      # a job says what it ran, not the session's noisy title

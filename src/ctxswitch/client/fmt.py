@@ -328,11 +328,11 @@ def pool_mark(s: dict, host_pools: dict | None) -> tuple[str, str]:
     if s.get("harness") != "claude":
         return "", ""
     if pool_stale(s, host_pools):                                  # told one thing, the file says the other — which
-        return "⚙!", "bold yellow"                                 # ever way round, including a session saying "off"
+        return "⌂", "bold yellow"                                  # ever way round, including a session saying "off"
     mine = _pool_state(s)
     if mine not in ("on", "unreachable"):
         return "", ""
-    return "⚙", "dim magenta" if mine == "unreachable" else "bold magenta"
+    return "⌂", "dim magenta" if mine == "unreachable" else "bold magenta"
 
 
 def pool_line(s: dict, host_pools: dict | None, now: datetime | None = None) -> str:
