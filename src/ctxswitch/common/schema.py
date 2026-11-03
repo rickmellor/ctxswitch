@@ -134,6 +134,8 @@ class Liveness:
     name: str | None = None             # user-set session name (Claude registry); may not be in the transcript yet
     via_pid: int | None = None          # the process showing it, when that isn't its own: a Claude window whose
                                         # conversation was parked into a background job (the board finds the pane by it)
+    tmux_at: str | None = None          # "<session>:<window_id>.<pane_id>" ("ctx:@1.%2"): where it runs in a tmux on
+                                        # ITS OWN host, so a board on another host can reach it through ssh
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

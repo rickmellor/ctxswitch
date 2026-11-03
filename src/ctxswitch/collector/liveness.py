@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,11 @@ def _user_name(d: dict) -> str | None:
     return n.strip()
 
 
+def _tmux_at(v: Any) -> str | None:
+    """A registry entry's "tmux" field as a tmux_at: "<session>:<window_id>.<pane_id>", "" for anything else."""
+    return v if isinstance(v, str) and ":" in v and "." in v else None
+
+
 def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> dict[str, Liveness]:
     out: dict[str, Liveness] = {}
     if not sessions_dir.is_dir():
@@ -83,10 +89,12 @@ def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> d
     # Report the job, as shown by the window's process, and not the window's frozen session as a second live one.
     jobs = {d["jobId"]: d for d in entries if isinstance(d.get("jobId"), str) and d["jobId"]}
     via: dict[int, int] = {}
+    at: dict[int, str] = {}
     for d in entries:
         job = jobs.get(d.get("parkedJobId")) if isinstance(d.get("parkedJobId"), str) else None
         if job is not None and job is not d:
             via[job["pid"]] = d["pid"]
+            at[job["pid"]] = _tmux_at(d.get("tmux"))      # the job shows in the window's pane, not in one of its own
     parked = {id(d) for d in entries if isinstance(d.get("parkedJobId"), str) and d["parkedJobId"] in jobs
               and jobs[d["parkedJobId"]] is not d}
     for d in entries:
@@ -98,8 +106,59 @@ def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> d
             key=session_key(host_id, harness, sid), status=status,
             status_since=_iso_ms(d.get("statusUpdatedAt") or d.get("updatedAt")), pid=pid,
             socket=d.get("messagingSocketPath") if isinstance(d.get("messagingSocketPath"), str) else None,
-            name=_user_name(d), via_pid=via.get(pid))
+            name=_user_name(d), via_pid=via.get(pid),
+            tmux_at=at.get(pid) or _tmux_at(d.get("tmux")))
     return out
+
+
+def tmux_panes(run=subprocess.run) -> list[tuple[str, str, str, int]]:
+    """(session_name, window_id, pane_id, pane_pid) for every pane of the tmux server on THIS host. One list-panes
+    call per poll; no tmux binary, no server or any other failure reads as no panes (a host without tmux is normal)."""
+    try:
+        p = run(["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}"],
+                capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if getattr(p, "returncode", 1):
+        return []
+    out = []
+    for line in (p.stdout or "").splitlines():
+        f = line.split("\t")
+        if len(f) < 4:
+            continue
+        try:
+            out.append((f[0], f[1], f[2], int(f[3])))
+        except ValueError:
+            continue
+    return out
+
+
+def _ppid(pid: int, proc: str = "/proc") -> int | None:
+    """Field 4 of /proc/<pid>/stat: its parent's pid."""
+    try:
+        with open(f"{proc}/{pid}/stat") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def fill_tmux_at(items: list[Liveness], panes: list[tuple[str, str, str, int]], proc: str = "/proc") -> None:
+    """Set tmux_at on every item that has a pid and none yet: the pane on this host whose pane_pid is that pid or an
+    ancestor of it (the session runs inside the pane's shell). Same walk as client/tmux.pane_for_pid."""
+    if not panes:
+        return
+    by_pid = {p[3]: f"{p[0]}:{p[1]}.{p[2]}" for p in panes}
+    for it in items:
+        if it.tmux_at or not it.pid:
+            continue
+        cur: int | None = it.pid
+        for _ in range(12):
+            if cur is None or cur <= 1:
+                break
+            if cur in by_pid:
+                it.tmux_at = by_pid[cur]
+                break
+            cur = _ppid(cur, proc)
 
 
 def read_agy_presence(conversations_dir: Path, host_id: str, proc: str = "/proc") -> dict[str, Liveness]:

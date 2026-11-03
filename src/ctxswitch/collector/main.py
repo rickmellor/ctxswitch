@@ -41,7 +41,8 @@ def ensure_shell_roots(roots) -> None:
 from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
-from ctxswitch.collector.liveness import read_agy_presence, read_claude_registry, read_claude_win_registry, read_pi_registry, read_shell_registry, runtime_dir
+from ctxswitch.collector.liveness import (fill_tmux_at, read_agy_presence, read_claude_registry, read_claude_win_registry,
+                                          read_pi_registry, read_shell_registry, runtime_dir, tmux_panes)
 from ctxswitch.common.wsl import windows_pids
 from ctxswitch.collector.state import CollectorState
 from ctxswitch.common.config import Config, data_dir, load
@@ -171,6 +172,13 @@ class Collector:
             if h == "agy" and r.is_dir():
                 live |= read_agy_presence(r, self.host_id)
         live |= self.win_live
+        # where each one runs in a tmux on this host: a registry entry that names its own "tmux" already answered, and
+        # a Windows pid is from the other OS's process table, so it can never be one of this host's pane pids (they
+        # are small integers too — a match there would be a coincidence worth not reporting). The panes are listed
+        # only when something on this host still needs them; no tmux server just means no tmux_at.
+        need = [l for l in live.values() if l.pid and not l.tmux_at and l.key.split("/")[1] != "claude-win"]
+        if need:
+            fill_tmux_at(need, tmux_panes())
         self.live = live
         self.ix.live_keys = set(live)
         snap = {"host_id": self.host_id, "sessions": [l.to_dict() for l in live.values()]}
