@@ -81,6 +81,9 @@ class CollectorConfig:
     budget_cmd: str = "bedrock-spend"
     budget_every: int = 900                # seconds between polls
     budget_account: str = "bedrock"
+    # The local Qwen pool's switch (`saint-pool on|off`, one line: the SAINT URL). Reported so a board can tell
+    # whether a session that was told "the pool is on" is looking at a switch that has since moved. "" stops the report.
+    pool_file: str = "~/.claude/saint-pool"
 
 
 @dataclass

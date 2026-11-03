@@ -8,8 +8,10 @@ Entry types that matter (surveyed across 2.1.128–2.1.312 files, see DESIGN.md)
   system      subtype turn_duration (the harness closed the turn), compact_boundary, api_error, away_summary,
               local_command, scheduled_task_fire.
   ai-title / custom-title / agent-name / permission-mode   session metadata.
-  everything else (attachment, atis-latch, last-prompt, mode, pr-link, queue-operation, file-history-*,
-  cost-state, api-request*, tools-used)   ignored.
+  attachment  only a SessionStart hook_success says anything: what saint-pool --hook told the session about the
+              local Qwen pool (meta pool / pool_at / pool_how).
+  everything else (attachment of other kinds, atis-latch, last-prompt, mode, pr-link, queue-operation,
+  file-history-*, cost-state, api-request*, tools-used)   ignored.
 """
 from __future__ import annotations
 
@@ -25,9 +27,28 @@ PLAN_REJECTED = "The user doesn't want to proceed with this tool use."
 _REJECT_FEEDBACK = re.compile(r"the user said:\s*(.*)\Z", re.S)
 _CMD = re.compile(r"<command-name>(/[^<\s]+)</command-name>")
 
+# The local Qwen pool (saint-pool): the one thing in the transcript that says what this session was told about it.
+# Only the hook_success line counts, not the hook_additional_context attachment Claude also writes: same text, twice.
+_POOL_HOOK = (("unreachable", re.compile(r"LOCAL POOL ON but", re.I)),
+              ("on", re.compile(r"LOCAL POOL ON \(", re.I)))
+# `saint-pool on|off|status` run inside the session, whole lines only: a grep hit that quotes the script's own
+# `echo "saint-pool: ON ($URL, reachable)"` carries a line number and indentation, so it can't match.
+# Unreachable first: "UNREACHABLE" ends in "reachable", so the plain-ON pattern would otherwise claim it.
+_POOL_CMD = (("unreachable", re.compile(r"^saint-pool: ON \(.*(UNREACHABLE|not reachable).*$", re.M | re.I)),
+             ("on", re.compile(r"^saint-pool: ON \(.*reachable\)$", re.M | re.I)),
+             ("off", re.compile(r"^saint-pool: OFF$", re.M | re.I)))
+
 
 _USAGE_MAP = (("input", "input_tokens"), ("output", "output_tokens"), ("cache_read", "cache_read_input_tokens"),
               ("cache_creation", "cache_creation_input_tokens"))
+
+
+def _result_text(r: dict) -> str:
+    """A tool_result's text: harnesses give it as a plain string or as a list of blocks."""
+    t = r.get("content")
+    if isinstance(t, list):
+        return "\n".join(c.get("text", "") for c in t if isinstance(c, dict))
+    return t if isinstance(t, str) else ""
 
 
 class ClaudeParser:
@@ -103,6 +124,8 @@ class ClaudeParser:
             self.meta["name"] = e.get("agentName", "") or self.meta.get("name", "")
         elif t == "permission-mode":
             self.meta["permission_mode"] = e.get("permissionMode", "") or self.meta.get("permission_mode", "")
+        elif t == "attachment":
+            self._attachment(e)
 
     # -- helpers -----------------------------------------------------------------------------------------------
     def _event(self, name: str, offset_end: int, ts: str | None) -> None:
@@ -191,6 +214,13 @@ class ClaudeParser:
     def _tool_results(self, e: dict[str, Any], results: list[dict], offset_end: int) -> None:
         cur = self._cur
         tur = e.get("toolUseResult")
+        # One pass over the whole entry: when a turn ran `saint-pool on` and a grep in the same entry quotes the
+        # script, the entry's own last line is the one that stands.
+        said = self._pool_says("\n".join(_result_text(r) for r in results))
+        if said:
+            self.meta["pool"], self.meta["pool_how"] = said, "command"
+            if isinstance(e.get("timestamp"), str):
+                self.meta["pool_at"] = e["timestamp"]
         for r in results:
             tid = r.get("tool_use_id", "")
             name = self._tools.pop(tid, "")
@@ -198,10 +228,7 @@ class ClaudeParser:
                 continue
             if r.get("is_error"):
                 cur.tally.errors += 1
-            text = r.get("content")
-            if isinstance(text, list):
-                text = "\n".join(c.get("text", "") for c in text if isinstance(c, dict))
-            text = text if isinstance(text, str) else ""
+            text = _result_text(r)
             ask = next((a for a in cur.asks if a.ref == tid), None)
             if ask is None:
                 continue
@@ -221,6 +248,36 @@ class ClaudeParser:
                 ask.answered, ask.answered_at = True, e.get("timestamp")
         if cur is not None:
             self._touch(offset_end, e.get("timestamp"))
+
+    def _attachment(self, e: dict[str, Any]) -> None:
+        """The one attachment that carries news: the SessionStart hook's own stdout, which is where a Claude session
+        learns about the local Qwen pool (or, printing nothing, that there's nothing to learn)."""
+        if e.get("isSidechain"):
+            return
+        a = e.get("attachment") or {}
+        if not isinstance(a, dict) or a.get("type") != "hook_success" or a.get("hookEvent") != "SessionStart":
+            return
+        if not str(a.get("command", "")).endswith("saint-pool --hook"):
+            return
+        out = a.get("stdout")
+        out = out if isinstance(out, str) else ""
+        state = "off" if not out.strip() else next((s for s, rx in _POOL_HOOK if rx.search(out)), "")
+        if not state:
+            return
+        how = str(a.get("hookName", "")).partition(":")[2] or "startup"      # "SessionStart:resume" -> "resume"
+        self.meta["pool"], self.meta["pool_how"] = state, how
+        if isinstance(e.get("timestamp"), str):
+            self.meta["pool_at"] = e["timestamp"]
+
+    @staticmethod
+    def _pool_says(text: str) -> str:
+        """What the operator's own `saint-pool on|off|status` output says, the last line that means anything."""
+        last, at = "", -1
+        for state, rx in _POOL_CMD:
+            for m in rx.finditer(text):
+                if m.start() > at:
+                    last, at = state, m.start()
+        return last
 
     def _assistant(self, e: dict[str, Any], offset_end: int) -> None:
         if e.get("isSidechain"):

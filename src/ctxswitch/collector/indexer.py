@@ -270,7 +270,11 @@ class Indexer:
                         harness_version=pm.get("harness_version", ""), started_at=pm.get("started_at") or _iso(st.st_ctime),
                         last_activity=pm.get("last_activity") or _iso(st.st_mtime), model=pm.get("model", ""),
                         permission_mode=pm.get("permission_mode", ""), profile=self._profile(harness, path))
-        if harness == "claude":                    # a session saint-agent launched hangs under its parent, with its job
+        if harness == "claude":
+            # what this session was last told about the local pool: only Claude's parser reads it out of a
+            # transcript, and the host's own switch arrives as a separate "pool" event for the board to compare.
+            m.pool, m.pool_at, m.pool_how = pm.get("pool", ""), pm.get("pool_at", ""), pm.get("pool_how", "")
+            # a session saint-agent launched hangs under its parent, with its job
             job = self.jobs.for_session(m.session_id, cwd, pm.get("started_at"))
             if job:
                 parent = job["parent_session"]

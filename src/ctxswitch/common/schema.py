@@ -99,6 +99,11 @@ class SessionMeta:
     model: str = ""
     permission_mode: str = ""
     profile: str = ""               # the [[claude_profiles]] account the transcript lives under, named by its own host
+    # what this session was last *told* about the local Qwen pool (a SessionStart hook line or a `saint-pool` call);
+    # the host's own switch arrives separately as a "pool" event, and the board compares the two. "" = never told.
+    pool: str = ""                  # "on" | "unreachable" | "off" | ""
+    pool_at: str = ""               # ISO timestamp of the transcript line that said it
+    pool_how: str = ""              # "startup" | "resume" | "clear" | "compact" | "command"
     # a Claude session a pool job launched (collector/jobs.py reads the saint-agent ledger):
     # empty/None for every other session.
     parent_key: str = ""            # f"{host}/claude/{launching session}", "" when the ledger doesn't name one

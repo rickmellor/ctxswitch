@@ -48,6 +48,8 @@ from ctxswitch.common.config import Config, data_dir, load
 
 log = logging.getLogger("ctxswitch.collector")
 WIN_POLL_S = 30
+POOL_POLL_S = 60                           # how often this host's saint-pool switch is read
+POOL_HEARTBEAT_S = 600                     # ... and how often it is pushed even when it hasn't moved
 _budget_warned: set[str] = set()           # one WARNING per distinct way the budget command is failing, not one a poll
 
 
@@ -107,6 +109,31 @@ def _budget_once(why: str) -> None:
     if why not in _budget_warned:
         _budget_warned.add(why)
         log.warning("budget: %s", why)
+
+
+def read_pool(path: str, get=httpx.get) -> dict[str, Any] | None:
+    """This host's local-pool switch: whether construction goes to the Qwen box, and whether that box answers.
+
+    ``~/.claude/saint-pool`` is the whole state (present and non-empty = ON, its first line = the SAINT URL), so the
+    file answers "off" and "on", and only a request to ``<url>/health`` tells on from unreachable. A collector with
+    ``pool_file = ""`` reports nothing: the hub then keeps whatever it was told and the board calls no session stale.
+    """
+    if not path:
+        return None
+    p = Path(os.path.expanduser(path))
+    try:
+        url = p.read_text().split("\n", 1)[0].strip()
+    except OSError:
+        url = ""
+    if not url:
+        state = "off"
+    else:
+        try:
+            state = "on" if get(url.rstrip("/") + "/health", timeout=2).status_code == 200 else "unreachable"
+        except Exception:                  # noqa: BLE001 - down, unresolvable, timed out: the board says so either way
+            state = "unreachable"
+    return {"host_id": "", "state": state, "url": url,
+            "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
 class Collector:
@@ -317,6 +344,25 @@ class Collector:
                 log.exception("budget poll")
             await asyncio.sleep(every)
 
+    async def pool_loop(self) -> None:
+        """This host's saint-pool switch, so a board can tell a session that was told "the pool is on" from one
+        whose host has since toggled it. Off with ``pool_file = ""``; the health probe runs in a thread."""
+        path = os.path.expanduser(self.cfg.collector.pool_file or "")
+        if not path:
+            return
+        beat, sent = time.time(), None
+        while True:
+            try:
+                if time.time() - beat >= POOL_HEARTBEAT_S:   # an unchanged switch still refreshes checked_at
+                    beat, sent = time.time(), None
+                d = await asyncio.to_thread(read_pool, path)
+                if d and (sent is None or (d["state"], d["url"]) != sent):
+                    sent = (d["state"], d["url"])
+                    self._emit("pool", {**d, "host_id": self.host_id})
+            except Exception:                              # noqa: BLE001
+                log.exception("pool poll")
+            await asyncio.sleep(POOL_POLL_S)
+
     async def sweep_loop(self) -> None:
         """Re-process everything every 10 min so sessions age into 'ended' without a file change."""
         while True:
@@ -336,7 +382,8 @@ class Collector:
         if self.once:
             await self.push_loop(); return
         await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop(),
-                             self.spool_loop(), self.windows_loop(), self.inbox_loop(), self.budget_loop())
+                             self.spool_loop(), self.windows_loop(), self.inbox_loop(), self.budget_loop(),
+                             self.pool_loop())
 
 
 def main() -> None:
