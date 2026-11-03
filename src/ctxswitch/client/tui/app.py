@@ -93,19 +93,24 @@ def waiting_on(s: dict) -> str | None:
     return "a dialog is open in it" if s.get("live_status") == "waiting" else None
 
 
-def summary_line(sessions: list[dict], host: str | None) -> Text:
+def summary_line(sessions: list[dict], host: str | None, host_pools: dict | None = None,
+                 pool_host: str | None = None) -> Text:
+    """The header's first line, with the local-pool switch of ``pool_host`` (the host the header is about: the board's
+    own, or the one it's filtered to) on the end when that host reported one."""
     live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
     waiting = sum(1 for x in sessions if fmt.session_state(x) == "waiting")
     t = Text.assemble(("ctx", "bold"), f" · {host or 'all'} · {live} live")
     t.append(f" · {waiting} waiting on you" if waiting else " · nothing waiting", style="bold yellow" if waiting else "dim")
+    t.append(fmt.header_pool(host_pools, host if pool_host is None else pool_host), style="magenta")
     return t
 
 
-def summary_text(sessions: list[dict], host: str | None, spend: dict | None = None, width: int = 10_000) -> Text:
-    """The header's two lines: who's on the board, and what today has cost (fitted to the pane: the per-account
-    brackets are the first thing to go, the month's budget tag next). The second line goes yellow as the month's
-    budget runs down and red once it's nearly gone."""
-    t = summary_line(sessions, host)
+def summary_text(sessions: list[dict], host: str | None, spend: dict | None = None, width: int = 10_000,
+                 host_pools: dict | None = None, pool_host: str | None = None) -> Text:
+    """The header's two lines: who's on the board (the host's local-pool switch riding along when it reported one),
+    and what today has cost (fitted to the pane: the per-account brackets are the first thing to go, the month's
+    budget tag next). The second line goes yellow as the month's budget runs down and red once it's nearly gone."""
+    t = summary_line(sessions, host, host_pools, pool_host)
     t.append("\n" + fmt.header_spend(spend, width), style=fmt.budget_style((spend or {}).get("budget")))
     return t
 
@@ -123,7 +128,11 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
           ("▾", "dim", "a workstream header (w): this repo + branch on any host; m messages the work"),
           ("↳", "dim", ("a pool job launched by the session above (indented under it): its brief, how it ended, its "
                         "turns. It has no number: Alt+N never opens one.")),
-          ("~$0.03", "dim", "a job's estimated local cost (energy); the Spend screen ($) has the rest")]),
+          ("~$0.03", "dim", "a job's estimated local cost (energy); the Spend screen ($) has the rest"),
+          ("⚙", "bold magenta", ("local pool on in this session (what it was last told); dim: on but SAINT was "
+                                 "unreachable when it was told")),
+          ("⚙!", "bold yellow", ("stale: the session's pool state no longer matches its host's switch — run /local-pool "
+                                 "in it, or resume it"))]),
         ("WAITING ON YOU", [("└", "yellow", ("under a waiting row: what it's waiting on — the question it asked, or the "
                                              "dialog it has up")),
                             ("2 waiting", "bold yellow", "the header: how many sessions wait on you (and how many are live)")]),
@@ -204,6 +213,10 @@ HELP_TIPS = [
     ("Pool jobs", ("A session started with `saint-agent` records its job id, the session that launched it, its brief, "
      "how it ended and the tokens it used. The board nests it under that session with an estimate of what it cost to "
      "run here; `$` lists the jobs of the last 30 days with what they would have cost in the cloud.")),
+    ("Local pool", ("A Claude row with ⚙ was told its local pool (SAINT) is on — dim when SAINT couldn't be reached "
+     "when it was told — and ⚙! when the switch on its host has since moved the other way, so run /local-pool in it "
+     "or resume it. That state comes from the session's own transcript (the SessionStart hook, or a `saint-pool` "
+     "command run in it), while the header's `pool on|off|unreachable` is what the switch file on this host says now.")),
     ("Sending a message", ("m types a message into the session as a new prompt: now if it's live, else when it next runs. Its "
      "state shows under MESSAGES (… → ✓ ↩ ✗). `ctx send --cancel <id>` withdraws a queued one.")),
     ("Answering", ("a answers a question the agent asked in its reply. A dialog (permission, plan, AskUserQuestion, pi "
@@ -567,6 +580,7 @@ class CtxApp(App):
         self.text_filter = ""
         self.sessions: list[dict] = []
         self.hosts: list[str] = []
+        self.host_pools: dict[str, dict] = {}          # host -> its latest local-pool switch report ({state, url, …})
         self.selected: str | None = None
         self.change = -1
         self.visible_key: str | None = None          # session shown in the tmux viewer pane
@@ -615,7 +629,9 @@ class CtxApp(App):
         try:
             data = self.client.sessions(self.host_filter, live_only=False)
             att = self.client.attention(self.host_filter)["items"]
-            hosts = [h["host_id"] for h in self.client.hosts()]
+            rows = self.client.hosts()
+            hosts = [h["host_id"] for h in rows]
+            pools = {h["host_id"]: h["pool"] for h in rows if h.get("pool")}   # a hub without pool events: {}
             spend = self.today_spend()                  # never raises: an older hub simply has no spend line
         except Exception as e:                          # noqa: BLE001
             self.call_from_thread(self.sub_title_set, f"hub unreachable: {e.__class__.__name__}")
@@ -630,7 +646,7 @@ class CtxApp(App):
             self.visible_key = None
             self.on_screen = set()
             self.reach = {}
-        self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"], spend, True)
+        self.call_from_thread(self.apply_data, data["sessions"], att, hosts, data["change"], spend, True, pools)
 
     def today_spend(self) -> dict | None:
         """What has gone since midnight here, for the header. A hub without /v1/spend (or a SAINT that's down) just
@@ -646,15 +662,17 @@ class CtxApp(App):
         self.sub_title = s
 
     def apply_data(self, sessions: list[dict], attention: list[dict], hosts: list[str], change: int,
-                   spend: dict | None = None, first_load: bool = False) -> None:
+                   spend: dict | None = None, first_load: bool = False, host_pools: dict | None = None) -> None:
         self.change = change
         self.hosts = hosts
+        self.host_pools = host_pools or {}
         self.sessions = sessions
         self.spend = spend
         live = sum(1 for x in sessions if fmt.session_state(x) != "ended")
         self.sub_title = f"{self.host_filter or 'all'} · {live} live"
         head = self.query_one("#summary", Static)
-        head.update(summary_text(sessions, self.host_filter, spend, max(20, (head.size.width or self.size.width) - 2)))
+        head.update(summary_text(sessions, self.host_filter, spend, max(20, (head.size.width or self.size.width) - 2),
+                                 self.host_pools, self.this_host))
         self.popup(attention)
         self.render_table()
         self.render_detail()
@@ -870,9 +888,11 @@ class CtxApp(App):
                 style = (style + " dim").strip()          # can't be opened from here
             ask_mark = f" ◐{fmt.age(asks[0].get('asked_at'), now)}" if asks and not kid else ""
             seen_mark = f" +{s['unseen']}" if s.get("unseen") and not kid else ""   # exchanges since you last looked
+            badge, badge_style = ("", "") if kid else fmt.pool_mark(s, self.host_pools)   # a job's own badge would
+            mark = f"{badge} " if badge else ""                                     # say nothing: it inherits the switch
             # the title keeps 8 columns and the row never overflows (a scrollbar would hide the last row): the repo
             # gives way first, then the host, then the +N, then the ◐ age (the age column and the └ line say it too)
-            fixed = width - len(label.plain) - 1 - 8      # after the glyph, the space after `where` and the title's 8
+            fixed = width - len(label.plain) - 1 - 8 - len(mark)   # after the glyph, the space after `where` and the title's 8
             if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0 and where != harness:
                 where = harness
             if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
@@ -880,6 +900,8 @@ class CtxApp(App):
             if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
                 ask_mark = ""
             label.append(f"{where} ", style="dim")
+            if mark:
+                label.append(mark, style=badge_style)
             if job:                                      # a job says what it ran, not the session's noisy title
                 label.append(fmt.one_line(fmt.job_label(s) or fmt.display_title(s) or "(no prompt yet)",
                                           max(8, width - len(label.plain) - len(fmt.cost_mark(s)))), style=style)
@@ -1030,6 +1052,9 @@ class CtxApp(App):
         t.append(f"{s.get('cwd') or '-'}\n", style="dim")
         model = (s['meta'].get('model') or '').rsplit('/', 1)[-1]
         t.append(f"{model} {s['meta'].get('permission_mode') or ''}\n", style="dim")
+        pline = fmt.pool_line(s, self.host_pools, now)
+        if pline:
+            t.append(pline + "\n", style="bold yellow" if fmt.pool_stale(s, self.host_pools) else "dim")
         if s.get("purpose"):
             t.append("for: ", style="bold")
             t.append(s["purpose"] + "\n")

@@ -1,7 +1,8 @@
 """Hub HTTP API (starlette). REST for ingest and queries, WebSocket for change notifications.
 
   POST /v1/ingest                  {host_id, events:[{seq, kind, payload}]} -> {acked: <last seq>}
-  GET  /v1/hosts
+  GET  /v1/hosts                     every host, each with the latest it said of its local-pool switch (``pool``:
+                                     {host_id, state, url, checked_at}; null when that host never sent a ``pool`` event)
   GET  /v1/sessions?host=&live=1
   GET  /v1/sessions/{key}
   POST /v1/sessions/{key}/viewed   {at}
@@ -111,6 +112,12 @@ class Hub:
             self.store.set_liveness(payload.get("host_id", host), payload.get("sessions", []))
         elif kind == "budget":
             self.store.set_budget(payload)             # the monthly budget as the host with the token reads it
+        elif kind == "pool":
+            # this host's ~/.claude/saint-pool, as its collector reads it; a payload that names no host is the
+            # sender's, as with "liveness"
+            report = dict(payload or {})
+            report["host_id"] = report.get("host_id") or host
+            self.store.set_host_pool(report)
         else:
             log.warning("unknown event kind %r from %s", kind, host)
 

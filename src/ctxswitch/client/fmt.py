@@ -296,6 +296,68 @@ def header_budget(budgets: dict | None) -> str:
     return f" · ${int(min(left, key=lambda x: x[0])[0])} left"
 
 
+POOL_STALE = "stale: run /local-pool or resume it"            # the detail line's tail; the legend has the long version
+POOL_HOW = {"startup": "told at startup", "resume": "told at resume", "clear": "told at clear",
+            "compact": "told at compact", "command": "told by a command"}
+
+
+def _pool_state(s: dict) -> str:
+    """What this session believes about the local pool: ``on`` / ``unreachable`` / ``off``, ``""`` when nothing ever
+    told it (a session started before the switch existed)."""
+    return str((s.get("meta") or {}).get("pool") or "")
+
+
+def _host_state(s: dict, host_pools: dict | None) -> str:
+    """What the switch on the session's host says right now — ``""`` when that host never reported one."""
+    p = (host_pools or {}).get(s.get("host_id") or "") or {}
+    return str(p.get("state") or "") if isinstance(p, dict) else ""
+
+
+def pool_stale(s: dict, host_pools: dict | None) -> bool:
+    """The session was told one thing and the host's switch now says the opposite. A session nobody told (``""``) is
+    never stale, and neither is one whose host has never reported its switch: we don't know, so we don't shout."""
+    mine, host = _pool_state(s), _host_state(s, host_pools)
+    if not mine or not host:
+        return False
+    return (mine != "off") != (host != "off")
+
+
+def pool_mark(s: dict, host_pools: dict | None) -> tuple[str, str]:
+    """The badge after a row's harness·host label: ``(text, style)``, ``("", "")`` when there's nothing to say — a
+    session that works the cloud (anything but Claude), or one told the pool is off with the switch agreeing."""
+    if s.get("harness") != "claude":
+        return "", ""
+    if pool_stale(s, host_pools):                                  # told one thing, the file says the other — which
+        return "⚙!", "bold yellow"                                 # ever way round, including a session saying "off"
+    mine = _pool_state(s)
+    if mine not in ("on", "unreachable"):
+        return "", ""
+    return "⚙", "dim magenta" if mine == "unreachable" else "bold magenta"
+
+
+def pool_line(s: dict, host_pools: dict | None, now: datetime | None = None) -> str:
+    """One detail-pane line: ``pool: on (told at resume, 2h ago) · host switch: on`` — what the session believes and
+    what the host's file says now. ``""`` when neither has anything to report; ``—`` where a host never said."""
+    now = now or datetime.now(timezone.utc)
+    mine, host = _pool_state(s), _host_state(s, host_pools)
+    pool_at = str((s.get("meta") or {}).get("pool_at") or "")
+    if not mine and not host:
+        return ""
+    left = f"pool: {mine or '—'}" + (f" ({POOL_HOW.get(str((s.get('meta') or {}).get('pool_how') or ''), 'told')}," \
+                                     f" {age(pool_at, now)} ago)" if pool_at else "")
+    return f"{left} · host switch: {host or '—'}" + (f" — {POOL_STALE}" if pool_stale(s, host_pools) else "")
+
+
+def header_pool(host_pools: dict | None, host: str | None) -> str:
+    """The header's tag for the host the board is looking at — `` · pool on`` — or ``""`` when that host (or the board
+    spans hosts, so there isn't one) never reported its switch."""
+    if not host:
+        return ""
+    p = (host_pools or {}).get(host) or {}
+    state = str(p.get("state") or "") if isinstance(p, dict) else ""
+    return f" · pool {state}" if state else ""
+
+
 def header_spend(rep: dict | None, width: int = 10_000) -> str:
     """The header's second line: what today has cost, cloud and local, the accounts in brackets when there's more than
     one and they fit in ``width`` (the pane's); the brackets go first, then the month's budget tag, so the total,

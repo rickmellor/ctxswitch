@@ -447,6 +447,30 @@ class Store:
                 out[str(r[0][len("budget:"):])] = d
         return out
 
+    # -- the local pool switch ---------------------------------------------------------------------------------------
+    def set_host_pool(self, d: dict[str, Any]) -> None:
+        """The latest word on one host's ``~/.claude/saint-pool`` switch, from that host's collector (its ``pool``
+        event). One per host: a new push replaces it, so the board never shows two states of the same file."""
+        host = str(d.get("host_id") or "")
+        if not host:
+            return
+        with self._lock:
+            self.db.execute("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                            (f"pool:{host}", json.dumps(d)))
+            self.db.commit(); self._bump()
+
+    def host_pools(self) -> dict[str, dict[str, Any]]:
+        """host -> what that host last said about its switch ({state, url, checked_at}), {} when nobody has reported."""
+        out: dict[str, dict[str, Any]] = {}
+        for r in self.db.execute("SELECT k,v FROM kv WHERE k LIKE 'pool:%'"):
+            try:
+                d = json.loads(r[1])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(d, dict):
+                out[str(r[0][len("pool:"):])] = d
+        return out
+
     def tracker_state(self, key: str) -> dict[str, Any]:
         r = self.db.execute("SELECT * FROM tracker WHERE key=?", (key,)).fetchone()
         if r is None:
@@ -548,7 +572,11 @@ class Store:
 
     # -- queries --------------------------------------------------------------------------------------------------
     def hosts(self) -> list[dict[str, Any]]:
-        return [dict(r) for r in self.db.execute("SELECT host_id,last_seen FROM hosts ORDER BY host_id")]
+        """Every host the hub has heard from, each with the latest it said about its local-pool switch (``pool``,
+        null on a host that never reported one)."""
+        pools = self.host_pools()
+        return [dict(r) | {"pool": pools.get(r["host_id"])}
+                for r in self.db.execute("SELECT host_id,last_seen FROM hosts ORDER BY host_id")]
 
     def children(self, key: str) -> list[str]:
         """Keys of the sessions this one launched (pool jobs), newest ``started_at`` first."""
