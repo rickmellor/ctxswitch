@@ -50,7 +50,8 @@ from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
 CLAIM_STYLE = {"done": "green", "tests_pass": "green", "tests_fail": "red", "blocked": "yellow"}
 MSG_STYLE = {"queued": "yellow", "sent": "yellow", "delivered": "green", "replied": "green", "failed": "red"}
-REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "foreign": "red", "remote": "blue", "none": "dim"}
+REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "attach": "bold magenta", "foreign": "red",
+               "remote": "blue", "none": "dim"}
 SLOTS = 9                                          # Alt+1…9 open the session with that number
 
 
@@ -176,8 +177,9 @@ HELP_KEYS = [
     (("enter",), "Enter", "open the selected session: bring it to the left pane, resume it, or say why not"),
     (("slot",), "Alt+1…9", "open the session with that number, from any pane of the ctx session"),
     (("select_slot",), "1…9", "on the board: select the session with that number, without opening it (Enter, k, m… then act on it)"),
-    (("n",), "n", "new session: pick Claude Code (one entry per account), pi or Antigravity or a plain shell, then a "
-                  "directory (default: the selected session's). For Claude, 'max: directory' also picks the account"),
+    (("n",), "n", "new session, on this host or another (ssh): pick Claude Code (one entry per account), pi or "
+                  "Antigravity or a plain shell, then a directory (default: the selected session's). For Claude, "
+                  "'max: directory' also picks the account"),
     (("s",), "s", "start: one key per profile to start new, and the recent sessions to resume (Space marks several, "
                   "Enter resumes them all). Opens by itself when the board starts with nothing live"),
     (("m",), "m", "message the selected session (Enter sends, Esc cancels). On a workstream header: message the work"),
@@ -230,6 +232,11 @@ HELP_TIPS = [
     ("Ending a session", ("k ends the selected session's agent after a y (the transcript stays: Enter resumes it). "
      "Quitting it yourself (/exit in Claude Code) does the same. Either way the next agent takes its place on the "
      "left and the ended one drops off the list (e shows ended ones). Q ends everything in the ctx session.")),
+    ("Other hosts", ("`n` and `s` can start on another host the config's [ssh] table reaches: it runs in a tmux named "
+     "ctx on that host, as its own user, so it keeps running when the ssh drops or the laptop sleeps — the window "
+     "here is only a view of it. A ⇄ row is live over there: Enter shows it here over ssh (detach and it stays put), "
+     "and `k` ends it there, its transcript left resumable. A host ssh can't reach is still on the board and takes "
+     "messages; it just can't be opened from here.")),
     ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
      "pane is ever gone, `ctx tmux` puts it back.")),
     ("More", "`ctx --help`, and the README (User guide)."),
@@ -460,24 +467,36 @@ class SpendScreen(Screen):
 START_KEYS = "↑↓ move · Space mark · Enter resume marked (or this one) · 1-9 start new · Esc close"
 
 
+REMOTE_START_OPTIONS = [("claude", "claude", None), ("pi", "pi", None), ("shell", "shell", None)]
+
+
 class StartScreen(Screen):
     """s, and on its own when the board starts with nothing live: one key to start each profile you have, and the
     ended sessions this board can bring back, several at a time (Space marks, Enter resumes them all). Dismisses
-    ("new", harness, profile, cwd) or ("resume", [keys]), or None. Every key is handled here: none of the board's
-    (s, q, the arrows, k) reaches through this screen."""
+    ("new", harness, profile, cwd) — with a fifth element, the host, when it's to start on another one — or
+    ("resume", [keys]), or None. Every key is handled here: none of the board's (s, q, the arrows, k) reaches
+    through this screen."""
     DEFAULT_CSS = """
     StartScreen > VerticalScroll { padding: 0 1; }
     """
 
     def __init__(self, options: list[tuple[str, str, str | None]], recents: list[dict], reach: dict[str, str],
-                 now: datetime | None = None):
+                 now: datetime | None = None, hosts: list[str] | None = None):
         super().__init__()
         self.options = options                          # (label, harness, profile), as n's picker has them
         self.recents = recents                          # ended sessions, newest activity first
         self.reach = reach                              # key -> how Enter can reach it
         self.now = now or datetime.now(timezone.utc)
+        self.hosts = list(hosts or [])                  # this host first, then the others an ssh route reaches
         self.cursor = 0
         self.marked: set[str] = set()
+        self.host_i = 0                                 # which of those a digit starts on
+
+    @property
+    def host(self) -> str | None:
+        """None while the screen starts on this host (its own profiles); another host's id once `h` has cycled onto
+        it, which is all a start there can pick from: claude, pi, shell."""
+        return self.hosts[self.host_i] if self.host_i else None
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="start"):
@@ -487,14 +506,24 @@ class StartScreen(Screen):
         """The directory a new session starts in: the cursor row's, so a start lands where that work was."""
         return (self.recents[self.cursor].get("cwd") or None) if self.recents else None
 
+    def _opts(self) -> list[tuple[str, str, str | None]]:
+        """What a digit starts: this host's profiles, or the harnesses the other host can run (its profiles are its
+        own, so this side can't name them)."""
+        return REMOTE_START_OPTIONS if self.host else self.options
+
     def body(self) -> Text:
-        t = Text("START\n", style="bold")
-        opts = Text()
-        for n, (label, _, _) in enumerate(self.options, 1):
+        opts = self._opts()
+        t = Text("START")
+        if len(self.hosts) > 1:                             # other hosts an ssh route reaches: say which one a digit hits
+            t = Text(f"START on {self.hosts[self.host_i]}")
+            t.append("   h: another host", style="dim")
+        t.append("\n")
+        o = Text()
+        for n, (label, _, _) in enumerate(opts, 1):
             if n > 1:
-                opts.append("   ")
-            opts.append(f"{n} ", style="bold").append(label)
-        t.append(opts)
+                o.append("   ")
+            o.append(f"{n} ", style="bold").append(label)
+        t.append(o)
         t.append("\n")
         t.append(f"RECENT ({len(self.recents)})\n" if self.recents else "RECENT — nothing ended to resume\n", style="bold")
         width = max(20, (self.size.width or 60) - 8)    # the pane's columns, less the "> " and the "[x] " mark
@@ -531,9 +560,13 @@ class StartScreen(Screen):
         elif ev.key in ("escape", "q", "s"):
             self.dismiss(None)
             return
-        elif ev.key.isdigit() and 1 <= int(ev.key) <= len(self.options):
-            _, harness, profile = self.options[int(ev.key) - 1]
-            self.dismiss(("new", harness, profile, self._cwd()))
+        elif ev.key == "h" and len(self.hosts) > 1:
+            self.host_i = (self.host_i + 1) % len(self.hosts)            # this host, then each one ssh reaches
+        elif ev.key.isdigit() and 1 <= int(ev.key) <= len(self._opts()):
+            _, harness, profile = self._opts()[int(ev.key) - 1]
+            # another host: no profile and no directory of ours to carry over (its own filesystem, its own accounts)
+            self.dismiss(("new", harness, profile, None, self.host) if self.host
+                         else ("new", harness, profile, self._cwd()))
             return
         else:
             return
@@ -1223,22 +1256,53 @@ class CtxApp(App):
         s = next((x for x in self.sessions if x["key"] == self.selected), None)
         return (s or {}).get("cwd") or os.path.expanduser("~")
 
+    def _remote_hosts(self) -> list[str]:
+        """The other hosts n and s can start an agent on: every host the config's [ssh] table reaches from here
+        ("" = not reachable), this host left out — it has its own picker, with its own accounts' profiles."""
+        return [h for h in dict.fromkeys(self.hosts) if h and h != self.this_host and tmux.ssh_target(h, self.cfg.ssh)]
+
     def action_new_session(self) -> None:
-        """n: pick the agent (Claude per account, pi, Antigravity, or a plain shell), then the directory."""
+        """n: pick the host when others are reachable, the agent (Claude per account, pi, Antigravity, or a plain
+        shell), then the directory."""
         if not tmux.in_tmux():
             self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
+        hosts = [self.this_host, *self._remote_hosts()]
+        if len(hosts) > 1:                            # another host reachable: say up front which one it lands on
+            opts = [(f"{h} (here)" if h == self.this_host else h, h, None) for h in hosts]
+            self.push_screen(Picker(opts, "new session on: "), lambda h: self._picked_host(h))
+            return
         options = [*new_session_options(self.cfg), ("shell", "shell", None)]   # the shell is here only, not in x's list
         self.push_screen(Picker(options), self._picked)
 
-    def _picked(self, choice: tuple[str, str | None] | None) -> None:
+    def _picked_host(self, choice: tuple[str, str | None] | None) -> None:
+        """n's first pick on a board with other hosts: this host goes on to today's picker; another gets the
+        harnesses it can run, listed here because its profiles are its own."""
+        if not choice:
+            return
+        host = choice[0]
+        if host == self.this_host:
+            options = [*new_session_options(self.cfg), ("shell", "shell", None)]
+            self.push_screen(Picker(options), self._picked)
+            return
+        self.push_screen(Picker(REMOTE_START_OPTIONS, f"new session on {host}: "),
+                         lambda c: self._picked(c, host))
+
+    def _picked(self, choice: tuple[str, str | None] | None, host: str | None = None) -> None:
         if not choice:
             return
         harness, profile = choice
-        self._ask_dir(harness, profile)
+        self._ask_dir(harness, profile, host=host)
 
-    def _ask_dir(self, harness: str, profile: str | None, cwd: str | None = None) -> None:
+    def _ask_dir(self, harness: str, profile: str | None, cwd: str | None = None,
+                 host: str | None = None) -> None:
         """The directory prompt a new session ends with, pre-filled with ``cwd`` (a Start row's) or the selected
-        session's."""
+        session's. For another host it defaults to ``~`` — that machine's own home, not this one's — and carries the
+        host in the input mode, so submitting starts it there."""
+        if host:
+            what = {"agy": "antigravity"}.get(harness, harness)
+            self._show_input(f"new@{host}:{harness}:", f"directory for the new {what} on {host}, enter to start",
+                             cwd or "~")
+            return
         what = f"{harness} · {profile}" if profile else {"agy": "antigravity"}.get(harness, harness)
         hint = ""
         if harness == "claude":
@@ -1255,13 +1319,14 @@ class CtxApp(App):
         if not tmux.in_tmux():
             self.notify("starting sessions needs the tmux manager (ctx tmux)", severity="warning"); return
         options = [*new_session_options(self.cfg), ("shell", "shell", None)]
-        self.push_screen(StartScreen(options, fmt.recent_sessions(self.sessions, self.reach), self.reach), self._started)
+        self.push_screen(StartScreen(options, fmt.recent_sessions(self.sessions, self.reach), self.reach,
+                                     hosts=[self.this_host, *self._remote_hosts()]), self._started)
 
     def _started(self, result: tuple | None) -> None:
         if not result:
             return
         if result[0] == "new":
-            self._ask_dir(result[1], result[2], result[3])
+            self._ask_dir(result[1], result[2], result[3], host=result[4] if len(result) > 4 else None)
         elif result[0] == "resume":
             if not tmux.in_tmux():
                 self.notify("resuming needs the tmux manager (ctx tmux)", severity="warning"); return
@@ -1294,6 +1359,17 @@ class CtxApp(App):
         except Exception as e:                          # noqa: BLE001
             msg = f"tmux: {e}"
         popup_log(f"new {harness}{f'[{profile}]' if profile else ''} in {cwd}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=6)
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def start_remote_agent(self, host: str, harness: str, cwd: str) -> None:
+        """Start an agent on another host: it runs in a tmux named ``ctx`` over there, so it survives the ssh
+        dropping; the window this opens is only the view of it (see tmux.new_remote_agent)."""
+        try:
+            msg = tmux.new_remote_agent(host, harness, cwd, self.cfg.ssh)
+        except Exception as e:                          # noqa: BLE001
+            msg = f"tmux: {e}"
+        popup_log(f"new {harness} on {host} in {cwd}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=6)
 
     def action_help(self) -> None:
@@ -1516,21 +1592,38 @@ class CtxApp(App):
         self.push_screen(Confirm(prompt), lambda ok: yes() if ok else self.notify("cancelled", timeout=3))
 
     def action_end_session(self) -> None:
-        """k: end the selected session's agent, after a y."""
+        """k: end the selected session's agent, after a y. One running in a tmux on its own host is ended over there
+        (its transcript stays, and the local window showing it closes)."""
         s = self._selected_session()
         if not s:
             return
         if not tmux.in_tmux():
             self.notify("k ends sessions in ctx's tmux (ctx tmux); quit this one where it runs", severity="warning"); return
+        reach = self.reach.get(s["key"], "")
         p = tmux.agent_pane(s["key"])
+        if tmux._is_remote(s, self.this_host) and (reach == "attach" or p is not None):
+            self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)} ({fmt.HARNESS.get(s['harness'], s['harness'])}"
+                         f"·{s['host_id']}) on {s['host_id']}?",
+                         lambda: self.end_remote_session(s))
+            return
         if p is None:
-            reach = self.reach.get(s["key"], "")
             why = ("it runs in another terminal: quit it there" if reach == "foreign" else
                    tmux.reach_help(s, reach, self.cfg.ssh) if reach == "remote" else "it isn't running")
             self.notify(f"can't end it from here: {why}", severity="warning", timeout=6); return
         busy = " (busy: it's working)" if s.get("live_status") == "busy" else ""
         self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)} ({fmt.HARNESS.get(s['harness'], s['harness'])}·{s['host_id']}){busy}?",
                      lambda: self.notify(f"ending {fmt.one_line(fmt.display_title(s), 30)}" if tmux.end_agent(p) else "its agent had already exited", timeout=4))
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def end_remote_session(self, s: dict) -> None:
+        """k on a session running in a tmux on its own host: kill its pane there over ssh."""
+        try:
+            msg = tmux.end_remote(s, self.cfg.ssh)
+        except Exception as e:                          # noqa: BLE001
+            msg = f"tmux: {e}"
+        popup_log(f"end {s['key']} on {s.get('host_id')}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=6)
+        self.refresh_data()
 
     def on_input_submitted(self, ev: Input.Submitted) -> None:
         mode, value = self.input_mode, ev.value
@@ -1559,6 +1652,13 @@ class CtxApp(App):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             if value.strip():
                 self.send_message(mode.split(":", 1)[1], value)
+            return
+        if mode.startswith("new@"):
+            # "new@<host>:<harness>": start it there. Its profiles are its own, so there's no account to carry and
+            # the directory typed is a path on that machine (see tmux.new_remote_agent).
+            host, harness, _ = (mode[4:].split(":") + ["", ""])[:3]
+            self.start_remote_agent(host, harness, value)
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             return
         if mode.startswith("new:"):
             _, harness, profile = (mode.split(":", 2) + [""])[:3]
