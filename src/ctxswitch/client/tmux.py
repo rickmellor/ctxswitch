@@ -528,7 +528,7 @@ def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None, extra: 
     _run("swap-pane", "-s", pane.id, "-t", viewer.id)
     if focus:
         _run("select-pane", "-t", pane.id, check=False)      # after the swap the session pane sits where the viewer was
-    return ("resumed " if created else "showing ") + (s.get("title") or s.get("session_id", ""))[:40]
+    return ("attached " if r == "attach" else "resumed " if created else "showing ") + (s.get("title") or s.get("session_id", ""))[:40]
 
 
 def _remote_view(s: dict, ssh: dict[str, str], viewer: Pane) -> Pane:
