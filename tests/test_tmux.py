@@ -1,5 +1,6 @@
 """Exercises the tmux helpers against a private tmux server (-L) with real panes; skipped without tmux."""
 import os
+import shlex
 import shutil
 import subprocess
 import re
@@ -320,8 +321,10 @@ def test_another_hosts_session_resumes_there_over_ssh(server, monkeypatch, tmp_p
         if (tmp_path / "argv").exists(): break
         time.sleep(0.1)
     argv = (tmp_path / "argv").read_text().splitlines()
-    assert argv[0] == "-t" and argv[-2] == "me@devbox.lan"
-    assert argv[-1] == "bash -lc 'cd '\"'\"'/home/me/my repo'\"'\"' 2>/dev/null || cd; exec claude --resume far'"
+    assert argv[0] == "-t" and argv[-4] == "me@devbox.lan" and argv[-3:-1] == ["sh", "-c"]
+    # it starts there in that host's own tmux and shows it: the remote script carries the resume command
+    script = shlex.split(argv[-1])[0]
+    assert "exec claude --resume far" in script and "/home/me/my repo" in script and "tmux new-window -d -t ctx:" in script
     ps = tmux.panes()
     assert tmux.viewer_pane(ps).key == "devbox/claude/far" and tmux.viewer_pane(ps).window_name == "mgr"
     assert next(p for p in ps if p.id == viewer.id).window_name == "devbox/Far one"   # the old viewer's new home

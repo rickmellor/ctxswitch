@@ -251,6 +251,119 @@ def ssh_argv(s: dict, target: str) -> list[str] | None:
     return ["ssh", "-t", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=30", target, shlex.join(["bash", "-lc", inner])]
 
 
+# The agent on the other host runs in a tmux session named ``ctx`` there — its own tmux, as its own user — so it
+# survives the ssh dropping. The local window only ever runs one of these two: remote_script (start or resume an
+# agent over there) and view_command (attach and watch what's already running).
+REMOTE_SESSION = "ctx"
+
+
+def _tmux_at_parts(tmux_at: str | None) -> tuple[str, str, str]:
+    """``"ctx:@1.%2"`` -> ("ctx", "@1", "%2"); anything that isn't that shape gives ("ctx", "", "")."""
+    sess, _, rest = (tmux_at or "").rpartition(":")
+    window, dot, pane = rest.partition(".")
+    return (sess or REMOTE_SESSION, window, pane) if window else (REMOTE_SESSION, "", "")
+
+
+def _remote_dir(cwd: str | None) -> str:
+    """A directory as remote shell text: quoted, except a leading ``~``, which the remote shell expands to that
+    account's own home — ``~`` on the other host is not this one's, and a resumed row's ``cwd`` names that
+    machine's filesystem, so it is never expanded or rewritten here."""
+    p = (cwd or "~").strip() or "~"
+    if p == "~":
+        return "~"
+    return "~/" + shlex.quote(p[2:]) if p.startswith("~/") else shlex.quote(p)
+
+
+def remote_script(name: str, cwd: str, agent: list[str], key: str | None) -> str:
+    """One POSIX sh script that runs on the other host: make the agent's window in its ``ctx`` tmux (the session
+    itself when it isn't up yet), tag its pane with @ctx_key when a key is known, then attach a view of it that ends
+    when you detach. A login shell for the agent: agents are often only on a login PATH."""
+    d, s = _remote_dir(cwd), shlex.quote(REMOTE_SESSION)
+    cmd = shlex.quote(f"bash -lc {shlex.quote('exec ' + shlex.join(agent))}")
+    mk = f"tmux new-session -d -s {s} -n {shlex.quote(name)} -c \"$d\" -P -F '#{{window_id}}' {cmd}"
+    win = f"tmux new-window -d -t {s}: -n {shlex.quote(name)} -c \"$d\" -P -F '#{{window_id}}' {cmd}"
+    tagline = f' tmux set-option -p -t "$w".0 @ctx_key {shlex.quote(key)};' if key else ""
+    return (f'd={d}; cd "$d" 2>/dev/null || {{ d="$HOME"; cd "$HOME" 2>/dev/null || d=.; }}; '
+            f'if tmux has-session -t {s} 2>/dev/null; then w=$({win}); else w=$({mk}); fi;{tagline} exec {view_command("$w")}')
+
+
+def _arg(value: str) -> str:
+    """A tmux id as remote shell text: quoted, unless it's a variable the script itself set ($w)."""
+    return value if re.fullmatch(r"\$\w+", value) else shlex.quote(value)
+
+
+def view_command(target_window: str, pane: str | None = None) -> str:
+    """The remote shell text that shows one window of a running tmux session without taking over your keys: a
+    grouped session that dies when you detach, with no status line and no prefix of its own — the tmux you drive is
+    the local one. ``target_window`` is a window id (``@1``), a ``S:@w`` tmux_at, or a variable holding one."""
+    sess, window, at_pane = _tmux_at_parts(target_window or "")
+    sel = f" \\; select-window -t {_arg(window)}" if window else ""
+    sel += f" \\; select-pane -t {_arg(pane or at_pane)}" if (pane or at_pane) else ""
+    return (f"tmux new-session -t {shlex.quote(sess)} -s ctxview-{uuid.uuid4().hex[:6]}"
+            f" \\; set-option destroy-unattached on \\; set-option status off \\; set-option prefix None{sel}")
+
+
+def remote_argv(host_target: str, script: str) -> list[str]:
+    """Run ``script`` on the other host. sshd hands the string to the user's shell, so it goes as one argument of
+    ``sh -c`` — quoted once here, which is the only level this side controls."""
+    return ["ssh", "-t", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=30", host_target,
+            "sh", "-c", shlex.quote(script)]
+
+
+def new_remote_agent(host: str, harness: str, cwd: str, ssh: dict[str, str]) -> str:
+    """Start a fresh agent on ``host``: a local window running the ssh that makes its window in that host's own
+    ``ctx`` tmux and shows it. Its profiles are its own, so the harness is all we can pick from here."""
+    if not in_tmux():
+        return "not inside tmux"
+    target = ssh_target(host, ssh or {})
+    if not target:
+        return f"no ssh route to {host} ([ssh] in the config)"
+    if harness == "claude":
+        sid, agent, key = str(uuid.uuid4()), ["claude", "--session-id", str(uuid.uuid4())], None
+        key = f"{host}/claude/{sid}"
+    elif harness == "pi":
+        agent, key = ["pi"], None
+    elif harness == "shell":
+        sid = str(uuid.uuid4())
+        agent, key = [_ctx_bin(), "shell", "--id", sid], f"{host}/shell/{sid}"
+    else:
+        return f"unknown harness {harness}"
+    ps = panes()
+    viewer = viewer_pane(ps)
+    if viewer is None:
+        return "no viewer pane: split the window so the TUI has a neighbour (ctx tmux)"
+    cwd = (cwd or "~").strip() or "~"
+    target_session = next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), SESSION)
+    name = f"{host}/{harness}"[:24].replace(":", "-")
+    argv = remote_argv(target, remote_script(name, cwd, agent, key))
+    pane_id = _agent_window(target_session, os.path.expanduser("~"), name, argv)
+    if key:
+        tag(pane_id, key)
+    _run("set-option", "-w", "-t", pane_id, "@ctx_remote", f"{host}|pending", check=False)
+    _run("swap-pane", "-s", pane_id, "-t", viewer.id)
+    return f"new {harness} on {host} in {cwd}"
+
+
+def end_remote(s: dict, ssh: dict[str, str] | None = None) -> str:
+    """k on a session running in a tmux on its own host: kill that pane (the agent dies with it, its transcript
+    stays) and close the local window that was showing it."""
+    target = ssh_target(s.get("host_id"), ssh or {})
+    at = s.get("tmux_at") or ""
+    if ":" not in at:
+        return f"it isn't in a tmux on {s.get('host_id')}: end it there"
+    pane = _tmux_at_parts(at)[2]
+    if not pane:
+        return f"it isn't in a tmux on {s.get('host_id')}: end it there"
+    r = subprocess.run([*remote_argv(target or s.get("host_id") or "", f"tmux kill-pane -t {shlex.quote(pane)}")],
+                       capture_output=True, text=True, timeout=10) if target else None
+    said = f"ended on {s.get('host_id')}" if r is not None and r.returncode == 0 else \
+        f"couldn't reach {s.get('host_id')}: {(r.stderr if r is not None else '').strip()[:60] or 'no ssh route'}"
+    p = next((x for x in panes() if x.key and x.key == s.get("key") and x.session == (my_session() or SESSION)), None)
+    if p is not None:
+        end_agent(p)
+    return said
+
+
 def window_name(s: dict) -> str:
     """A session's tmux window name: its title, prefixed by its host when that isn't this one."""
     host = f"{s.get('host_id')}/" if _is_remote(s, _this_host()) else ""
@@ -263,16 +376,24 @@ def new_session_window(s: dict, ssh: dict[str, str] | None = None, extra: list[s
     for a local resume (``--model`` after a move between profiles)."""
     remote = _is_remote(s, _this_host())
     target = ssh_target(s.get("host_id"), ssh or {}) if remote else None
-    argv = (ssh_argv(s, target) if target else None) if remote else resume_argv(s, None, extra)
+    name = window_name(s)
+    if remote:
+        # it starts in a tmux on its own host, and this window is the ssh that shows it
+        agent = resume_argv(s, [])
+        argv = (remote_argv(target, remote_script(name, s.get("cwd") or "~", agent, s.get("key")))
+                if target and agent else None)
+    else:
+        argv = resume_argv(s, None, extra)
     if not argv:
         raise RuntimeError(f"cannot resume a {s.get('harness')} session" + (f" from {s.get('host_id')}" if remote else ""))
     cwd = os.path.expanduser("~") if remote else s.get("cwd") or os.path.expanduser("~")
     if not os.path.isdir(cwd):
         cwd = os.path.expanduser("~")
-    name = window_name(s)
     role = "shell" if s.get("harness") == "shell" else "agent"    # a resumed shell stays a shell session, not an agent
     target_session = next((p.session for p in panes() if p.id == os.environ.get("TMUX_PANE")), SESSION)
     pane_id = _agent_window(target_session, cwd, name, argv, role=role)
+    if remote:
+        _run("set-option", "-w", "-t", pane_id, "@ctx_remote", f"{s.get('host_id')}|pending", check=False)
     tag(pane_id, s["key"])
     ps = panes()
     return next(p for p in ps if p.id == pane_id)
@@ -376,7 +497,10 @@ def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None, extra: 
         return f"running in another terminal (pid {s.get('pid')}): quit it there, then Enter resumes it here"
     if r == "none":
         return f"cannot resume a {s.get('harness')} session"
-    if pane is None:
+    if r == "attach":
+        pane = _remote_view(s, ssh or _ssh(), viewer)
+        created = True
+    elif pane is None:
         pane = new_session_window(s, ssh, extra)
         created = True
     if focus:                                           # select-pane alone doesn't change the window you're looking at
@@ -394,17 +518,34 @@ def show(s: dict, focus: bool = True, ssh: dict[str, str] | None = None, extra: 
     return ("resumed " if created else "showing ") + (s.get("title") or s.get("session_id", ""))[:40]
 
 
+def _remote_view(s: dict, ssh: dict[str, str], viewer: Pane) -> Pane:
+    """A local window running the ssh that shows a session already running in a tmux on its own host: a grouped
+    "view" of that one window, which dies when you detach and leaves the agent running there."""
+    sess, window, pane = _tmux_at_parts(s.get("tmux_at"))
+    target = ssh_target(s.get("host_id"), ssh) or s.get("host_id")
+    ps = panes()
+    here = next((p.session for p in ps if p.id == os.environ.get("TMUX_PANE")), SESSION)
+    pane_id = _agent_window(here, os.path.expanduser("~"), window_name(s),
+                            remote_argv(target or "", view_command(f"{sess}:{window}", pane)))
+    if s.get("key"):
+        tag(pane_id, s["key"])
+    _run("set-option", "-w", "-t", pane_id, "@ctx_remote", f"{s.get('host_id')}|{s.get('tmux_at')}", check=False)
+    return next(p for p in panes() if p.id == pane_id)
+
+
 # How Enter can reach a session, as shown in the TUI's reach column:
 #   pane     in a pane of this tmux server: Enter swaps it into the viewer
 #   resume   not running here: Enter resumes it in a new window
 #   foreign  running on this host in a terminal outside tmux: can't be adopted (quit it there, then resume)
 #   ssh      ended on another host: Enter resumes it there over ssh, in a new window here
+#   attach   running in a tmux on another host: Enter shows it here over ssh (an agent survives the ssh dropping)
 #   remote   on another host and Enter can't help: running there, or no ssh route from here
 #   none     not running and no way to resume it
-REACH_GLYPH = {"pane": "◆", "resume": "↻", "ssh": "↗", "foreign": "⊘", "remote": "⇢", "none": " "}
+REACH_GLYPH = {"pane": "◆", "resume": "↻", "ssh": "↗", "attach": "⇄", "foreign": "⊘", "remote": "⇢", "none": " "}
 REACH_HELP = {"pane": "in ctx's tmux: Enter brings it to the left pane",
               "resume": "not running: Enter resumes it in a new window",
               "ssh": "on another host: Enter resumes it there over ssh",
+              "attach": "in a tmux on its host: Enter attaches to it over ssh",
               "foreign": "running in another terminal: can't be adopted; quit it there, then Enter resumes it here",
               "remote": "on another host: open it there",
               "none": "can't be resumed"}
@@ -415,6 +556,8 @@ def reach_help(s: dict, reach: str, ssh: dict[str, str] | None = None) -> str:
     host = s.get("host_id")
     if reach == "ssh":
         return f"on {host}: Enter resumes it there over ssh ({ssh_target(host, ssh or {})})"
+    if reach == "attach":
+        return f"in a tmux on {host}: Enter attaches to it over ssh ({ssh_target(host, ssh or {})})"
     if reach != "remote":
         return REACH_HELP.get(reach, "")
     if s.get("live_status") in LIVE and s.get("pid"):
@@ -443,6 +586,9 @@ def _reach(s: dict, ps: list[Pane], this_host: str, ssh: dict[str, str] | None =
         pane = next((p for p in ps if p.key and p.key == s.get("key")), None)
         if pane is not None:
             return "pane", pane
+        # live in a tmux on its own host, and we can ssh there: Enter shows that pane (see _remote_view)
+        if s.get("live_status") in LIVE and s.get("tmux_at") and ssh_target(s.get("host_id"), ssh or {}):
+            return "attach", None
         if s.get("live_status") in LIVE and s.get("pid"):
             return "remote", None
         return ("ssh" if resume_argv(s) and ssh_target(s.get("host_id"), ssh or {}) else "remote"), None
