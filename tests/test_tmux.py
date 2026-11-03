@@ -582,3 +582,18 @@ def test_a_background_job_is_found_through_the_window_that_shows_it(server, monk
     assert tmux.visible_key(tmux.panes(), [old, job]) == "laptop/claude/job"   # the ended tag gives way
     assert tmux.viewer_pane().key == "laptop/claude/job"                     # and the pane is re-tagged
     assert tmux.show(job, focus=False) == "already showing"
+
+
+def test_a_new_remote_claude_starts_under_the_id_its_window_is_tagged_with(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tmux, "panes", lambda: [tmux.Pane("%1", "@1", "mgr", 0, 1, "", "ctx", "tui"),
+                                               tmux.Pane("%0", "@1", "mgr", 1, 2, "", "ctx", "")])
+    monkeypatch.setattr(tmux, "viewer_pane", lambda ps=None: tmux.Pane("%0", "@1", "mgr", 1, 2, "", "ctx", ""))
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    monkeypatch.setattr(tmux, "_agent_window", lambda sess, cwd, name, argv, **kw: seen.setdefault("argv", argv) and "%9")
+    monkeypatch.setattr(tmux, "tag", lambda pane, key: seen.setdefault("key", key))
+    monkeypatch.setattr(tmux, "_run", lambda *a, **k: "")
+    assert tmux.new_remote_agent("specul8", "claude", "~/repos/x", {"specul8": "rick@specul8"}) == "new claude on specul8 in ~/repos/x"
+    sid = seen["key"].rsplit("/", 1)[1]
+    assert seen["key"] == f"specul8/claude/{sid}" and f"--session-id {sid}" in seen["argv"][-1]

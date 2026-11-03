@@ -282,7 +282,7 @@ def remote_script(name: str, cwd: str, agent: list[str], key: str | None) -> str
     cmd = shlex.quote(f"bash -lc {shlex.quote('exec ' + shlex.join(agent))}")
     mk = f"tmux new-session -d -s {s} -n {shlex.quote(name)} -c \"$d\" -P -F '#{{window_id}}' {cmd}"
     win = f"tmux new-window -d -t {s}: -n {shlex.quote(name)} -c \"$d\" -P -F '#{{window_id}}' {cmd}"
-    tagline = f' tmux set-option -p -t "$w".0 @ctx_key {shlex.quote(key)};' if key else ""
+    tagline = f' tmux set-option -p -t "$w" @ctx_key {shlex.quote(key)};' if key else ""   # the window's one pane
     return (f'd={d}; cd "$d" 2>/dev/null || {{ d="$HOME"; cd "$HOME" 2>/dev/null || d=.; }}; '
             f'if tmux has-session -t {s} 2>/dev/null; then w=$({win}); else w=$({mk}); fi;{tagline} exec {view_command("$w")}')
 
@@ -319,8 +319,8 @@ def new_remote_agent(host: str, harness: str, cwd: str, ssh: dict[str, str]) -> 
     if not target:
         return f"no ssh route to {host} ([ssh] in the config)"
     if harness == "claude":
-        sid, agent, key = str(uuid.uuid4()), ["claude", "--session-id", str(uuid.uuid4())], None
-        key = f"{host}/claude/{sid}"
+        sid = str(uuid.uuid4())                         # the id it starts under is the key the board tags it with
+        agent, key = ["claude", "--session-id", sid], f"{host}/claude/{sid}"
     elif harness == "pi":
         agent, key = ["pi"], None
     elif harness == "shell":
