@@ -241,6 +241,11 @@ async def legend_svg() -> None:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    # made-up sessions must never reach the operator's own tmux or pop-up log (this runs from a pane of it)
+    import os
+    from ctxswitch.client import notify
+    os.environ.pop("TMUX", None); os.environ.pop("TMUX_PANE", None)
+    notify.LOG = Path(tempfile.mkdtemp()) / "popup.log"
     with tempfile.TemporaryDirectory() as d:
         store = Store(Path(d) / "hub.db")
         seed(store)
