@@ -597,3 +597,34 @@ def test_a_new_remote_claude_starts_under_the_id_its_window_is_tagged_with(monke
     assert tmux.new_remote_agent("specul8", "claude", "~/repos/x", {"specul8": "rick@specul8"}) == "new claude on specul8 in ~/repos/x"
     sid = seen["key"].rsplit("/", 1)[1]
     assert seen["key"] == f"specul8/claude/{sid}" and f"--session-id {sid}" in seen["argv"][-1]
+
+
+def test_a_board_left_alone_in_its_window_gets_a_left_pane_back(server, monkeypatch):
+    """The left pane closed outright (Ctrl+b x, a killed wrapper): the most recent session comes back on the board's
+    left; with none, a shell does; and a pane someone else put beside the board is left as it is."""
+    ps = tmux.panes()
+    viewer, tui = sorted((p for p in ps if p.window_name == "mgr"), key=lambda p: p.index)
+    tm("set-option", "-p", "-t", tui.id, "@ctx_role", "tui"); monkeypatch.setenv("TMUX_PANE", tui.id)
+    tm("set-option", "-t", "ctx", "@ctx_width", "50")
+    agent = tm("new-window", "-d", "-t", "ctx:", "-n", "agentwin", "-P", "-F", "#{pane_id}", "sleep 300")
+    tm("set-option", "-p", "-t", agent, "@ctx_role", "agent")
+    assert tmux.restore_viewer() is None                               # it has its left pane: nothing to do
+    tm("kill-pane", "-t", viewer.id)                                   # gone, with no hand-off
+    assert tmux.restore_viewer() == f"put {agent} back on the left"
+    mgr = sorted((p for p in tmux.panes() if p.window_name == "mgr"), key=lambda p: p.index)
+    assert [p.id for p in mgr] == [agent, tui.id]                      # on the board's left, the board still right
+    assert int(tm("display", "-p", "-t", tui.id, "#{pane_width}")) == 50
+    tm("kill-pane", "-t", agent)                                       # and again, with no session left to bring
+    assert tmux.restore_viewer() == "put a shell back on the left"
+    mgr = sorted((p for p in tmux.panes() if p.window_name == "mgr"), key=lambda p: p.index)
+    assert len(mgr) == 2 and mgr[1].id == tui.id
+    tm("kill-pane", "-t", mgr[0].id); tm("split-window", "-h", "-t", tui.id)   # someone's own pane, on the right
+    assert tmux.restore_viewer() is None and len([p for p in tmux.panes() if p.window_name == "mgr"]) == 2
+
+
+def test_only_the_ctx_session_s_board_is_repaired(server, monkeypatch):
+    tm("new-session", "-d", "-s", "other", "-x", "100", "-y", "30")
+    pane = tm("display", "-p", "-t", "other:", "#{pane_id}")
+    tm("set-option", "-p", "-t", pane, "@ctx_role", "tui"); monkeypatch.setenv("TMUX_PANE", pane)
+    assert tmux.restore_viewer() is None                               # a board split into some other session
+    assert len([p for p in tmux.panes() if p.session == "other"]) == 1

@@ -194,6 +194,31 @@ def _hand_off(mine: Pane, ps: list[Pane]) -> str:
 SHELLS = {"bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}
 
 
+def restore_viewer(board: str | None = None, ps: list[Pane] | None = None) -> str | None:
+    """The board alone in its window — the left pane closed (Ctrl+b x, a killed wrapper): put one back on its left,
+    the most recently active session pane from another window of the ctx session, else a fresh shell in ~, then hold
+    the board at its width again. Only in the ctx session and only when nothing else shares the board's window, so a
+    pane you made yourself always stays the viewer. Returns what it did, or None."""
+    if not in_tmux():
+        return None
+    ps = ps if ps is not None else panes()
+    board = board or os.environ.get("TMUX_PANE")
+    me = next((p for p in ps if p.id == board and p.role == "tui"), None)
+    if me is None or me.session != SESSION or any(p.window == me.window and p.id != me.id for p in ps):
+        return None
+    others = [p for p in ps if p.session == me.session and p.window != me.window and managed(p)
+              and (p.role == "shell" or p.cmd not in SHELLS)]
+    others.sort(key=lambda p: p.activity, reverse=True)
+    if others:
+        _run("join-pane", "-d", "-h", "-b", "-s", others[0].id, "-t", me.id)
+        said = f"put {others[0].id} back on the left"
+    else:
+        _run("split-window", "-d", "-h", "-b", "-t", me.id, "-c", os.path.expanduser("~"))
+        said = "put a shell back on the left"
+    pin_board_width(me.id)
+    return said
+
+
 def reap_viewer(ps: list[Pane] | None = None) -> str | None:
     """Safety net run by the TUI: if the viewer holds a pane that had an agent (tagged by ctx) but is now at a bare
     shell — an agent started by hand in the viewer, or a window from before the exit wrapper — hand the viewer to
@@ -828,6 +853,7 @@ def bootstrap(width: str | None = None, restart: bool = False) -> str:
     if in_tmux() and _run("display-message", "-p", "#{session_name}", check=False).strip() == SESSION:
         _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)   # what pin_board_width holds the board at
         said = ensure_board(width, ctx_cmd, restart)
+        restore_viewer(next((p.id for p in panes() if p.session == SESSION and p.role == "tui"), None))
         _run("select-window", "-t", f"{SESSION}:{VIEWER_WINDOW}", check=False)
         return said or "the board is already running (window mgr); --restart restarts it"
     if in_tmux():
@@ -838,6 +864,7 @@ def bootstrap(width: str | None = None, restart: bool = False) -> str:
     if has:
         _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)
         ensure_board(width, ctx_cmd, restart)
+        restore_viewer(next((p.id for p in panes() if p.session == SESSION and p.role == "tui"), None))
     else:
         _run("new-session", "-d", "-s", SESSION, "-n", VIEWER_WINDOW, "-c", os.path.expanduser("~"))
         _run("set-option", "-t", SESSION, "@ctx_width", width, check=False)

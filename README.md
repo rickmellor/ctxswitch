@@ -581,6 +581,7 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | two sessions on one repo aren't grouped | different branches, or no remote (a remote-less checkout only matches itself). pi: the branch is read from the checkout's HEAD |
 | a live session shows `⊘` | it runs outside the ctx tmux session. Quit it there and resume it with Enter |
 | the agents are in tmux but there's no board | its pane was closed or crashed: `ctx tmux` (from anywhere) puts it back on the right of the `mgr` window |
+| only the board is left in `mgr` | its left pane was closed outright (`Ctrl+b x`, or its wrapper killed): within one refresh (10 s) the board moves the most recently active session back there, or opens a shell when there's none. A pane you put beside the board yourself is left alone |
 | exiting an agent left a shell on the left | it heals on the next refresh. If it keeps happening, see `~/.local/state/ctxswitch/tmux-exit.log` |
 | no briefing on resume | it only shows after 15 min away. `ctx doctor` (claude hooks line should not say "SessionStart (briefing)" missing); pi needs a new pi process after `ctx install --pi` |
 | Windows sessions never go live | `ctx doctor` "claude (windows)" line: liveness needs WSL interop (`tasklist.exe`) |

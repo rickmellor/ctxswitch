@@ -244,7 +244,8 @@ HELP_TIPS = [
      "and `k` ends it there, its transcript left resumable. A host ssh can't reach is still on the board and takes "
      "messages; it just can't be opened from here.")),
     ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
-     "pane is ever gone, `ctx tmux` puts it back.")),
+     "pane is ever gone, `ctx tmux` puts it back; if the left pane is (the board alone in its window), the board "
+     "puts the most recent session back there, or a shell.")),
     ("More", "`ctx --help`, and the README (User guide)."),
 ]
 
@@ -679,6 +680,9 @@ class CtxApp(App):
             self.call_from_thread(self.sub_title_set, f"hub unreachable: {e.__class__.__name__}")
             return
         try:
+            said = tmux.restore_viewer()                # the left pane is gone (closed, its wrapper killed): put one back
+            if said:
+                popup_log(f"viewer: {said}")
             tmux.reap_viewer()                          # an agent exited to a bare shell in the viewer: move on
             ps = tmux.panes()
             self.visible_key = tmux.visible_key(ps, sessions=data["sessions"])

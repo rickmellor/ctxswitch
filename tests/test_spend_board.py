@@ -469,3 +469,12 @@ async def test_pressing_a_digit_moves_the_cursor_and_enter_then_opens_that_row(m
         assert opened == [C1]
         await pilot.press("9"); await pilot.pause(0.3)
         assert app.selected == C1                                        # no row 9: nothing moves
+
+
+async def test_every_refresh_checks_the_board_still_has_its_left_pane(monkeypatch):
+    app = _board(monkeypatch, [_sess(P1)], reports={})
+    calls = []
+    monkeypatch.setattr(tui.tmux, "restore_viewer", lambda *a, **k: calls.append(1) or None)
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert calls                                                  # the refresh asked
