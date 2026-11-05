@@ -70,7 +70,9 @@ export function spaceArgs(recipe, cfg) {
   };
 }
 
-const viewed = (key) => ({ fetch: { method: "POST", path: `/v1/sessions/${enc(key)}/viewed`, body: { at: "<now>" } } });
+// A session's key rides in these paths as itself, slashes and all — the hub's routes are `{key:path}`, which is
+// what ctx's own client sends. Only query values get encoded.
+const viewed = (key) => ({ fetch: { method: "POST", path: `/v1/sessions/${key}/viewed`, body: { at: new Date().toISOString() } } });
 
 /**
  * Enter / double-click on a row.
@@ -79,12 +81,15 @@ const viewed = (key) => ({ fetch: { method: "POST", path: `/v1/sessions/${enc(ke
  *  - live and not here → it runs in someone else's herdr: say so.
  * Every case marks the row viewed, which is what clears the hub's +N.
  */
-export function openPlan(row, all, cfg) {
+export function openPlan(row, all, cfg, pane = null) {
   const r = row ?? {};
   const t = terminalFor(r, all, cfg);
   if (t) {
     const at = String(t.address ?? "");
-    return { steps: [{ command: "agent.focus", args: { terminal: at } }], extra: [viewed(r.key)] };
+    // A terminal sent back with `terminal.park` has no pane: give it one in a tab before focusing it.
+    const steps = pane ? [] : [{ command: "terminal.keep", args: { terminal: at, place: "tab" } }];
+    steps.push({ command: "agent.focus", args: { terminal: at } });
+    return { steps, extra: [viewed(r.key)] };
   }
   if (r.state === "ended") {
     return {
@@ -115,6 +120,7 @@ export function startPlan(recipe, cfg) {
 
 /** `k`: end the row's terminal, or say where it actually runs. */
 export function endPlan(row, all, cfg) {
+  if (!cfg) return { steps: [], notify: { title: "ctx", body: "no ctx.json: nothing to end", level: "warning" } };
   const t = terminalFor(row ?? {}, all, cfg);
   if (!t) return { steps: [], notify: { title: "ctx", body: "not in herdr: end it where it runs", level: "warning" } };
   return { steps: [{ command: "terminal.kill", args: { terminal: String(t.address ?? "") } }] };
@@ -131,7 +137,7 @@ export function messageRequest(row, text, cfg, mode = "m") {
   if (!body.trim()) return { refuse: "nothing to send" };
   if (mode === "a" && !r.reply_target) return { refuse: r.reply_why || "nothing to answer" };
   if (typeof r.can_message === "string" && r.can_message) return { refuse: r.can_message };
-  const out = { path: `/v1/sessions/${enc(r.key)}/messages`, body: { body, from_host: cfg?.host_id ?? null } };
+  const out = { path: `/v1/sessions/${r.key}/messages`, body: { body, from_host: cfg?.host_id ?? null } };
   if (mode === "a") out.body.answers = r.reply_target.ref;
   return out;
 }
@@ -141,27 +147,33 @@ export function retireRequest(row, instruction) {
   const r = row ?? {};
   const id = instruction?.id ?? instruction?.n;
   if (id === null || id === undefined || id === "") return { refuse: "no such instruction" };
-  return { path: `/v1/sessions/${enc(r.key)}/ledger/${enc(id)}/retire`, body: {} };
+  return { path: `/v1/sessions/${r.key}/ledger/${enc(id)}/retire`, body: {} };
 }
 
 /**
- * `h`: this host → all hosts → each other host, in the header's order.
- * `current` is null for "every host"; `thisHost` is ctx.json's host_id, where the cycle starts.
+ * `h`: this host → each other host, in the header's order → every host, and back to this host.
+ * `current` is the host on screen, null for every host; `thisHost` is ctx.json's host_id, where the cycle starts.
  */
 export function hostCycle(hosts, current, thisHost) {
   const list = (Array.isArray(hosts) ? hosts : []).map((h) => String(h)).filter(Boolean);
-  const me = thisHost ?? current ?? null;
-  if (!list.length) return me;
-  if (current === null || current === undefined) return me ?? list[0];
-  if (current !== me) return null;                             // an other host, or all: next is all
+  const me = thisHost ?? null;
+  if (current === null || current === undefined) {                                // every host → this one
+    if (me && list.includes(me)) return me;
+    return list[0] ?? me ?? null;                                                 // this host isn't listed: start where the hub has news
+  }
   const others = list.filter((h) => h !== me);
-  return others.length ? others[0] : me;                       // one host only: stay on it
+  if (current !== me) {
+    const at = others.indexOf(current);                                          // an other host → the next, or all
+    return at >= 0 && at + 1 < others.length ? others[at + 1] : null;
+  }
+  return others.length ? others[0] : null;                                       // this host → the first other, or all
 }
 
-/** `/v1/board`'s query for the filter state: a null host means every host, `ended` adds the ended rows. */
+/** `/v1/board`'s query for the filter state: `host` is a name, "" for every host, and absent means this
+ *  computer's own — where the filter starts, before ctx.json has even been read. */
 export function boardPath(filter, cfg) {
   const f = filter ?? {};
-  const host = f.host === null || f.host === undefined ? (cfg?.host_id ?? "") : f.host;
+  const host = typeof f.host === "string" ? f.host : (cfg?.host_id ?? "");
   return `/v1/board?host=${enc(host)}&screen_host=${enc(cfg?.host_id ?? "")}&ended=${f.ended ? 1 : 0}` +
     `&tz=${enc(f.tz ?? "+00:00")}`;
 }
