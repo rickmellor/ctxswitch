@@ -97,12 +97,21 @@ __ctx_end() {
         [ "$out" -gt "${CTX_SHELL_MAX_OUT:-16777216}" ] && : > "$CTX_SHELL_OUT"    # keep the capture small; offsets restart at 0
     fi
     __ctx_nfile
+    __ctx_osc idle
     return $rc
 }
 
+# herdr-core (hc) reads a terminal's agent state from OSC 7501, so a ctx shell says what it is: idle at its prompt
+# (__ctx_end, which the prompt runs), working while a command runs (PS0, below). The bytes go to the tty, where hc
+# reads them and nothing else does: a terminal hc didn't launch ignores the sequence, and a shell with no tty (a
+# piped one, a script) has no terminal to tell, so it says nothing at all. Bytes: ESC ] 7501 ; … ESC \ — no BEL.
+# The tty test is stdin, which a command substitution inherits (its stdout is a pipe): an interactive bash's stdin
+# is its terminal, and so is /dev/tty, which is where the bytes go from both call sites.
+__ctx_osc() { [ -t 0 ] && printf '\033]7501;state=%s:app=ctx-shell\033\\' "$1" 2>/dev/null > /dev/tty; return 0; }
+
 # PS0's contents are expanded and *printed*, not executed, so the hook goes in as a command substitution: it
 # runs in a subshell before the command, and its own output is captured instead of echoed into the pane.
-PS0='$(__ctx_ps0)'
+PS0='$(__ctx_ps0)$(__ctx_osc working)'
 case ${PROMPT_COMMAND-} in
     "") PROMPT_COMMAND=__ctx_end ;;
     *)  PROMPT_COMMAND=__ctx_end$'\n'"$PROMPT_COMMAND" ;;
