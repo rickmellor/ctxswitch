@@ -42,7 +42,7 @@ def ensure_shell_roots(roots) -> None:
 from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
-from ctxswitch.collector.liveness import (HcLoop, fill_hc_at, fill_tmux_at, hc_bin, hc_terminals, label_sessions,
+from ctxswitch.collector.liveness import (HcLoop, fill_hc_at, fill_tmux_at, find_tool, hc_bin, hc_terminals, label_sessions,
                                           read_agy_presence, read_claude_registry, read_claude_win_registry,
                                           read_pi_registry, read_shell_registry, runtime_dir, tmux_panes)
 from ctxswitch.common.wsl import windows_pids
@@ -147,7 +147,7 @@ def read_pool(path: str, get=httpx.get) -> dict[str, Any] | None:
 def claude_installed(cfg: Config, which=None) -> bool:
     """Whether this host can start Claude Code at all: a profile's command on the PATH, or an absolute wrapper
     (what ``n`` offers a host by — see client/tui/app.py's ``new_session_options``)."""
-    which = which or shutil.which
+    which = which or find_tool
     return any(which(p.command[0] if p.command else "claude")
                or os.path.isabs(p.command[0] if p.command else "claude") for p in cfg.claude_profiles)
 
@@ -157,7 +157,7 @@ def host_info(cfg: Config, which=None, hc=None) -> dict[str, Any]:
     a front end that isn't Python: the profiles it can start Claude Code under (masked: see
     ``ClaudeProfile.to_public``) and which harnesses are actually on its PATH. ``ctx`` is whether this install's
     ``ctx`` is reachable — ``ctx shell`` sessions resume through it."""
-    which = which or shutil.which
+    which = which or find_tool                       # the service PATH has no ~/.local/bin: look where the tools are
     hc = hc or hc_bin
     return {"collector": "0.0.1", "platform": platform.platform(), "python": platform.python_version(),
             "profiles": [p.to_public() for p in cfg.claude_profiles],

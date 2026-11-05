@@ -181,16 +181,21 @@ HC_CTX_KEY = "ctx.key"
 HC_HOME_DIRS = ("bin", ".local/bin", ".herdr/bin")   # where hc lives when a systemd --user PATH leaves it out
 
 
-def hc_bin(which=shutil.which) -> str | None:
-    """The hc binary: on PATH, else in the operator's own bin dirs (a systemd --user unit's PATH has no ~/.local/bin,
-    which is where the installer puts it — without this the collector silently saw no herdr at all)."""
-    found = which("hc")
+def find_tool(name: str, which=shutil.which) -> str | None:
+    """A tool on PATH, else in the operator's own bin dirs: a systemd --user unit's PATH has no ~/.local/bin, which is
+    where hc, claude, pi and ctx all live on these hosts — without this the collector saw none of them."""
+    found = which(name)
     if found:
         return found
     try:
-        return which("hc", path=os.pathsep.join(str(Path.home() / d) for d in HC_HOME_DIRS))
+        return which(name, path=os.pathsep.join(str(Path.home() / d) for d in HC_HOME_DIRS))
     except TypeError:                                  # a test's fake `which` that takes only the name
         return None
+
+
+def hc_bin(which=shutil.which) -> str | None:
+    """The hc binary, wherever the operator keeps it (see find_tool)."""
+    return find_tool("hc", which)
 HC_STATE_MAP = {"working": "busy", "blocked": "waiting", "idle": "idle", "done": "idle", "error": "unknown"}
 # an agent ctx already has its own way to see: a registry file (Claude, pi) or its own rcfile (ctx shell). herdr
 # never reports one of those as a session of its own — if no registry entry maps to that terminal, ctx's own

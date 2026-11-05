@@ -307,3 +307,16 @@ def test_v1_hosts_carries_what_each_host_published(tmp_path):
     rows = {h["host_id"]: h for h in c.get("/v1/hosts").json()}
     assert rows["gpu-host"]["info"]["profiles"][0]["name"] == "bedrock" and rows["gpu-host"]["info"]["hc"] is True
     assert rows["devbox"]["info"] is None and rows["devbox"]["pool"] is None
+
+
+def test_host_info_finds_the_agents_in_the_operators_bin_under_a_service_path(tmp_path, monkeypatch):
+    """Under systemd --user the PATH has no ~/.local/bin, where claude, pi and ctx live: the published agents must still
+    say they are installed (the herdr picker hides what a host reports missing)."""
+    from ctxswitch.collector import main as M
+    from ctxswitch.common.config import Config
+    bin_ = tmp_path / ".local" / "bin"; bin_.mkdir(parents=True)
+    for name in ("claude", "pi", "ctx"):
+        f = bin_ / name; f.write_text("#!/bin/sh\n"); f.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path)); monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    info = M.host_info(Config(), hc=lambda: None)
+    assert info["agents"] == {"claude": True, "pi": True, "agy": False, "ctx": True}
