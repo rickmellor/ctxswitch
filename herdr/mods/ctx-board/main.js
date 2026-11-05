@@ -38,6 +38,7 @@ export default class CtxBoard extends View {
     this.popup = null;                                              // a popup this copy opened, so keys go to it
     this.clickedAt = 0;
     this.input = null;
+    if (p.action?.kind === "send") this.makeInput("");               // state is made here or in a handler, never in render
     this.handle = cx.focus_handle();
     // mod.json says focusable: pane.go can step onto this copy; it takes the keyboard on "focus".
     cx.spawn(async (cx) => {
@@ -380,7 +381,7 @@ export default class CtxBoard extends View {
     if (a.kind === "start") {
       if (!this.chain) return;
       if (!this.chain.host) this.chain.host = value.host;
-      else { this.chain.harness = value.harness; this.chain.profile = value.profile ?? null; }
+      else { this.chain.harness = value.harness; this.chain.profile = value.profile ?? null; this.makeInput("~"); }
       cx?.notify();
       return;
     }
@@ -519,16 +520,16 @@ export default class CtxBoard extends View {
   popupView(t) {
     const a = this.action ?? {};
     if (this.overlayIsText()) {
-      return this.textOverlay(t, { title: this.overlayTitle(), value: a.kind === "send" ? "" : "~" });
+      return this.textOverlay(t, { title: this.overlayTitle() });
     }
     const list = this.overlayChoices();
     const c = this.chain ?? {};
     const empty = a.kind === "start" && c.host ? `${c.host} says it has nothing to start` : "nothing to choose here";
-    return v_flex().id("ctx-pick").w_full().h_full().min_h(0).p(12).gap(4).bg(t.popover).text_size(12.5)
+    return v_flex().id("ctx-pick").w_full().p(12).gap(4).bg(t.popover).text_size(12.5)
       .child(h_flex().pb(4).items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(this.overlayTitle()))
         .child(div().text_size(10.5).text_color(t.dim).child("Esc")))
-      .child(v_flex().id("ctx-pick-list").flex_1().min_h(0).gap(1).overflow_y_scrollbar()
+      .child(v_flex().id("ctx-pick-list").max_h(240).gap(1).overflow_y_scrollbar()
         .children(list.length
           ? list.map((ch, i) => h_flex().id(`ctx-pick-${i}`).h(28).px(8).rounded(6).gap(8).items_center()
             .hover((s) => s.bg(t.hover))
@@ -538,12 +539,16 @@ export default class CtxBoard extends View {
           : [div().p(8).text_size(11.5).text_color(t.dim).child(empty)]));
   }
 
+  // The field holds its own text; it is read at Send. gpui-kit refuses state made during render, so the popup copy
+  // makes it in init (a message) or in the pick that reaches the folder step (a start).
+  makeInput(value) {
+    this.input = InputState.new({ value: String(value ?? "") });
+    this.input.on("submit", (_e, cx) => this.submitText(cx));
+    this.input.focus();
+  }
+
   textOverlay(t, a) {
-    if (!this.input) {                                              // the field holds its own text; it is read at Send
-      this.input = InputState.new({ value: String(a.value ?? "") });
-      this.input.on("submit", (_e, cx) => this.submitText(cx));
-      this.input.focus();
-    }
+    if (!this.input) return div().p(14).text_size(12).text_color(t.dim).child("…");
     return v_flex().id("ctx-ask").w_full().min_h(0).p(14).gap(8).bg(t.popover).text_size(12.5)
       .child(h_flex().items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(String(a.title ?? "ctx")))
