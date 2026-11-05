@@ -178,7 +178,9 @@ def fill_tmux_at(items: list[Liveness], panes: list[tuple[str, str, str, int]], 
 # live sessions in their own right (harness "herdr" — an agent that has no transcript here, Codex, Cursor, …).
 
 HC_CTX_KEY = "ctx.key"
-HC_HOME_DIRS = ("bin", ".local/bin", ".herdr/bin")   # where hc lives when a systemd --user PATH leaves it out
+HC_HOME_DIRS = ("bin", ".local/bin", ".herdr/bin", "repos/ctxswitch/.venv/bin")   # where hc / claude / pi / ctx live when
+                                                                                   # a systemd --user PATH leaves them out (the last: a
+                                                                                   # collector install's own ctx, as tmux.remote_script assumes)
 
 
 def find_tool(name: str, which=shutil.which) -> str | None:
