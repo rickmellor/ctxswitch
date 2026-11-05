@@ -97,6 +97,12 @@ start was not docked into the sidebar by its `mod.json` place; a layout block (o
 Starting the Windows core through WSL interop (`herdr-core.exe server start` from WSL) left a process that never
 listened; started from a Windows terminal it worked at once.
 
-**S1 — WSL as an hc machine of the Windows core:** pending `hc server start` as the operator in WSL (a core started
-by this sandbox runs as root and is unusable), then `herdr-core.exe machine add --name wsl --via "wsl.exe -e
-/home/rick/.local/bin/hc connect"`.
+**S1 — the laptop route. Windows app: no.** herdr-core refuses `--via` on Windows (`machines.rs check_target`:
+`cfg!(windows)` → "one line, run by sh here"), so a Windows core reaches WSL only through an sshd inside WSL plus
+Windows-side keys; a Windows core started through WSL interop also never came up (started from a Windows terminal it
+did). **Linux app under WSLg: yes.** herdr-app 0.1.13 (`~/.local/share/herdr-app`) runs with `DISPLAY=:0
+WAYLAND_DISPLAY=wayland-0` (MESA/ZINK warnings, software GL, the window renders), finds the WSL core, and `hc machine
+add --name gpu-host|devbox --install --via '<the operator's ssh command>'` puts both hosts in its sidebar as connected
+machines. `herdr-app do tab.new --mod ctx-hello` then showed `hub ok · change 90535 · hosts 3 · auth true`. Decision
+(Rick): the Linux app now, Windows later. The Bash sandbox is a user namespace (uid 0 inside = the operator), so the
+cores and files it made were the operator's all along.
