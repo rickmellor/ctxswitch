@@ -5,8 +5,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import {
-  appHome, readTextFile, theme, nextCommand, run, hc, terminals, panes, openOverlay, closeOverlay,
-  notify, props,
+  appHome, readTextFile, theme, nextCommand, run, hc, spaces, terminals, panes, openOverlay, closeOverlay, notify, props,
 } from "herdr";
 import { rowParts, headerLines, detailSections, detailTitle, toneColor, hasBold, tzOffset } from "./view.js";
 import {
@@ -16,12 +15,14 @@ import {
 
 const POLL_MS = 2000;
 const PICKER = { width: 360, height: 280 };
+const DOUBLE_MS = 500;                                              // two clicks on one row this close apart = open
 
 export default class CtxBoard extends View {
   init(_props, cx) {
     const p = props() ?? {};
-    this.picker = p.picker ?? null;                       // set when this copy is the launch picker's overlay
-    this.overlay = p.overlay ?? null;
+    this.overlay = p.overlay ?? null;                               // set when this copy is a popup
+    this.action = p.action ?? null;                                 // that popup's pending work, as plain data
+    this.chain = p.action?.kind === "start" ? { hosts: p.action.hosts ?? [], me: p.action.me ?? "", host: null, harness: null, profile: null } : null;
     this.cfg = null;
     this.cfgError = null;
     this.rows = [];
@@ -33,24 +34,21 @@ export default class CtxBoard extends View {
     this.size = null;
     this.dirty = true;
     this.notifiedAt = 0;
-    this.filter = { host: null, ended: false };           // null: this computer's host, as ctx.json names it
-    this.hosts = [];
-    this.text = null;                                     // the compose overlay's draft
-    this.list = [];                                       // the list/menu overlay's choices
-    this.busy = false;
+    this.filter = { host: null, ended: false };                     // null: this computer's host, as ctx.json names it
+    this.popup = null;                                              // a popup this copy opened, so keys go to it
+    this.clickedAt = 0;
+    this.input = null;
     this.handle = cx.focus_handle();
     // mod.json says focusable: pane.go can step onto this copy; it takes the keyboard on "focus".
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c === "focus") this.handle.focus();
-        else if (!this.picker) this.command(c, cx);
+        if (c === "focus") { this.popup = null; this.handle.focus(); }   // also what we get when our popup closes
+        else this.command(c, cx);
         cx.notify();
       }
     });
-    if (this.picker) {
-      this.list = this.picker.list ?? [];
-    } else {
+    if (!this.overlay) {                                            // a popup polls nothing; the board does
       cx.timer.every(POLL_MS, (cx) => this.poll(cx));
       this.poll(cx);
     }
@@ -128,7 +126,7 @@ export default class CtxBoard extends View {
   }
 
   detailPath(key) {
-    return `/v1/board/${encodeURIComponent(String(key ?? ""))}?tz=${encodeURIComponent(tzOffset())}`;
+    return `/v1/board/${String(key ?? "")}?tz=${encodeURIComponent(tzOffset())}`;
   }
 
   select(key, cx) {
@@ -159,6 +157,13 @@ export default class CtxBoard extends View {
   // A key command for this mod ("<mod>.<command>", from keys.json), or a click that names the same thing.
   command(c, cx) {
     const { command, index } = parseCommand(c);
+    if (this.overlay) {                                             // a popup copy: digits choose, Esc closes
+      if (command === "select" && index) this.pick(this.overlayChoices()[index - 1]?.value, cx);
+      else if (command === "clear") closeOverlay(this.overlay);
+      else if (command === "open" && this.overlayIsText()) this.submitText(cx);
+      return;
+    }
+    if (this.popup && command !== "clear") return;                  // our own popup is up: its copy has the keys
     switch (command) {
       case "focus": this.handle.focus(); break;
       case "open": this.open(this.selected, cx); break;
@@ -166,16 +171,23 @@ export default class CtxBoard extends View {
       case "message": this.compose("m", this.selected, cx); break;
       case "answer": this.compose("a", this.selected, cx); break;
       case "retire": this.retire(this.selected, cx); break;
-      case "end": this.end(this.selected, cx); break;
+      case "end": this.confirmEnd(this.selected, cx); break;
       case "host": this.cycleHost(cx); break;
-      case "ended": this.filter.ended = !this.filter.ended; this.change = -1; this.poll(cx); break;
-      case "clear": this.filter = { host: null, ended: false }; this.selected = null; this.detail = null;
-        this.change = -1; this.poll(cx); break;
+      case "ended": this.filter.ended = !this.filter.ended; this.refresh(cx); break;
+      case "clear":                                                // Esc: a popup first, else back to the plain view
+        if (this.popup) { closeOverlay(this.popup); this.popup = null; break; }
+        this.filter = { host: null, ended: false }; this.selected = null; this.detail = null;
+        this.refresh(cx); break;
       case "prev": this.move(-1, cx); break;
       case "next": this.move(1, cx); break;
-      case "select": if (index) this.select(this.rows[index - 1]?.key ?? null, cx); break;
+      case "select": if (index) this.select(moveSelection(this.rows, this.selected, 0, index), cx); break;
       default: break;
     }
+  }
+
+  refresh(cx) {
+    this.change = -1;                                               // fetch this state now, not on the next tick
+    this.poll(cx);
   }
 
   move(delta, cx) {
@@ -183,71 +195,78 @@ export default class CtxBoard extends View {
     if (key && key !== this.selected) this.select(key, cx);
   }
 
-  // this host → all → each other host, over the hosts the header names.
+  // this host → each other host → every host → back here. "" is the hub's word for every host.
   cycleHost(cx) {
     const hosts = this.header?.hosts ?? [];
-    const next = (hosts.length ? hostChoices(hosts, this.cfg?.host_id) : [this.cfg?.host_id ?? null]);
-    const at = next.findIndex((h) => (h ?? null) === (this.filter.host ?? null));
-    this.filter.host = at === next.length - 1 ? null : next[at + 1] ?? null;
-    this.change = -1;
-    this.poll(cx);
+    const next = hostCycle(hosts.length ? hosts : [this.cfg?.host_id ?? ""], this.filter.host, this.cfg?.host_id);
+    this.filter.host = next === null ? "" : next;
+    this.refresh(cx);
   }
 
   // Every action goes through here: actions.js decides, this carries it out.
-  async act(plan, cx) {
+  async act(plan, cx, recipe = null) {
     if (!plan) return;
     const made = {};
+    let before = null;
     for (const step of plan.steps ?? []) {
       if (step.fetch) {
         const json = await this.get(step.fetch.path);
         if (step.fetch.into) made[step.fetch.into] = json;
         continue;
       }
-      if (step.label_new) {
-        await this.labelNew(made, plan.recipe ?? made.recipe);
-        continue;
-      }
-      if (step.command === "hc") {
-        await hc(step.args ?? []);
-        continue;
-      }
-      const args = step.from ? { ...spaceArgs(made[step.from], this.cfg), ...(step.machine === undefined
-        ? {} : { machine: step.machine }) } : step.args ?? {};
-      const out = run(step.command, args);
-      if (step.as && out && typeof out === "object") made[step.as] = out;
+      if (step.label_new) { await this.labelNew(made.recipe ?? recipe, before, cx); continue; }
+      if (step.command === "hc") { await hc(step.args ?? []); continue; }
+      const args = step.from
+        ? { ...spaceArgs(made[step.from], this.cfg), ...(step.machine === undefined ? {} : { machine: step.machine }) }
+        : step.args ?? {};
+      if (step.command === "space.new") before = new Set(spaces().map((s) => s?.id ?? ""));
+      run(step.command, args);
     }
     for (const extra of plan.extra ?? []) {
       if (extra.fetch) await this.send(extra.fetch.path, extra.fetch.body).catch(() => null);
     }
     if (plan.notify) notify(plan.notify);
-    cx.notify();
+    cx?.notify();
   }
 
   // The terminal space.new just made gets the session's key, so the next board read finds it by label.
-  async labelNew(made, recipe) {
+  // `run()` answers null, so what it made is whichever space wasn't there a moment ago — and core takes a
+  // new terminal on a beat after the command returns, so this waits for it rather than guessing.
+  labelNew(recipe, spacesBefore, cx) {
     const key = recipe?.key;
-    if (!key) return;
-    const space = made?.made?.space;
-    for (let i = 0; i < 10; i++) {
-      const t = newestInSpace(terminals(), space);
-      if (t?.address) {
-        await hc(["label", String(t.address), `ctx.key=${key}`]);
-        return;
-      }
-      await new Promise((done) => setTimeout(done, 150));   // core has not taken it on yet
-    }
-    notify({ title: "ctx", body: `started: couldn't label the terminal for ${key}`, level: "warning" });
+    if (!key) return Promise.resolve();
+    if (!cx) { notify({ title: "ctx", body: `started: label ${key} once the terminal shows`, level: "warning" }); return Promise.resolve(); }
+    return new Promise((done) => {
+      let tries = 0;
+      const look = () => {
+        const fresh = (spaces() ?? []).find((s) => !spacesBefore?.has(s?.id ?? ""));
+        const t = fresh ? newestInSpace(terminals(), fresh.id) : null;
+        if (t?.address) {
+          hc(["label", String(t.address), `ctx.key=${key}`]).catch(() => null).then(() => done());
+          return;
+        }
+        if (++tries >= 12) {
+          notify({ title: "ctx", body: `started: couldn't label the terminal for ${key}`, level: "warning" });
+          done();
+          return;
+        }
+        cx.timer.after(150, look);
+      };
+      look();
+    });
   }
 
   open(key, cx) {
     const row = this.row(key);
-    if (!row || !this.cfg) return;
+    if (!row) return;
     cx.spawn(async (cx) => {
       try {
-        await this.act(openPlan(row, terminals(), this.cfg), cx);
+        if (!await this.config()) return;
+        const t = terminalFor(row, terminals(), this.cfg);
+        const pane = t ? paneFor(panes(), String(t.address ?? "")) : null;
+        await this.act(openPlan(row, terminals(), this.cfg, pane), cx);
       } catch (e) {
-        this.error = String(e?.message ?? e);
-        cx.notify();
+        this.toast(e);
       }
     });
   }
@@ -256,68 +275,18 @@ export default class CtxBoard extends View {
   start(cx) {
     cx.spawn(async (cx) => {
       try {
-        if (!this.cfg) return;
-        const hosts = await this.get("/v1/hosts");
-        this.hosts = hosts ?? [];
-        const list = hostChoices(this.hosts, this.cfg.host_id).map((host) => ({
-          label: host === this.cfg.host_id ? `${host} (this computer)` : host,
-          value: { step: "harness", host },
-        }));
-        this.pick("start on which host?", list);
+        const cfg = await this.config();
+        if (!cfg) return;
+        const hosts = (await this.get("/v1/hosts")) ?? [];
+        this.openPopup({ kind: "start", hosts, me: cfg.host_id ?? "" }, cx);
       } catch (e) {
-        this.error = String(e?.message ?? e);
-        cx.notify();
+        this.toast(e);
       }
+      cx.notify();
     });
   }
 
-  pick(title, list) {
-    openOverlay({
-      mod: "ctx-board", kind: "popup", ...PICKER,
-      props: { picker: { title, list, picked: this.picked } },
-    });
-  }
-
-  // The picker is this same mod with props: each answer either opens the next step or acts.
-  picked(next, cx) {
-    const p = next ?? {};
-    if (p.step === "harness") {
-      const info = this.hosts.find((h) => h?.host_id === p.host)?.info ?? {};
-      const list = harnessChoices(info).map((c) => ({ label: c.label, value: { step: "folder", host: p.host, ...c } }));
-      if (!list.length) {
-        notify({ title: "ctx", body: `${p.host} says it has nothing to start`, level: "warning" });
-        return;
-      }
-      this.pick(`start what on ${p.host}?`, list);
-      cx?.notify();
-      return;
-    }
-    if (p.step === "folder") {
-      this.ask(`folder for ${p.harness}${p.profile ? ` · ${p.profile}` : ""} on ${p.host}?`, "~",
-        (cwd, cx2) => this.launch({ host: p.host, harness: p.harness, profile: p.profile }, cwd, cx2));
-      cx?.notify();
-      return;
-    }
-    if (p.launch) { this.launch(p.launch.host, p.launch.cwd, cx); return; }
-    if (p.retire) { this.retireRow(p.retire.key, p.retire.instruction, cx); return; }
-    if (p.end) { this.endNow(p.end, cx); return; }
-    if (p.send) { this.post(p.send.path, p.send.body, cx); return; }
-    closeOverlay(this.overlay);
-  }
-
-  async launch(choice, cwd, cx) {
-    closeOverlay(this.overlay);
-    try {
-      const recipe = await this.get(launchPath(choice, cwd));
-      await this.act(startPlan(recipe, this.cfg), cx);
-    } catch (e) {
-      this.error = String(e?.message ?? e);
-      notify({ title: "ctx", body: String(e?.message ?? e), level: "error" });
-      cx?.notify();
-    }
-  }
-
-  // `m` / `a`: one line to send. The refusal is the hub's own reason, said before anything is posted.
+  // `m` / `a`: the hub's own reason not to comes first, then one line to send.
   compose(mode, key, cx) {
     const row = this.row(key);
     if (!row) return;
@@ -327,94 +296,150 @@ export default class CtxBoard extends View {
       return;
     }
     const hint = mode === "a" ? row.reply_target?.text ?? "" : row.title ?? "";
-    this.ask(mode === "a" ? `answer · ${hint}` : `message · ${row.title ?? ""}`, "", (body, cx2) => {
-      const req = messageRequest(row, body, this.cfg, mode);
-      if (req.refuse) { notify({ title: "ctx", body: req.refuse, level: "warning" }); return; }
-      this.post(req.path, req.body, cx2);
-    });
-  }
-
-  post(path, body, cx) {
-    closeOverlay(this.overlay);
-    cx.spawn(async (cx) => {
-      try {
-        await this.send(path, body);
-        notify({ title: "ctx", body: "sent", level: "success" });
-      } catch (e) {
-        notify({ title: "ctx", body: String(e?.message ?? e), level: "error" });
-      }
-      if (this.selected) this.select(this.selected, cx);
-      else this.poll(cx);
-    });
+    this.openPopup({ kind: "send", mode, row, title: `${mode === "a" ? "answer" : "message"} · ${hint}` }, cx);
   }
 
   // `i`: the session's standing instructions, oldest first; a click retires that one.
   retire(key, cx) {
-    if (!key) return;
-    cx.spawn(async (cx) => {
-      const instructions = this.detail?.instructions ?? [];
-      if (!instructions.length) {
-        notify({ title: "ctx", body: "no standing instructions", level: "info" });
-        return;
-      }
-      this.pick("retire which instruction?", instructions.map((r) => ({
-        label: `${r.n} • ${r.text ?? ""}`,
-        value: { retire: { key, instruction: r } },
-      })));
-      cx.notify();
-    });
-  }
-
-  retireRow(key, instruction, cx) {
-    closeOverlay(this.overlay);
-    const req = retireRequest(this.row(key) ?? { key }, instruction);
-    if (req.refuse) { notify({ title: "ctx", body: req.refuse, level: "warning" }); return; }
-    this.post(req.path, req.body, cx);
+    const row = this.row(key);
+    const instructions = this.detail?.instructions ?? [];
+    if (!row) return;
+    if (!instructions.length) {
+      notify({ title: "ctx", body: "no standing instructions", level: "info" });
+      return;
+    }
+    this.openPopup({ kind: "retire", row, instructions, title: "retire which instruction?" }, cx);
   }
 
   // `k`: a yes/no over the row, then terminal.kill — or where it actually runs.
-  end(key, cx) {
+  confirmEnd(key, cx) {
     const row = this.row(key);
     if (!row) return;
-    this.pick(`end ${row.title || row.key} on ${row.host_id || "?"}?  (y = yes, n = Esc)`,
-      [{ label: "yes — kill its terminal", value: { end: key } }, { label: "no", value: {} }]);
+    this.openPopup({ kind: "end", row, title: `end ${row.title || row.key} on ${row.host_id || "?"}?` }, cx);
+  }
+
+  // A popup is this same mod with plain props: whichever copy shows one carries out its own action.
+  openPopup(action, cx) {
+    const id = openOverlay({ mod: "ctx-board", kind: "popup", ...PICKER, props: { action } });
+    if (!this.overlay) this.popup = id;                             // only the board copy tracks its own popup
     cx?.notify();
   }
 
-  endNow(key, cx) {
+  // The start picker steps inside one popup — hosts, then what to run, then a folder — because a popup that
+  // opens another hands the keyboard to whichever copy shows it, and two copies answering the same key is
+  // never right. The steps are this copy's own state; props only carry where it began.
+  overlayChoices() {
+    const a = this.action ?? {};
+    const c = this.chain ?? {};
+    if (a.kind === "start") {
+      if (!c.host) return hostChoices(c.hosts, c.me).map((h) => ({
+        label: h === c.me ? `${h} (this computer)` : h, value: { host: h },
+      }));
+      const info = (c.hosts ?? []).find((h) => h?.host_id === c.host)?.info ?? {};
+      return harnessChoices(info).map((x) => ({ label: x.label, value: x }));
+    }
+    if (a.kind === "retire") {
+      return (a.instructions ?? []).map((r) => ({ label: `${r.n} • ${r.text ?? ""}`, value: { instruction: r } }));
+    }
+    if (a.kind === "end") return [{ label: "yes — kill its terminal", value: { yes: true } }, { label: "no", value: {} }];
+    return [];
+  }
+
+  // The picker's last step, and the message/answer field, are one text input.
+  overlayIsText() {
+    const a = this.action ?? {};
+    return a.kind === "send" || (a.kind === "start" && Boolean(this.chain?.harness));
+  }
+
+  overlayTitle() {
+    const a = this.action ?? {};
+    const c = this.chain ?? {};
+    if (a.kind === "start") {
+      if (!c.host) return "start on which host?";
+      if (!c.harness) return `start what on ${c.host}?`;
+      return `folder for ${c.harness}${c.profile ? ` · ${c.profile}` : ""} on ${c.host}?`;
+    }
+    return String(a.title ?? "ctx");
+  }
+
+  pick(value, cx) {
+    const a = this.action ?? {};
+    if (!value) return;                                             // a digit past the end of the list
+    if (a.kind === "start") {
+      if (!this.chain.host) this.chain.host = value.host;
+      else { this.chain.harness = value.harness; this.chain.profile = value.profile ?? null; }
+      cx?.notify();
+      return;
+    }
     closeOverlay(this.overlay);
-    const row = this.row(key);
-    if (!row) return;
-    const plan = endPlan(row, terminals(), this.cfg);
-    for (const step of plan.steps ?? []) run(step.command, step.args ?? {});
-    if (plan.notify) notify(plan.notify);
-    cx?.notify();
+    if (a.kind === "retire") this.doRetire(a.row, value.instruction);
+    else if (a.kind === "end" && value.yes) this.doEnd(a.row, cx);
   }
 
-  // One text field over the popup: Enter sends whatever the callback makes of it, Esc closes.
-  ask(title, value, onText) {
-    this.text = { title, value: value ?? "", onText };
-    openOverlay({
-      mod: "ctx-board", kind: "popup", ...PICKER,
-      props: { picker: { text: this.text }, ask: true },
-    });
-  }
-
-  // A button on the text overlay: the same value under another name, so Enter and Send agree.
-  submit(cx) {
-    const t = this.text;
+  // The text popup's button or Enter: whatever was typed goes through the same decision functions.
+  submitText(cx) {
+    const a = this.action ?? {};
+    const c = this.chain ?? {};
+    const text = String(this.input?.value?.() ?? "").trim();
+    if (a.kind === "start" && !c.harness) return;                   // nothing chosen yet: nothing to start
     closeOverlay(this.overlay);
-    if (t?.value?.trim()) t.onText(t.value, cx);
-    else closeOverlay(this.overlay);
+    if (a.kind === "send") this.doSend(a.row, text, a.mode ?? "m");
+    else this.doLaunch({ host: c.host, harness: c.harness, profile: c.profile }, text || "~", cx);
   }
 
-  // Rows: a click selects, Enter (or a double click) opens. Digits and up/down come through keys.json.
-  onKey(e, cx) {
-    const ch = e?.key_char ?? e?.key ?? "";
-    if (e?.key === "enter") { this.open(this.selected, cx); return; }
-    if (e?.click_count === 2) { this.open(this.selected, cx); return; }
-    const p = this.parts?.[Number(ch) - 1];
-    if (/^[1-9]$/.test(ch) && p) this.select(p.key, cx);
+  async doSend(row, text, mode) {
+    try {
+      const req = messageRequest(row, text, await this.config(), mode);
+      if (req.refuse) {
+        notify({ title: mode === "a" ? "answer" : "message", body: req.refuse, level: "warning" });
+        return;
+      }
+      await this.send(req.path, req.body);
+      notify({ title: "ctx", body: "sent", level: "success" });
+    } catch (e) {
+      this.toast(e);
+    }
+  }
+
+  async doRetire(row, instruction) {
+    try {
+      const req = retireRequest(row, instruction);
+      if (req.refuse) { notify({ title: "ctx", body: req.refuse, level: "warning" }); return; }
+      await this.send(req.path, req.body);
+      notify({ title: "ctx", body: "retired", level: "success" });
+    } catch (e) {
+      this.toast(e);
+    }
+  }
+
+  async doEnd(row, cx) {
+    try {
+      await this.act(endPlan(row, terminals(), await this.config()), cx);
+    } catch (e) {
+      this.toast(e);
+    }
+  }
+
+  async doLaunch(choice, cwd, cx) {
+    try {
+      const cfg = await this.config();
+      const recipe = await this.get(launchPath(choice, cwd));
+      await this.act(startPlan(recipe, cfg), cx, recipe);
+    } catch (e) {
+      this.toast(e);
+    }
+  }
+
+  toast(e) {
+    notify({ title: "ctx", body: String(e?.message ?? e), level: "error" });
+  }
+
+  // Rows: one click selects, a second on the same row opens it. Keys come through keys.json.
+  clickRow(key, cx) {
+    const now = Date.now();
+    const again = key === this.selected && now - this.clickedAt < DOUBLE_MS;
+    this.clickedAt = now;
+    if (again) { this.clickedAt = 0; this.open(key, cx); } else this.select(key, cx);
   }
 
   text2(t, part) {
@@ -422,8 +447,9 @@ export default class CtxBoard extends View {
   }
 
   headerView(t) {
-    const lines = headerLines(this.header, { host: this.filter.host ?? this.cfg?.host_id });
-    const flag = `${this.filter.host === null ? "all hosts" : ""}${this.filter.ended ? " · + ended" : ""}`;
+    const all = this.filter.host === "";
+    const lines = headerLines(this.header, { host: all ? "all hosts" : (this.filter.host ?? this.cfg?.host_id ?? "") });
+    const flag = this.filter.ended ? "+ ended" : "";
     return v_flex().flex_none().px(10).pt(8).pb(6).gap(2).text_size(11.5)
       .child(this.text2(t, lines[0]))
       .child(this.text2(t, lines[1]))
@@ -435,7 +461,7 @@ export default class CtxBoard extends View {
     const row = h_flex().id(`ctx-row-${p.key}`).pl(8 + depth * 14).pr(8).h(24).flex_none().gap(6).items_center()
       .text_size(12.5).rounded(6).hover((s) => s.bg(t.hover))
       .when(on, (el) => el.bg(t.selected))
-      .on_click((_e, cx) => this.select(p.key, cx))
+      .on_click((_e, cx) => this.clickRow(p.key, cx))
       .when(p.number !== null, (el) => el.child(div().w(14).flex_none().text_color(t.dim).child(String(p.number))))
       .child(div().w(12).flex_none().text_color(t[p.tone] ?? t.dim).child(p.glyph))
       .when(p.prefix, (el) => el.child(div().flex_none().text_color(t.dim).child(p.prefix)))
@@ -477,48 +503,48 @@ export default class CtxBoard extends View {
   }
 
   // The popup this mod draws as an overlay: a titled list of choices, or one text field.
-  pickerOverlay(t) {
-    const p = props()?.picker ?? {};
-    if (p.text) return this.textOverlay(t, p.text);
+  popupView(t) {
+    const a = this.action ?? {};
+    if (this.overlayIsText()) return this.textOverlay(t, a.kind === "send" ? { title: this.overlayTitle() } : { title: this.overlayTitle(), value: "~" });
+    const list = this.overlayChoices();
     return v_flex().id("ctx-pick").w_full().h_full().min_h(0).p(12).gap(4).bg(t.popover).text_size(12.5)
       .child(h_flex().pb(4).items_center()
-        .child(div().flex_1().min_w(0).truncate().font_semibold().child(String(p.title ?? "ctx")))
+        .child(div().flex_1().min_w(0).truncate().font_semibold().child(this.overlayTitle()))
         .child(div().text_size(10.5).text_color(t.dim).child("Esc")))
       .child(v_flex().id("ctx-pick-list").flex_1().min_h(0).gap(1).overflow_y_scrollbar()
-        .children((p.list ?? []).map((c, i) => h_flex().id(`ctx-pick-${i}`).h(28).px(8).rounded(6).gap(8).items_center()
-          .hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => this.picked(c.value, cx))
-          .child(div().w(14).flex_none().text_size(10.5).text_color(t.dim).child(i < 9 ? String(i + 1) : ""))
-          .child(div().flex_1().min_w(0).truncate().child(c.label ?? "")))));
+        .children(list.length
+          ? list.map((c, i) => h_flex().id(`ctx-pick-${i}`).h(28).px(8).rounded(6).gap(8).items_center()
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => this.pick(c.value, cx))
+            .child(div().w(14).flex_none().text_size(10.5).text_color(t.dim).child(i < 9 ? String(i + 1) : ""))
+            .child(div().flex_1().min_w(0).truncate().child(c.label ?? "")))
+          : [div().p(8).text_size(11.5).text_color(t.dim).child("nothing to choose here")]));
   }
 
-  textOverlay(t, draft) {
-    if (this.input === undefined) this.input = null;
-    if (!this.input || this.inputDraft !== draft) {
-      this.inputDraft = draft;
-      this.input = InputState.new({ value: draft.value ?? "" });
-      this.input.on("change", () => { draft.value = this.input.value(); });
-      this.input.on("submit", () => this.submit(this.cxRef));
+  textOverlay(t, a) {
+    if (!this.input) {                                              // the field holds its own text; it is read at Send
+      this.input = InputState.new({ value: String(a.value ?? "") });
+      this.input.on("submit", (_e, cx) => this.submitText(cx));
       this.input.focus();
     }
     return v_flex().id("ctx-ask").w_full().min_h(0).p(14).gap(8).bg(t.popover).text_size(12.5)
       .child(h_flex().items_center()
-        .child(div().flex_1().min_w(0).truncate().font_semibold().child(String(draft.title ?? "ctx")))
-        .child(div().text_size(10.5).text_color(t.dim).child("Esc")))
+        .child(div().flex_1().min_w(0).truncate().font_semibold().child(String(a.title ?? "ctx")))
+        .child(div().flex_none().text_size(10.5).text_color(t.dim).child("Enter sends · Esc closes")))
       .child(Input.new(this.input).h(34).px(10).rounded(8).border_1().border_color(t.accent).bg(t.background)
         .text_size(12.5).text_color(t.foreground))
       .child(h_flex().gap(8).justify_end().pt(4)
         .child(h_flex().id("ctx-ask-cancel").h(28).px(12).rounded(7).items_center().border_1().border_color(t.input)
           .bg(t.raised).text_color(t.foreground).on_click(() => closeOverlay(this.overlay)).child("Cancel"))
         .child(h_flex().id("ctx-ask-go").h(28).px(12).rounded(7).items_center().border_1().border_color(t.solid)
-          .bg(t.solid).text_color(t.solid_foreground).on_click((_e, cx) => this.submit(cx)).child("Send")));
+          .bg(t.solid).text_color(t.solid_foreground).on_click((_e, cx) => this.submitText(cx)).child("Send")));
   }
 
   render(_cx) {
     const t = theme();
-    if (this.picker) return this.pickerOverlay(t);
+    if (this.overlay) return this.popupView(t);
     const root = v_flex().id("ctx-root").size_full().min_h(0).bg(t.chrome).border_r(1).border_color(t.border)
-      .track_focus(this.handle).on_key_down((e, cx) => { this.cxRef = cx; this.onKey(e, cx); })
+      .track_focus(this.handle)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); });
     if (this.cfgError || this.error) {
       return root.child(v_flex().flex_1().min_h(0).p(10).gap(6).text_size(12)

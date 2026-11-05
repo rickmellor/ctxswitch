@@ -1,0 +1,25 @@
+{
+  "mod:ctx-board": {
+    "enter": "ctx-board.open",
+    "n": "ctx-board.start",
+    "s": "ctx-board.start",
+    "m": "ctx-board.message",
+    "a": "ctx-board.answer",
+    "i": "ctx-board.retire",
+    "k": "ctx-board.end",
+    "h": "ctx-board.host",
+    "e": "ctx-board.ended",
+    "escape": "ctx-board.clear",
+    "1": "ctx-board.select:1",
+    "2": "ctx-board.select:2",
+    "3": "ctx-board.select:3",
+    "4": "ctx-board.select:4",
+    "5": "ctx-board.select:5",
+    "6": "ctx-board.select:6",
+    "7": "ctx-board.select:7",
+    "8": "ctx-board.select:8",
+    "9": "ctx-board.select:9",
+    "up": "ctx-board.prev",
+    "down": "ctx-board.next"
+  }
+}
