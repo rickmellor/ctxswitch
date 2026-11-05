@@ -36,9 +36,13 @@ def _owns(pub: dict, transcript_path: str | None) -> bool:
     """Whether a transcript lives under a published profile's config dir (``ClaudeProfile.owns``, from its fields)."""
     if not transcript_path:
         return False
-    home = Path(os.path.expanduser(pub.get("config_dir") or "~/.claude"))
+    cfg = pub.get("config_dir")
+    if not cfg:
+        # the default account: Claude's own ~/.claude on THAT host. The hub runs elsewhere (a container, another
+        # user), so its own home means nothing here; the path's shape is what says it.
+        return "/.claude/projects/" in str(transcript_path).replace("\\", "/")
     try:
-        Path(transcript_path).relative_to(home / "projects")
+        Path(transcript_path).relative_to(Path(cfg) / "projects")   # published absolute by the collector
         return True
     except (ValueError, TypeError):
         return False

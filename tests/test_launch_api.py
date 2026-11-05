@@ -281,3 +281,15 @@ def test_a_launch_answer_repeats_the_host_mask(tmp_path):
     assert r["argv"] == ["env", "FOO_TOKEN=***", "PATH=/usr/local/bin:/usr/bin",
                          f"CLAUDE_CONFIG_DIR={r['config_dir']}", "claude"]
     assert "hunter2" not in c.get("/v1/launch", params={"host": "laptop", "harness": "claude"}, headers=H).text
+
+
+def test_the_default_account_is_matched_by_the_paths_shape_not_the_hubs_home(monkeypatch):
+    """The hub runs in a container: its ~ is not the session host's. A transcript under /home/dev/.claude/projects
+    belongs to the profile with no config_dir wherever the hub's HOME points."""
+    from ctxswitch.hub import launch as L
+    monkeypatch.setenv("HOME", "/nonexistent/hub-home")
+    default = {"name": "bedrock", "argv": ["claude"], "config_dir": ""}
+    personal = {"name": "max", "argv": ["claude-wrapper"], "config_dir": "/home/dev/.claude-max"}
+    assert L._profile_of([default, personal], "/home/dev/.claude/projects/-home-dev-x/s1.jsonl") is default
+    assert L._profile_of([default, personal], "/home/dev/.claude-max/projects/-home-dev-x/s2.jsonl") is personal
+    assert L._owns(default, None) is False
