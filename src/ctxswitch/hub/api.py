@@ -18,6 +18,12 @@
                                      messages only with agents=1)
   POST /v1/messages/{id}/status      collector report {host_id, status: sent|failed, error}
   GET  /v1/attention?host=
+  GET  /v1/board?host=&ended=0|1&q=&tz=&screen_host=    the board's VIEW MODEL: the rows with the board's decisions
+                                     made (state, glyph, harness label, what it waits on, the pool badge, nesting, cost
+                                     marks) and the header's counts, pool switch and today's cost since local midnight
+                                     (hub/board.py, which ports the rules from client/tui/app.py)
+  GET  /v1/board/{key}?turns=8&tz=    one session's detail card as sections (recap, asks, spend, the last exchange,
+                                     ledger, siblings, earlier exchanges): the data behind app.render_detail, no text
   GET  /v1/spend?from=ISO&to=ISO&host=    what the window cost: cloud turns priced per account / model, SAINT's local
                                      energy, one row per pool job, the top sessions (hub/spend.py)
   GET  /v1/health
@@ -40,6 +46,10 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ctxswitch.hub.board import DEFAULT_TURNS
+from ctxswitch.hub.board import board as board_view
+from ctxswitch.hub.board import detail as board_detail
+from ctxswitch.hub.board import window as board_window
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
 from ctxswitch.hub.spend import SaintUsage, iso_instant, spend_report, tok_total, utc
@@ -322,6 +332,35 @@ class Hub:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         return JSONResponse({"change": self.store.change, "items": self.store.attention(req.query_params.get("host") or None)})
 
+    async def board(self, req: Request) -> Response:
+        """GET /v1/board?host=&ended=0|1&q=&tz=&screen_host=: the board's view model — the rows with the hub's own
+        decisions already made (state, glyph, label, what it waits on, the pool badge, nesting, cost) plus the
+        header's counts and today's cost. hub/board.py ports the rules from the Textual board; a front end only adds
+        its own painting and what tmux says."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        p = req.query_params
+        if not board_window(p.get("tz")):
+            return JSONResponse({"error": "bad tz"}, 400)
+        return JSONResponse(board_view(self.store, host=p.get("host") or None, ended=p.get("ended", "0") != "0",
+                                       q=p.get("q") or "", tz=p.get("tz"), screen_host=p.get("screen_host") or None,
+                                       prices=self.prices, saint=self.saint, price_as=self.price_as,
+                                       price_jobs=self._price_jobs))
+
+    async def board_detail(self, req: Request) -> Response:
+        """GET /v1/board/{key}?turns=8&tz=: one session's card as sections (recap, asks, spend, the last exchange,
+        ledger, siblings, earlier exchanges) — app.render_detail's data choices, none of its text."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        p = req.query_params
+        if not board_window(p.get("tz")):
+            return JSONResponse({"error": "bad tz"}, 400)
+        try:
+            turns = max(0, int(p.get("turns", str(DEFAULT_TURNS))))
+        except ValueError:
+            return JSONResponse({"error": "turns must be a number"}, 400)
+        d = board_detail(self.store, req.path_params["key"], turns=turns, tz=p.get("tz"), prices=self.prices,
+                         saint=self.saint, price_as=self.price_as, price_jobs=self._price_jobs)
+        return JSONResponse(d) if d else JSONResponse({"error": "not found"}, 404)
+
     async def search(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         p = req.query_params
@@ -383,6 +422,8 @@ class Hub:
             Route("/v1/messages/{id:int}/status", self.message_status, methods=["POST"]),
             Route("/v1/outbox", self.outbox),
             Route("/v1/attention", self.attention),
+            Route("/v1/board", self.board),
+            Route("/v1/board/{key:path}", self.board_detail),
             Route("/v1/spend", self.spend),
             Route("/v1/search", self.search),
             Route("/v1/health", self.health),
