@@ -100,11 +100,12 @@ class FakeCore:
         if method == "machine.list":
             return {"machines": self.machines}
         if method == "terminal.list":
-            if on := params.get("on"):
-                return {"terminals": self.remote.get(on, []), "hidden_finished": 0, "machines": []}
-            return {"terminals": [self.summary(t) for t in self.terminals
-                                  if params.get("all") or t["state"] == "live"],
-                    "hidden_finished": 0,
+            # a core lists its own terminals, then each connected machine's with the machine in the address
+            ts = [self.summary(t) for t in self.terminals if params.get("all") or t["state"] == "live"]
+            for m in self.machines:
+                if m.get("state", "connected") == "connected":
+                    ts += [{**t, "address": f"{m['name']}/{t['address']}"} for t in self.remote.get(m["name"], [])]
+            return {"terminals": ts, "hidden_finished": 0,
                     "machines": [{"name": m["name"], "state": m.get("state", "connected")} for m in self.machines]}
         if method == "terminal.run":
             self.runs += 1
@@ -266,27 +267,25 @@ def test_reach_on_another_host_found_attach_ssh_and_remote(core, rt):
                                 "labels": {"ctx.key": "gpu-host/claude/r1"}}]
     assert rt.reach([remote(live_status="idle", pid=7)], HERE, {}) == {"gpu-host/claude/r1": "pane"}
     assert rt.where(remote(live_status="idle", pid=7)) == "gpu-host/t7"
-    core.remote["gpu-host"] = []                                                  # its core shows nothing of ours
+    core.remote["gpu-host"] = []                                             # that core shows nothing of ours
     assert rt.reach([remote(live_status="busy", pid=7, tmux_at="ctx:@2.%9")], HERE, {}) == {"gpu-host/claude/r1": "attach"}
     assert rt.reach([remote(live_status="busy", pid=7)], HERE, {}) == {"gpu-host/claude/r1": "remote"}
     assert rt.reach([remote(live_status="ended")], HERE, {}) == {"gpu-host/claude/r1": "ssh"}
     assert rt.reach([remote(live_status="ended", harness="mystery")], HERE, {}) == {"gpu-host/claude/r1": "remote"}
     assert rt.reach([row(key="other/claude/x", host_id="other", live_status="ended")], HERE, {}) == \
         {"other/claude/x": "remote"}
-    # a machine named apart from the host id is still that host (the `machines` mapping)...
-    named = HcRuntime(machines={"gpu-host": "gpu-host"})
-    core.remote["gpu-host"] = [{"address": "t8", "state": "live", "labels": {"ctx.key": "gpu-host/claude/r1"}}]
-    assert named.reach([remote(live_status="idle", pid=7)], HERE, {}) == {"gpu-host/claude/r1": "pane"}
-    # ... and a machine only the [ssh] table names is that host too, by the target it reaches
+    # a machine the core names apart from the host id is this host's too, by the [ssh] target it reaches
     core.machines = [{"name": "elsewhere", "host": "gpu-host", "state": "connected", "target": "gpu-host.internal"}]
     core.remote = {"elsewhere": [{"address": "t9", "state": "live", "labels": {"ctx.key": "gpu-host/claude/r1"}}]}
     assert rt.reach([remote(live_status="idle", pid=7)], HERE, {"gpu-host": "gpu-host.internal"}) == \
         {"gpu-host/claude/r1": "pane"}
     assert rt.where(remote(live_status="idle", pid=7)) == "elsewhere/t9"
+    assert rt.start("gpu-host", "pi", "/tmp", ssh={"gpu-host": "gpu-host.internal"}).endswith("in t1")
+    assert sent(core)["on"] == "elsewhere"                                   # the name this core reaches it by
     core.remote = {}
     assert rt.reach([remote(live_status="ended")], HERE, {"gpu-host": "gpu-host.internal"}) == \
         {"gpu-host/claude/r1": "ssh"}
-    # a machine that isn't connected says nothing about its terminals
+    # a machine that isn't connected lists nothing, so nothing there can be reached but over ssh
     core.machines = [{"name": "gpu-host", "host": "gpu-host", "state": "unreachable", "target": "gpu-host.internal"}]
     assert rt.reach([remote(live_status="ended")], HERE, {}) == {"gpu-host/claude/r1": "ssh"}
 
@@ -457,8 +456,8 @@ def test_tmux_runtime_delegates_and_adds_nothing(monkeypatch):
 
     for fn, ret in [("in_tmux", True), ("reach_all", {"k": "pane"}), ("show", "showing x"), ("new_agent", "new pi"),
                     ("new_remote_agent", "new pi on gpu-host"), ("resume_many", "resumed 2"), ("end_remote", "ended"),
-                    ("on_screen_keys", {"k"}), ("pane_for_session", pane), ("agent_pane", pane), ("end_agent", 1),
-                    ("_this_host", HERE)]:
+                    ("on_screen_keys", {"k"}), ("visible_key", "viewer"), ("pane_for_session", pane),
+                    ("agent_pane", pane), ("end_agent", 1), ("_this_host", HERE)]:
         monkeypatch.setattr(tmux, fn, stub(fn, ret))
     monkeypatch.setattr(tmux, "_is_remote", lambda s, h: (calls.append(("_is_remote", (s, h), {})) or
                                                            s.get("host_id") != HERE))
@@ -467,7 +466,8 @@ def test_tmux_runtime_delegates_and_adds_nothing(monkeypatch):
     assert r.reach([row()], HERE, {"a": "b"}) == {"k": "pane"} and calls[-1][1] == ([row()], HERE, {"a": "b"})
     assert r.open(row(), ssh={"a": "b"}) == "showing x" and calls[-1][2] == {"ssh": {"a": "b"}}
     assert r.resume_many([row()], ssh={}) == "resumed 2" and calls[-1][2] == {"ssh": {}}
-    assert r.visible_keys([row()]) == {"k"} and calls[-1][2] == {"sessions": [row()]}
+    assert r.visible_keys([row()]) == {"k", "viewer"}          # the panes on screen and the viewer's own session
+    assert calls[-2][2] == {"sessions": [row()]} and calls[-1][2] == {"sessions": [row()]}
     assert r.where(row()) == "%7"
     assert r.end(row(), ssh={}) == "ended Widget work"                # its own pane, then tmux.end_agent
     assert calls[-2][:2] == ("agent_pane", ("laptop/claude/sid1",)) and calls[-1][0] == "end_agent"

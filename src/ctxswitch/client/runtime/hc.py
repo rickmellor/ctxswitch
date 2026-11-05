@@ -194,21 +194,12 @@ class HcRuntime:
     # -- terminals and machines -----------------------------------------
 
     def terminals(self, all_: bool = False) -> list[dict]:
-        """Every terminal this core knows, each with the name of the machine it runs on in ``machine`` ("" here)."""
-        out: list[dict] = []
-        for m in self.machines_here():
-            if (m.get("state") or "") != "connected":
-                continue
-            name = m.get("name") or ""
-            try:
-                res = self.rpc("terminal.list", {"all": all_, "on": name})
-            except HcError:
-                continue                                          # a machine that dropped mid-list isn't an error here
-            for t in res.get("terminals") or []:
-                addr = t.get("address") or ""
-                out.append({**t, "machine": name,
-                            "address": addr if addr.startswith(f"{name}/") else f"{name}/{addr}"})
-        out += [{**t, "machine": ""} for t in self.rpc("terminal.list", {"all": all_}).get("terminals") or []]
+        """Every terminal this core knows: its own, then each connected machine's, whose address carries the machine
+        ("gpu-host/t7") — which is also how we know what machine it runs on ("" here)."""
+        out = []
+        for t in self.rpc("terminal.list", {"all": all_}).get("terminals") or []:
+            addr = t.get("address") or ""
+            out.append({**t, "machine": addr.rpartition("/")[0] if "/" in addr else ""})
         return out
 
     def machines_here(self) -> list[dict]:
@@ -217,13 +208,20 @@ class HcRuntime:
         except HcError:
             return []
 
-    def machine_name(self, host_id: str | None, ssh: dict | None = None) -> str:
-        """What this core calls the machine that is ``host_id``: the mapping's name, else the host id itself."""
-        return self.machines.get(host_id or "", host_id or "")
+    def machine_name(self, host_id: str | None, ssh: dict | None = None, ms: list[dict] | None = None) -> str:
+        """What this core calls the machine that is ``host_id``: the mapping's name, else the name of the machine it
+        reaches by that host's ssh target, else the host id itself (the usual setup — a host id is a hostname, hc's
+        default machine name)."""
+        want = self.machines.get(host_id or "", host_id or "")
+        target = tmux.ssh_target(host_id, ssh or {})
+        if want in self.machines or not target:
+            return want
+        return next((m.get("name") or want for m in (self.machines_here() if ms is None else ms)
+                     if m.get("target") == target), want)
 
     def _has_machine(self, host_id: str | None, ssh: dict | None = None, ms: list[dict] | None = None) -> bool:
         """Whether this core has a machine for that host — by name, or by the ssh target its [ssh] entry gives it."""
-        want = self.machine_name(host_id, ssh)
+        want = self.machine_name(host_id, ssh, ms)
         target = tmux.ssh_target(host_id, ssh or {})
         return any(m.get("name") == want or (target and m.get("target") == target)
                    for m in (self.machines_here() if ms is None else ms))
@@ -288,7 +286,7 @@ class HcRuntime:
 
     def _machine_matches(self, t: dict, row: dict, ssh: dict | None = None, ms: list[dict] | None = None) -> bool:
         """Whether the machine holding that terminal is the machine the row's host id names."""
-        want = self.machine_name(row.get("host_id"), ssh)
+        want = self.machine_name(row.get("host_id"), ssh, ms)
         target = tmux.ssh_target(row.get("host_id"), ssh or {})
         name = t.get("machine") or (t.get("address") or "").rpartition("/")[0]
         if not name:
@@ -336,7 +334,7 @@ class HcRuntime:
                 return f"no such directory: {cwd}"
         elif not self._has_machine(host, ssh):
             return f"no herdr-core machine for {host} (hc machine add)"
-        addr = self._run(argv, {"key": key, "host_id": host, "cwd": cwd, "title": f"{harness}-{host}"})
+        addr = self._run(argv, {"key": key, "host_id": host, "cwd": cwd, "title": f"{harness}-{host}"}, ssh=ssh)
         return f"new {harness} on {host} in {addr}"
 
     def resume_many(self, rows: list[dict], *, ssh: dict) -> str:

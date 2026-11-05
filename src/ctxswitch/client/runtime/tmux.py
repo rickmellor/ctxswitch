@@ -39,7 +39,10 @@ class TmuxRuntime:
         return f"ended {tmux._short_title(row)}" if n else "its agent had already exited"
 
     def visible_keys(self, rows: list[dict]) -> set[str]:
-        return tmux.on_screen_keys(sessions=rows)
+        """What's on a screen now: every pane someone can see, plus the viewer pane's own session."""
+        out = tmux.on_screen_keys(sessions=rows)
+        mine = tmux.visible_key(sessions=rows)
+        return out | {mine} if mine else out
 
     def where(self, row: dict) -> str | None:
         """Its pane in this tmux: the tag first, then the pid walk (tmux.pane_for_session)."""
