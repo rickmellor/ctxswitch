@@ -85,5 +85,18 @@ state `~/.local/state/herdr-core/default/` (`terminals.json`, `core.json`, scree
 had to be removed: `hc` can't chown there), so `hc server start` belongs in a user systemd unit beside
 `ctx-collector`.
 
-**S1 / S4 (Windows app + `wsl.exe` machine; a mod fetching the hub):** run by hand on the laptop; results below when
-done.
+**S4 — a mod reaches the hub from the Windows app.** herdr-app 0.1.13 and herdr-core 0.1.18 unpacked by hand into
+`%LOCALAPPDATA%\Programs\{herdr-app,herdr-core}` (the official installers need no admin either: they only write
+there, the user PATH and a Start-menu shortcut; the archives are plain tar.gz/zip, checksums in
+`releases.herdr.dev/{app,core}/latest.json`). The app home is `%USERPROFILE%\.config\herdr-app` on Windows too.
+A 30-line mod (`mods/ctx-hello`: `readTextFile(appHome()+"/ctx.json")` for the hub URL + token, `fetch(/v1/health)`
+with the bearer header every 2 s, `cx.notify()`) passed `herdr-app check`, opened with `herdr-app do tab.new --mod
+ctx-hello`, and showed `hub ok · change 90017 · hosts 3 · auth true`. `herdr-app shot <png>` gives a window
+screenshot from the CLI, so the app can be checked without looking at it. A mod folder created BEFORE the app's first
+start was not docked into the sidebar by its `mod.json` place; a layout block (or tab.new/pane.split) places it.
+Starting the Windows core through WSL interop (`herdr-core.exe server start` from WSL) left a process that never
+listened; started from a Windows terminal it worked at once.
+
+**S1 — WSL as an hc machine of the Windows core:** pending `hc server start` as the operator in WSL (a core started
+by this sandbox runs as root and is unusable), then `herdr-core.exe machine add --name wsl --via "wsl.exe -e
+/home/rick/.local/bin/hc connect"`.
