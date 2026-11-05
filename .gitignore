@@ -3,3 +3,5 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 spikes/out/
+herdr/mods/*/gpui-kit.d.ts
+herdr/mods/*/jsconfig.json

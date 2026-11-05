@@ -127,6 +127,17 @@ export function endPlan(row, all, cfg) {
 }
 
 /**
+ * Whether a row may be messaged (`m`) or answered (`a`) at all, with the hub's own reason why not — the same
+ * rules messageRequest applies, without the text. `a` needs a `reply_target`; without one it says `reply_why`.
+ */
+export function sendCheck(row, mode = "m") {
+  const r = row ?? {};
+  if (mode === "a" && !r.reply_target) return { refuse: r.reply_why || "nothing to answer" };
+  if (typeof r.can_message === "string" && r.can_message) return { refuse: r.can_message };
+  return { refuse: null };
+}
+
+/**
  * `m` / `a`: the POST to make, or the hub's own reason not to.
  * `m` refuses on `can_message`; `a` refuses without a `reply_target` and says `reply_why` — the hub decided both,
  * this only repeats them. `a` answers with the target's ref, which is what makes it an answer and not a nudge.
@@ -135,8 +146,8 @@ export function messageRequest(row, text, cfg, mode = "m") {
   const r = row ?? {};
   const body = String(text ?? "");
   if (!body.trim()) return { refuse: "nothing to send" };
-  if (mode === "a" && !r.reply_target) return { refuse: r.reply_why || "nothing to answer" };
-  if (typeof r.can_message === "string" && r.can_message) return { refuse: r.can_message };
+  const check = sendCheck(r, mode);
+  if (check.refuse) return check;
   const out = { path: `/v1/sessions/${r.key}/messages`, body: { body, from_host: cfg?.host_id ?? null } };
   if (mode === "a") out.body.answers = r.reply_target.ref;
   return out;

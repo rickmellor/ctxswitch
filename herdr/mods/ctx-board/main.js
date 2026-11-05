@@ -9,8 +9,8 @@ import {
 } from "herdr";
 import { rowParts, headerLines, detailSections, detailTitle, toneColor, hasBold, tzOffset } from "./view.js";
 import {
-  openPlan, startPlan, endPlan, messageRequest, retireRequest, terminalFor, paneFor, newestInSpace, parseCommand,
-  moveSelection, boardPath, launchPath, hostChoices, harnessChoices, spaceArgs,
+  openPlan, startPlan, endPlan, messageRequest, sendCheck, retireRequest, terminalFor, paneFor, newestInSpace, parseCommand,
+  moveSelection, boardPath, launchPath, hostChoices, harnessChoices, hostCycle, spaceArgs,
 } from "./actions.js";
 
 const POLL_MS = 2000;
@@ -290,7 +290,7 @@ export default class CtxBoard extends View {
   compose(mode, key, cx) {
     const row = this.row(key);
     if (!row) return;
-    const ask = messageRequest(row, " ", this.cfg, mode);
+    const ask = sendCheck(row, mode);
     if (ask.refuse) {
       notify({ title: mode === "a" ? "answer" : "message", body: ask.refuse, level: "warning" });
       return;
@@ -302,8 +302,20 @@ export default class CtxBoard extends View {
   // `i`: the session's standing instructions, oldest first; a click retires that one.
   retire(key, cx) {
     const row = this.row(key);
-    const instructions = this.detail?.instructions ?? [];
     if (!row) return;
+    if (this.detail?.key === key) { this.retireFrom(row, this.detail.instructions ?? [], cx); return; }
+    cx.spawn(async (cx) => {                                        // the card isn't in yet: ask for it, then list
+      try {
+        if (await this.config()) this.detail = await this.get(this.detailPath(key));
+        this.retireFrom(row, this.detail?.instructions ?? [], cx);
+      } catch (e) {
+        this.toast(e);
+      }
+      cx.notify();
+    });
+  }
+
+  retireFrom(row, instructions, cx) {
     if (!instructions.length) {
       notify({ title: "ctx", body: "no standing instructions", level: "info" });
       return;
@@ -366,6 +378,7 @@ export default class CtxBoard extends View {
     const a = this.action ?? {};
     if (!value) return;                                             // a digit past the end of the list
     if (a.kind === "start") {
+      if (!this.chain) return;
       if (!this.chain.host) this.chain.host = value.host;
       else { this.chain.harness = value.harness; this.chain.profile = value.profile ?? null; }
       cx?.notify();
@@ -505,20 +518,24 @@ export default class CtxBoard extends View {
   // The popup this mod draws as an overlay: a titled list of choices, or one text field.
   popupView(t) {
     const a = this.action ?? {};
-    if (this.overlayIsText()) return this.textOverlay(t, a.kind === "send" ? { title: this.overlayTitle() } : { title: this.overlayTitle(), value: "~" });
+    if (this.overlayIsText()) {
+      return this.textOverlay(t, { title: this.overlayTitle(), value: a.kind === "send" ? "" : "~" });
+    }
     const list = this.overlayChoices();
+    const c = this.chain ?? {};
+    const empty = a.kind === "start" && c.host ? `${c.host} says it has nothing to start` : "nothing to choose here";
     return v_flex().id("ctx-pick").w_full().h_full().min_h(0).p(12).gap(4).bg(t.popover).text_size(12.5)
       .child(h_flex().pb(4).items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(this.overlayTitle()))
         .child(div().text_size(10.5).text_color(t.dim).child("Esc")))
       .child(v_flex().id("ctx-pick-list").flex_1().min_h(0).gap(1).overflow_y_scrollbar()
         .children(list.length
-          ? list.map((c, i) => h_flex().id(`ctx-pick-${i}`).h(28).px(8).rounded(6).gap(8).items_center()
+          ? list.map((ch, i) => h_flex().id(`ctx-pick-${i}`).h(28).px(8).rounded(6).gap(8).items_center()
             .hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => this.pick(c.value, cx))
+            .on_click((_e, cx) => this.pick(ch.value, cx))
             .child(div().w(14).flex_none().text_size(10.5).text_color(t.dim).child(i < 9 ? String(i + 1) : ""))
-            .child(div().flex_1().min_w(0).truncate().child(c.label ?? "")))
-          : [div().p(8).text_size(11.5).text_color(t.dim).child("nothing to choose here")]));
+            .child(div().flex_1().min_w(0).truncate().child(ch.label ?? "")))
+          : [div().p(8).text_size(11.5).text_color(t.dim).child(empty)]));
   }
 
   textOverlay(t, a) {

@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
-  machineFor, terminalFor, paneFor, newestInSpace, spaceArgs, openPlan, startPlan, endPlan, messageRequest,
+  machineFor, terminalFor, paneFor, newestInSpace, spaceArgs, openPlan, startPlan, endPlan, messageRequest, sendCheck,
   retireRequest, hostCycle, boardPath, launchPath, hostChoices, harnessChoices, parseCommand, moveSelection,
 } from "../actions.js";
 
@@ -224,6 +224,19 @@ test("messageRequest: the refusals are the hub's reasons, said before anything i
     { refuse: "ended" });
   assert.deepEqual(messageRequest(row({ can_message: null }), "hi", CFG),
     { path: "/v1/sessions/laptop/claude/7f3a91c2/messages", body: { body: "hi", from_host: "laptop" } });
+});
+
+test("sendCheck: the same no, asked before there is any text to judge", () => {
+  assert.deepEqual(sendCheck(row()), { refuse: null });
+  assert.deepEqual(sendCheck(row({ can_message: "the session ended" })), { refuse: "the session ended" });
+  assert.deepEqual(sendCheck(row({ reply_target: { ref: "1:plain" } }), "a"), { refuse: null });
+  assert.deepEqual(sendCheck(row({ reply_why: "nothing to answer: it isn't asking you anything" }), "a"),
+    { refuse: "nothing to answer: it isn't asking you anything" });
+  assert.deepEqual(sendCheck(row(), "a"), { refuse: "nothing to answer" });
+  // the check is what the mod asks up front; messageRequest still refuses an empty body on its own
+  assert.deepEqual(messageRequest(row(), " ", CFG), { refuse: "nothing to send" });
+  assert.deepEqual(sendCheck(row(), "m"), { refuse: null });
+  assert.deepEqual(sendCheck(null, "a"), { refuse: "nothing to answer" });
 });
 
 // ── retire (i) ────────────────────────────────────────────────────────────────────────────────────────

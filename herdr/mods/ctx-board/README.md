@@ -89,7 +89,7 @@ one line — `hub unreachable: …` — and the board keeps its shape.
 
 - `main.js` — the `View`: config, polling, state, popups, and the only place that touches gpui-kit.
 - `actions.js` — the decisions as plain data: `terminalFor`, `openPlan`, `startPlan`, `endPlan`,
-  `messageRequest`, `retireRequest`, `hostCycle`, `boardPath`, `launchPath`, `hostChoices`,
+  `messageRequest`, `sendCheck`, `retireRequest`, `hostCycle`, `boardPath`, `launchPath`, `hostChoices`,
   `harnessChoices`, `spaceArgs`, `parseCommand`, `moveSelection`. No gpui-kit, no `herdr`, no fetch.
 - `view.js` — the text builders (`age`, `money`, `tzOffset`, `rowParts`, `headerLines`,
   `detailSections`, `detailTitle`, `toneColor`), likewise plain strings and `{text, tone}` parts.
