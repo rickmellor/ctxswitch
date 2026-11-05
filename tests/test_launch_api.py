@@ -293,3 +293,17 @@ def test_the_default_account_is_matched_by_the_paths_shape_not_the_hubs_home(mon
     assert L._profile_of([default, personal], "/home/dev/.claude/projects/-home-dev-x/s1.jsonl") is default
     assert L._profile_of([default, personal], "/home/dev/.claude-max/projects/-home-dev-x/s2.jsonl") is personal
     assert L._owns(default, None) is False
+
+
+def test_v1_hosts_carries_what_each_host_published(tmp_path):
+    """A front end that isn't Python reads the profiles and installed agents from /v1/hosts, so they must be there."""
+    from starlette.testclient import TestClient
+    from ctxswitch.hub.api import Hub
+    from ctxswitch.hub.store import Store
+    store = Store(tmp_path / "h.db")
+    store.host_seen("gpu-host", {"profiles": [{"name": "bedrock", "argv": ["claude"]}], "agents": {"claude": True, "pi": False}, "hc": True})
+    store.host_seen("devbox")
+    c = TestClient(Hub(store, token="t").app(), headers={"Authorization": "Bearer t"})
+    rows = {h["host_id"]: h for h in c.get("/v1/hosts").json()}
+    assert rows["gpu-host"]["info"]["profiles"][0]["name"] == "bedrock" and rows["gpu-host"]["info"]["hc"] is True
+    assert rows["devbox"]["info"] is None and rows["devbox"]["pool"] is None

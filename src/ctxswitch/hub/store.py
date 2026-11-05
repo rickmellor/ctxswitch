@@ -601,8 +601,14 @@ class Store:
         """Every host the hub has heard from, each with the latest it said about its local-pool switch (``pool``,
         null on a host that never reported one)."""
         pools = self.host_pools()
-        return [dict(r) | {"pool": pools.get(r["host_id"])}
-                for r in self.db.execute("SELECT host_id,last_seen FROM hosts ORDER BY host_id")]
+        out = []
+        for r in self.db.execute("SELECT host_id,last_seen,info FROM hosts ORDER BY host_id"):
+            try:
+                info = json.loads(r["info"]) if r["info"] else None      # what the collector said of its host:
+            except (TypeError, ValueError):                              # platform, profiles, agents, hc (hub/launch.py)
+                info = None
+            out.append({"host_id": r["host_id"], "last_seen": r["last_seen"], "info": info, "pool": pools.get(r["host_id"])})
+        return out
 
     def children(self, key: str) -> list[str]:
         """Keys of the sessions this one launched (pool jobs), newest ``started_at`` first."""
