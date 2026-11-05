@@ -366,8 +366,8 @@ def test_install_herdr_copies_the_mod_and_writes_ctx_json(home, monkeypatch):
     assert json.loads(p.read_text()) == {"hub_url": cfg.hub.url, "token": "t0k", "host_id": "laptop",
                                          "machines": {"devbox": "devbox", "gpu-host": "gpu-host", "laptop": None}}
     assert oct(p.stat().st_mode & 0o777) == "0o600"                     # it holds the hub token
-    assert "herdr: hc machine add --name devbox --via 'ssh -t me@devbox.lan'" in lines   # [ssh] hosts become machines
-    assert "herdr: hc machine add --name gpu-host --via 'ssh -t gpu-host'" in lines
+    assert "herdr: hc machine add --name devbox --via 'ssh me@devbox.lan'" in lines   # [ssh] hosts become machines
+    assert "herdr: hc machine add --name gpu-host --via 'ssh gpu-host'" in lines
     assert not any("blocked" in ln for ln in lines)                     # "" = no route, so no machine
     assert any("`hc server start`" in ln for ln in lines)               # the core starts from a clean login shell
     assert any("herdr-app not found" in ln for ln in lines)             # nothing could check the mod
@@ -515,18 +515,22 @@ def test_doctor_herdr_line(home, monkeypatch):
     assert c.status == "!" and c.detail.endswith("ctx.json missing")
 
 
-def test_hc_core_ok_runs_hc_server_status(home, monkeypatch):
-    calls = []
-    monkeypatch.setattr(ins, "hc_bin", lambda which=None: "/usr/local/bin/hc")
+def test_hc_core_ok_talks_to_the_socket_never_the_cli(home, tmp_path, monkeypatch):
+    """`hc server status` would start a core with this process's environment; the check only ever opens the socket."""
+    import json
+    import socket
+    import threading
+    monkeypatch.setattr(ins.subprocess, "run", lambda *a, **k: pytest.fail("hc_core_ok ran a subprocess"))
+    sock = tmp_path / "core.sock"
+    assert not ins.hc_core_ok(sock=str(sock))                       # no socket file: no core, and nothing started
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); srv.bind(str(sock)); srv.listen(1)
 
-    def run(argv, **kw):
-        calls.append((argv, kw.get("timeout")))
-        return type("R", (), {"returncode": 0})()
-    assert ins.hc_core_ok(run=run) and calls == [(["/usr/local/bin/hc", "server", "status", "--json"], 3)]
-    calls.clear()
-
-    def boom(argv, **kw):
-        raise OSError("no hc")
-    assert not ins.hc_core_ok(run=boom)
-    monkeypatch.setattr(ins, "hc_bin", lambda which=None: None)
-    assert not ins.hc_core_ok(run=run) and calls == []
+    def answer():
+        c, _ = srv.accept()
+        with c, c.makefile("rb") as f:
+            req = json.loads(f.readline())
+            c.sendall((json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {"machines": []}}) + "\n").encode())
+    t = threading.Thread(target=answer, daemon=True); t.start()
+    assert ins.hc_core_ok(sock=str(sock))
+    t.join(3); srv.close()
+    assert not ins.hc_core_ok(sock=str(tmp_path / "dead.sock"))

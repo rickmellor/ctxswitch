@@ -573,7 +573,7 @@ def herdr_machine_lines(cfg: Config) -> list[str]:
         target = ssh_target(host, cfg.ssh)
         if not target:
             continue
-        out.append(f"hc machine add --name {shlex.quote(host)} --via {shlex.quote(f'ssh -t {target}')}")
+        out.append(f"hc machine add --name {shlex.quote(host)} --via {shlex.quote(f'ssh {target}')}")
     return out
 
 
@@ -679,16 +679,19 @@ def hc_app_exe(which=shutil.which) -> str | None:
     return find_tool("herdr-app", which)
 
 
-def hc_core_ok(which=None, run=subprocess.run) -> bool:
-    """herdr-core answering on this host: `hc server status --json` exits 0 (a core that isn't running is normal —
-    it starts from a clean login shell, see install_herdr)."""
-    hc = hc_bin(which or shutil.which)
-    if hc is None:
+def hc_core_ok(which=None, run=None, *, sock: str | None = None) -> bool:
+    """herdr-core answering on this host: its socket exists and takes a call. Never through the `hc` CLI — every
+    hc client call (even `hc server status`) starts a default core when none runs, with this process's environment,
+    for the core's lifetime; a doctor run from inside an agent would leave that core behind."""
+    from ctxswitch.client.runtime.hc import HcError, HcRuntime, _Socket
+    rt = HcRuntime(sock=sock)
+    p = rt.path()
+    if not os.path.exists(p):
         return False
     try:
-        return run([hc, "server", "status", "--json"], capture_output=True, text=True, timeout=3,
-                   stdin=subprocess.DEVNULL).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
+        _Socket(p, 3).call("machine.list", {})
+        return True
+    except (HcError, OSError):
         return False
 
 
@@ -736,7 +739,7 @@ def herdr_check(which=shutil.which, run=subprocess.run) -> Check:
         facts.append("hc missing"); bad = True
     else:
         ok = hc_core_ok(which, run)
-        facts.append("core ok" if ok else "core down"); bad = bad or not ok
+        facts.append("core ok" if ok else "core down (hc server start, from a plain terminal)"); bad = bad or not ok
     facts.append("app ok" if hc_app_exe(which) else "app missing")
     src, dest = herdr_mod_src(), herdr_mod_dir()
     if not dest.is_dir():
