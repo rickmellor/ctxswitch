@@ -333,7 +333,7 @@ claude_sessions_dir = "{tmp_path}/claude/sessions"
 name = "bedrock"
 [[claude_profiles]]
 name = "max"
-command = ["/usr/local/bin/detribble"]
+command = ["/usr/local/bin/claude-wrapper"]
 config_dir = "{maxdir}"
 unset = ["CLAUDE_CODE_USE_BEDROCK", "AWS_PROFILE"]
 env = {{ FOO = "1" }}
@@ -343,7 +343,7 @@ env = {{ FOO = "1" }}
     assert names == ["bedrock", "max"]
     assert cfg.claude_profiles[0].argv() == ["claude"]
     assert cfg.claude_profiles[1].argv() == ["env", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "AWS_PROFILE", "FOO=1",
-                                             f"CLAUDE_CONFIG_DIR={maxdir}", "/usr/local/bin/detribble"]
+                                             f"CLAUDE_CONFIG_DIR={maxdir}", "/usr/local/bin/claude-wrapper"]
     # the profile's transcripts and registry are watched like the default ones
     assert cfg.collector.claude_roots == [f"{tmp_path}/claude/projects", f"{maxdir}/projects"]
     assert cfg.claude_sessions_dirs() == [tmp_path / "claude" / "sessions", maxdir / "sessions"]
@@ -351,7 +351,7 @@ env = {{ FOO = "1" }}
     corp = {"harness": "claude", "session_id": "s1", "meta": {"transcript_path": f"{tmp_path}/claude/projects/x/s1.jsonl"}}
     personal = {"harness": "claude", "session_id": "s2", "meta": {"transcript_path": f"{maxdir}/projects/x/s2.jsonl"}}
     assert tmux.resume_argv(corp, cfg.claude_profiles) == ["claude", "--resume", "s1"]
-    assert tmux.resume_argv(personal, cfg.claude_profiles)[-3:] == ["/usr/local/bin/detribble", "--resume", "s2"]
+    assert tmux.resume_argv(personal, cfg.claude_profiles)[-3:] == ["/usr/local/bin/claude-wrapper", "--resume", "s2"]
     assert tmux.resume_argv(personal, cfg.claude_profiles)[0] == "env"
     assert launch.resume_command(personal, cfg.claude_profiles) == tmux.resume_argv(personal, cfg.claude_profiles)
     # over ssh the remote's own config decides: a plain `claude --resume`
@@ -434,13 +434,13 @@ def test_a_sessions_own_host_names_its_account(tmp_path):
     only_max = [ClaudeProfile(name="max", model="claude-fable-5-1")]
     assert profiles_matter(only_max) and not profiles_matter([ClaudeProfile()])
     cfg = CollectorConfig(claude_roots=[str(tmp_path / "claude" / "projects")], pi_roots=[], claude_win_roots=[])
-    ix = Indexer(cfg, "scrub", CollectorState(tmp_path / "c.db"), lambda k, p: None, only_max)
+    ix = Indexer(cfg, "devbox", CollectorState(tmp_path / "c.db"), lambda k, p: None, only_max)
     p = tmp_path / "claude" / "projects" / "-home-rick" / "s9.jsonl"
     assert ix._profile("claude", p) == "max" and ix._profile("pi", p) == ""
-    assert Indexer(cfg, "scrub", CollectorState(tmp_path / "d.db"), lambda k, p: None)._profile("claude", p) == ""
-    # the laptop's board shows scrub's session as max, whatever the laptop's own profiles would guess from the path
+    assert Indexer(cfg, "devbox", CollectorState(tmp_path / "d.db"), lambda k, p: None)._profile("claude", p) == ""
+    # the laptop's board shows devbox's session as max, whatever the laptop's own profiles would guess from the path
     laptop = [ClaudeProfile(name="bedrock"), ClaudeProfile(name="max", config_dir=str(tmp_path / "cm"))]
-    remote = {"harness": "claude", "host_id": "scrub", "meta": {"transcript_path": "/home/rick/.claude/projects/-home-rick/s9.jsonl", "profile": "max"}}
+    remote = {"harness": "claude", "host_id": "devbox", "meta": {"transcript_path": "/home/rick/.claude/projects/-home-rick/s9.jsonl", "profile": "max"}}
     assert fmt.harness_label(remote, laptop) == "max"
     unnamed = {**remote, "meta": {"transcript_path": remote["meta"]["transcript_path"]}}
     assert fmt.harness_label(unnamed, laptop) == "bedrock"          # no name from its host: the local guess

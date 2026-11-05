@@ -22,7 +22,7 @@ from ctxswitch.common.config import Config
 
 NOW = datetime(2026, 10, 30, 12, 0, 0, tzinfo=timezone.utc)
 HOME = "/home/me"
-K1, K2, K3 = "laptop/claude/aaaa1111", "specul8/pi/bbbb2222", "specul8/claude/cccc3333"
+K1, K2, K3 = "laptop/claude/aaaa1111", "gpu-host/pi/bbbb2222", "gpu-host/claude/cccc3333"
 OPTS = [("claude · bedrock", "claude", "bedrock"), ("claude · max", "claude", "max"), ("pi", "pi", None),
         ("antigravity", "agy", None), ("shell", "shell", None)]
 
@@ -148,7 +148,7 @@ AGENT = ["claude", "--session-id", "x'1"]
 
 def test_the_remote_script_makes_a_window_in_the_ctx_session_that_is_already_up(tmp_path):
     cwd = _dir_with_a_quote(tmp_path)
-    script = tmux.remote_script("specul8/claude", cwd, AGENT, K3)
+    script = tmux.remote_script("gpu-host/claude", cwd, AGENT, K3)
     _shn(script)
     for want in ("if tmux has-session -t ctx 2>/dev/null; then", "tmux new-window -d -t ctx:", "tmux new-session -d -s ctx",
                  '-c "$d"', "-P -F '#{window_id}'", f"@ctx_key {K3}", "exec tmux new-session -t ctx -s ctxview-"):
@@ -171,7 +171,7 @@ def test_the_remote_script_makes_a_window_in_the_ctx_session_that_is_already_up(
 
 def test_the_remote_script_makes_the_ctx_session_when_there_isn_t_one_yet(tmp_path):
     cwd = _dir_with_a_quote(tmp_path)
-    script = tmux.remote_script("specul8/claude", cwd, AGENT, None)
+    script = tmux.remote_script("gpu-host/claude", cwd, AGENT, None)
     _shn(script)
     fake = _fake_tmux(tmp_path, tmp_path / "nothing-here")       # has-session fails, so ctx gets made
     calls = _run_script(script, fake, tmp_path)
@@ -196,8 +196,8 @@ def test_the_view_command_shows_one_window_of_a_running_session_without_taking_o
 
 def test_remote_argv_hands_the_script_to_the_remote_shell_as_one_argument():
     script = tmux.view_command("ctx:@3.%7")
-    argv = tmux.remote_argv("rick@specul8", script)
-    assert argv[:2] == ["ssh", "-t"] and "rick@specul8" in argv and argv[-3:] == ["sh", "-c", shlex.quote(script)]
+    argv = tmux.remote_argv("me@gpu-host", script)
+    assert argv[:2] == ["ssh", "-t"] and "me@gpu-host" in argv and argv[-3:] == ["sh", "-c", shlex.quote(script)]
     assert ";" not in " ".join(argv[:-1])               # the script is one argument: none of it runs on this side
 
 
@@ -207,27 +207,27 @@ async def test_n_asks_which_host_when_another_one_is_reachable(monkeypatch):
     monkeypatch.setattr(tui.tmux, "new_remote_agent",
                         lambda h, a, c, ssh=None: started.append((h, a, c)) or f"new {a} on {h}")
     app = _board(monkeypatch, [_sess(K1, status="idle", ended=False)], reach={K1: "pane"},
-                 ssh={"specul8": "rick@specul8"}, hosts=["laptop", "specul8"])
+                 ssh={"gpu-host": "me@gpu-host"}, hosts=["laptop", "gpu-host"])
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(0.5)
         await pilot.press("n"); await pilot.pause(0.4)
         assert isinstance(app.screen, tui.Picker)
-        assert [o[0] for o in app.screen.options] == ["laptop (here)", "specul8"]      # this host first
+        assert [o[0] for o in app.screen.options] == ["laptop (here)", "gpu-host"]      # this host first
         _key_press(app.screen, "2"); await pilot.pause(0.4)
         assert [o[1] for o in app.screen.options] == ["claude", "pi", "shell"]          # its profiles are its own
         _key_press(app.screen, "1"); await pilot.pause(0.4)
         f = app.query_one("#filter")
-        assert app.input_mode == "new@specul8:claude:" and f.value == "~" and f.visible
+        assert app.input_mode == "new@gpu-host:claude:" and f.value == "~" and f.visible
         tui.CtxApp.on_input_submitted(app, type("E", (), {"value": "~"})())
         await pilot.pause(1.2)
-        assert started == [("specul8", "claude", "~")] and app.input_mode == "filter"
+        assert started == [("gpu-host", "claude", "~")] and app.input_mode == "filter"
 
 
 async def test_n_on_this_host_goes_on_to_the_local_picker(monkeypatch):
     started = []
     monkeypatch.setattr(tui.tmux, "new_agent", lambda h, c, **k: started.append((h, c)) or f"new {h}")
     app = _board(monkeypatch, [_sess(K1, status="idle", ended=False, cwd="/x")], reach={K1: "pane"},
-                 ssh={"specul8": "rick@specul8"}, hosts=["laptop", "specul8"])
+                 ssh={"gpu-host": "me@gpu-host"}, hosts=["laptop", "gpu-host"])
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(0.5)
         await pilot.press("n"); await pilot.pause(0.4)
@@ -242,7 +242,7 @@ async def test_n_on_this_host_goes_on_to_the_local_picker(monkeypatch):
 
 async def test_n_with_no_other_host_to_pick_goes_straight_to_today_s_picker(monkeypatch):
     app = _board(monkeypatch, [_sess(K1, status="idle", ended=False)], reach={K1: "pane"},
-                 ssh={"specul8": "rick@specul8"}, hosts=["laptop"])
+                 ssh={"gpu-host": "me@gpu-host"}, hosts=["laptop"])
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(0.5)
         await pilot.press("n"); await pilot.pause(0.4)
@@ -251,7 +251,7 @@ async def test_n_with_no_other_host_to_pick_goes_straight_to_today_s_picker(monk
 
 
 def test_only_hosts_an_ssh_route_reaches_are_offered(monkeypatch):
-    app = _board(monkeypatch, [], ssh={"specul8": "", "gpu": "me@gpu"}, hosts=["laptop", "specul8", "gpu", "laptop"])
+    app = _board(monkeypatch, [], ssh={"gpu-host": "", "gpu": "me@gpu"}, hosts=["laptop", "gpu-host", "gpu", "laptop"])
     assert app._remote_hosts() == ["gpu"]                     # "" = not reachable from here; no repeats, no this host
 
 
@@ -259,31 +259,31 @@ def test_only_hosts_an_ssh_route_reaches_are_offered(monkeypatch):
 async def test_h_cycles_the_start_screen_onto_another_host(monkeypatch):
     seen: list = []
     app = _board(monkeypatch, [_sess(K1, status="idle", ended=False, cwd="/x")], reach={K1: "pane"},
-                 ssh={"specul8": "rick@specul8"}, hosts=["laptop", "specul8"])
+                 ssh={"gpu-host": "me@gpu-host"}, hosts=["laptop", "gpu-host"])
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(0.5)
-        screen = tui.StartScreen(OPTS, [_sess(K1, cwd="/x")], {K1: "resume"}, NOW, hosts=["laptop", "specul8"])
+        screen = tui.StartScreen(OPTS, [_sess(K1, cwd="/x")], {K1: "resume"}, NOW, hosts=["laptop", "gpu-host"])
         app.push_screen(screen, lambda r: seen.append(r))
         await pilot.pause(0.4)
         assert screen.body().plain.splitlines()[0] == "START on laptop   h: another host"
         await pilot.press("h"); await pilot.pause(0.4)
-        assert screen.host == "specul8"
-        assert screen.body().plain.splitlines()[0] == "START on specul8   h: another host"
+        assert screen.host == "gpu-host"
+        assert screen.body().plain.splitlines()[0] == "START on gpu-host   h: another host"
         assert "1 claude   2 pi   3 shell" in screen.body().plain          # its profiles are its own, so no accounts
         await pilot.press("h"); await pilot.pause(0.4)
         assert screen.host is None and "1 claude · bedrock" in screen.body().plain
         await pilot.press("h"); await pilot.pause(0.4)
         await pilot.press("1"); await pilot.pause(0.4)
-        assert seen == [("new", "claude", None, None, "specul8")]          # no profile, no directory of ours to carry
+        assert seen == [("new", "claude", None, None, "gpu-host")]          # no profile, no directory of ours to carry
         app._started(seen[0])
         await pilot.pause(0.4)
-        assert app.input_mode == "new@specul8:claude:" and app.query_one("#filter").value == "~"
+        assert app.input_mode == "new@gpu-host:claude:" and app.query_one("#filter").value == "~"
 
 
 async def test_a_digit_on_this_host_still_carries_the_row_s_directory(monkeypatch):
     seen: list = []
     app = _board(monkeypatch, [_sess(K1, status="idle", ended=False, cwd="/x")], reach={K1: "pane"},
-                 hosts=["laptop", "specul8"], ssh={"specul8": "rick@specul8"})
+                 hosts=["laptop", "gpu-host"], ssh={"gpu-host": "me@gpu-host"})
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(0.5)
         screen = tui.StartScreen(OPTS, [_sess(K1, cwd="/x")], {K1: "resume"}, NOW, hosts=["laptop"])
@@ -299,32 +299,32 @@ async def test_a_digit_on_this_host_still_carries_the_row_s_directory(monkeypatc
 # -- k on a session running in a tmux on its own host --------------------------------------------------------------
 async def test_k_ends_a_remote_session_on_its_own_host(monkeypatch):
     ended, locals_, msgs = [], [], []
-    monkeypatch.setattr(tui.tmux, "end_remote", lambda s, ssh=None: ended.append((s["key"], ssh)) or "ended on specul8")
+    monkeypatch.setattr(tui.tmux, "end_remote", lambda s, ssh=None: ended.append((s["key"], ssh)) or "ended on gpu-host")
     monkeypatch.setattr(tui.tmux, "agent_pane", lambda key, ps=None: locals_.append(key) or None)
     monkeypatch.setattr(tui.tmux, "end_agent", lambda p: 1)
     app = _board(monkeypatch, [_sess(K3, status="idle", ended=False)], in_tmux=True,
-                 reach={K3: "attach"}, ssh={"specul8": "rick@specul8"})
+                 reach={K3: "attach"}, ssh={"gpu-host": "me@gpu-host"})
     monkeypatch.setattr(app, "notify", lambda msg, *a, **k: msgs.append(msg))
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(0.5)
         app.select_key(K3)
         await pilot.press("k"); await pilot.pause(0.4)
-        assert isinstance(app.screen, tui.Confirm) and "on specul8" in app.screen.prompt
+        assert isinstance(app.screen, tui.Confirm) and "on gpu-host" in app.screen.prompt
         await pilot.press("n"); await pilot.pause(0.4)
         assert ended == [] and any("cancelled" in m for m in msgs)         # a y is needed, as everywhere
         await pilot.press("k"); await pilot.pause(0.4)
         await pilot.press("y"); await pilot.pause(1.2)
-        assert ended == [(K3, app.cfg.ssh)] and "ended on specul8" in msgs
+        assert ended == [(K3, app.cfg.ssh)] and "ended on gpu-host" in msgs
 
 
 async def test_k_on_a_remote_session_with_a_local_window_tagged_to_it_ends_it_there_too(monkeypatch):
-    pane = tmux.Pane("%7", "@3", "specul8/claude", 2, 9, K3, "ctx", "agent", cmd="ssh")
+    pane = tmux.Pane("%7", "@3", "gpu-host/claude", 2, 9, K3, "ctx", "agent", cmd="ssh")
     ended, signalled = [], []
-    monkeypatch.setattr(tui.tmux, "end_remote", lambda s, ssh=None: ended.append(s["key"]) or "ended on specul8")
+    monkeypatch.setattr(tui.tmux, "end_remote", lambda s, ssh=None: ended.append(s["key"]) or "ended on gpu-host")
     monkeypatch.setattr(tui.tmux, "agent_pane", lambda key, ps=None: pane if key == K3 else None)
     monkeypatch.setattr(tui.tmux, "end_agent", lambda p: signalled.append(p.id) or 1)
     app = _board(monkeypatch, [_sess(K3, status="idle", ended=False)], in_tmux=True,
-                 reach={K3: "pane"}, ssh={"specul8": "rick@specul8"})
+                 reach={K3: "pane"}, ssh={"gpu-host": "me@gpu-host"})
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(0.5)
         app.select_key(K3)
@@ -350,7 +350,7 @@ async def test_k_on_a_local_session_is_unchanged(monkeypatch):
 
 async def test_k_on_an_ended_remote_session_still_says_it_isn_t_running(monkeypatch):
     said = []
-    app = _board(monkeypatch, [_sess(K3)], in_tmux=True, reach={K3: "ssh"}, ssh={"specul8": "rick@specul8"})
+    app = _board(monkeypatch, [_sess(K3)], in_tmux=True, reach={K3: "ssh"}, ssh={"gpu-host": "me@gpu-host"})
     monkeypatch.setattr(tui.tmux, "agent_pane", lambda key, ps=None: None)
     monkeypatch.setattr(app, "notify", lambda *a, **k: said.append(a[0] if a else ""))
     async with app.run_test(size=(70, 30)) as pilot:
@@ -380,9 +380,9 @@ def test_the_remote_helpers_are_the_contract_the_board_builds_on():
     for name in ("remote_script", "view_command", "remote_argv", "new_remote_agent", "end_remote", "_remote_view",
                  "_is_remote", "ssh_target"):
         assert callable(getattr(tmux, name)), name
-    assert tmux._is_remote({"host_id": "specul8"}, "laptop") and not tmux._is_remote({"host_id": "laptop"}, "laptop")
-    assert tmux.ssh_target("specul8", {"specul8": "rick@specul8"}) == "rick@specul8"
-    assert tmux.ssh_target("specul8", {"specul8": ""}) is None
+    assert tmux._is_remote({"host_id": "gpu-host"}, "laptop") and not tmux._is_remote({"host_id": "laptop"}, "laptop")
+    assert tmux.ssh_target("gpu-host", {"gpu-host": "me@gpu-host"}) == "me@gpu-host"
+    assert tmux.ssh_target("gpu-host", {"gpu-host": ""}) is None
 
 
 def test_the_remote_script_finds_ctx_over_there_not_by_this_hosts_path():
@@ -398,9 +398,9 @@ async def test_a_board_on_this_host_also_lists_what_it_runs_on_other_hosts(monke
     """Filtered to this host, the board still shows a remote session in that host's ctx tmux (started from here),
     with its host on the row; another tmux over there stays under that host's own filter."""
     here = _sess("laptop/claude/a1", status="busy", ended=False)
-    ours = _sess("specul8/shell/s1", status="idle", ended=False, tmux_at="ctx:@0.%0")
-    theirs = _sess("specul8/claude/c1", status="idle", ended=False, tmux_at="work:@2.%5")
-    app = _board(monkeypatch, [here, ours, theirs], hosts=["laptop", "specul8"], ssh={"specul8": "rick@specul8"})
+    ours = _sess("gpu-host/shell/s1", status="idle", ended=False, tmux_at="ctx:@0.%0")
+    theirs = _sess("gpu-host/claude/c1", status="idle", ended=False, tmux_at="work:@2.%5")
+    app = _board(monkeypatch, [here, ours, theirs], hosts=["laptop", "gpu-host"], ssh={"gpu-host": "me@gpu-host"})
     sessions = app.client.sessions
     monkeypatch.setattr(app.client, "sessions", lambda host=None, live_only=False: (
         {"sessions": [here], "change": 1} if host == "laptop" else sessions(host, live_only)))
@@ -409,7 +409,7 @@ async def test_a_board_on_this_host_also_lists_what_it_runs_on_other_hosts(monke
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(1)
         keys = {s["key"] for s in app.sessions}
-        assert keys == {"laptop/claude/a1", "specul8/shell/s1"}
+        assert keys == {"laptop/claude/a1", "gpu-host/shell/s1"}
         t = app.query_one("#table")
         labels = [t.get_row_at(i)[3].plain for i in range(t.row_count)]
-        assert any("sh·specul8" in lb for lb in labels) and not any("·laptop" in lb for lb in labels)
+        assert any("sh·gpu-host" in lb for lb in labels) and not any("·laptop" in lb for lb in labels)

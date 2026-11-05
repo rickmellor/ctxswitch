@@ -150,7 +150,7 @@ def row() -> None:
         (0, "2", DIM, 400, "number", "Alt+2 opens it, from any pane"),
         (2, "◐", YELLOW, 700, "state", "● busy · ◐ waiting on you · ○ idle · – ended"),
         (5, "3m", DIM, 400, "age", "how long it has been in this state"),
-        (9, "◆", TEXT, 700, "reach", "Enter: ▶ it's here · ◆ bring it · ↻ resume · ↗ ssh · ⇢ ⊘ can't"),
+        (9, "◆", TEXT, 700, "reach", "Enter: ▶ here · ◆ bring · ↻ resume · ↗ there · ⇄ attach · ⇢ ⊘ can't"),
         (11, "cc·laptop", DIM, 400, "harness · host", "cc Claude Code · pi · cw Windows Claude"),
         (21, "zephyr-sdk@feat/x", TEXT, 400, "workstream", "repo@branch, matched across hosts"),
         (39, "P2 carve: interface review", YELLOW, 700, "title", "its name, or your last prompt"),

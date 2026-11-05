@@ -312,7 +312,7 @@ def test_another_hosts_session_resumes_there_over_ssh(server, monkeypatch, tmp_p
     ssh = {"gpu": "me@gpu-host", "devbox": "me@devbox.lan", "laptop": ""}
     assert tmux.reach_all([far, pi, {**far, "key": "laptop/claude/x", "host_id": "laptop"}], "gpu", ssh) == {
         "devbox/claude/far": "ssh", "devbox/pi/p1": "ssh", "laptop/claude/x": "remote"}   # "" = no route
-    assert tmux.ssh_target("scrubby", ssh) == "scrubby"                                 # unlisted: the host id is the alias
+    assert tmux.ssh_target("otherbox", ssh) == "otherbox"                                 # unlisted: the host id is the alias
     assert tmux.ssh_argv(pi, "devbox")[-1] == ("bash -lc 'cd '\"'\"'/home/me/my repo'\"'\"' 2>/dev/null || cd; "
                                                 "exec pi --session /home/me/.pi/s.jsonl'")
     assert "no ssh route" in tmux.reach_help({**far, "host_id": "laptop"}, "remote", ssh)
@@ -594,9 +594,9 @@ def test_a_new_remote_claude_starts_under_the_id_its_window_is_tagged_with(monke
     monkeypatch.setattr(tmux, "_agent_window", lambda sess, cwd, name, argv, **kw: seen.setdefault("argv", argv) and "%9")
     monkeypatch.setattr(tmux, "tag", lambda pane, key: seen.setdefault("key", key))
     monkeypatch.setattr(tmux, "_run", lambda *a, **k: "")
-    assert tmux.new_remote_agent("specul8", "claude", "~/repos/x", {"specul8": "rick@specul8"}) == "new claude on specul8 in ~/repos/x"
+    assert tmux.new_remote_agent("gpu-host", "claude", "~/repos/x", {"gpu-host": "me@gpu-host"}) == "new claude on gpu-host in ~/repos/x"
     sid = seen["key"].rsplit("/", 1)[1]
-    assert seen["key"] == f"specul8/claude/{sid}" and f"--session-id {sid}" in seen["argv"][-1]
+    assert seen["key"] == f"gpu-host/claude/{sid}" and f"--session-id {sid}" in seen["argv"][-1]
 
 
 def test_a_board_left_alone_in_its_window_gets_a_left_pane_back(server, monkeypatch):

@@ -16,9 +16,9 @@ from ctxswitch.common.schema import SessionMeta
 
 HOOK = "/home/rick/.local/bin/saint-pool --hook"
 CTX_ON = ('{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "LOCAL POOL ON '
-          '(http://saint.home.arpa:4000): construction goes to the local Qwen pool via saint-agent."}}')
+          '(http://gpu-host:4000): construction goes to the local Qwen pool via saint-agent."}}')
 CTX_UNREACH = ('{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "LOCAL POOL ON but '
-               'SAINT at http://saint.home.arpa:4000 is unreachable: work in this session as normal."}}')
+               'SAINT at http://gpu-host:4000 is unreachable: work in this session as normal."}}')
 
 
 def hook(ts, stdout, hook_name="SessionStart:startup", command=HOOK, **kw):
@@ -175,7 +175,7 @@ class _Resp:
         self.status_code = status_code
 
 
-def _switch(tmp_path, url="http://saint.home.arpa:4000\n"):
+def _switch(tmp_path, url="http://gpu-host:4000\n"):
     p = tmp_path / "saint-pool"
     p.write_text(url)
     return str(p)
@@ -194,10 +194,10 @@ def test_a_missing_or_empty_switch_means_off_with_no_url(tmp_path):
 
 def test_a_switch_that_names_a_SAINT_probes_its_health(tmp_path):
     seen = []
-    d = C.read_pool(_switch(tmp_path, " http://saint.home.arpa:4000/ \n# a later line is no URL\n"),
+    d = C.read_pool(_switch(tmp_path, " http://gpu-host:4000/ \n# a later line is no URL\n"),
                     get=lambda url, **kw: seen.append((url, kw)) or _Resp(200))
-    assert (d["state"], d["url"]) == ("on", "http://saint.home.arpa:4000/")     # the line as written, minus whitespace
-    assert seen == [("http://saint.home.arpa:4000/health", {"timeout": 5})]     # ... but one slash on the probe
+    assert (d["state"], d["url"]) == ("on", "http://gpu-host:4000/")     # the line as written, minus whitespace
+    assert seen == [("http://gpu-host:4000/health", {"timeout": 5})]     # ... but one slash on the probe
 
 
 @pytest.mark.parametrize("get", [lambda url, **kw: _Resp(503), lambda url, **kw: _Resp(404),

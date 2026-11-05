@@ -38,9 +38,12 @@ rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessio
   (done, tests pass, blocked) and what the session is for. Every ledger row quotes the transcript word for word.
   Both come from a *local* LLM seat. Nothing leaves your network.
 - **Switches sessions for you.** Inside tmux, Enter (or Alt+1…9, by the row's number) swaps a session into the
-  main pane, resumes an ended one, or says why it can't (running in another terminal, or on another host). `n`
-  starts a new session (Claude per account, pi or Antigravity), `k` ends one. When an agent exits, the next one
-  takes its place.
+  main pane, resumes an ended one, or says why it can't (running in another terminal). `n` starts a new session
+  (Claude per account, pi, Antigravity or a plain shell), `s` opens a start screen of profiles and recent sessions,
+  `k` ends one. When an agent exits, the next one takes its place.
+- **Drives sessions on other machines.** `n` and `s` start an agent on another host over ssh. It runs in a tmux on
+  that host, so it survives the ssh dropping or the laptop sleeping; Enter attaches to it again (`⇄`), `k` ends it
+  there.
 - **Messages a session from anywhere.** `m` (or `ctx send`) types a message into a live Claude or pi session on
   any machine, or queues it for an ended one until it next runs. The board follows it from queued to delivered
   to the agent's reply. `a` (or `ctx reply`) answers the question a session is waiting on, and the ledger
@@ -194,9 +197,9 @@ it's on, its `⌂` and its account label turn yellow: run `/local-pool` in it, o
 | `◆` | brings it to the left pane (it's in ctx's tmux) |
 | `↻` | resumes it (`claude --resume` / `pi --session`) in a new window, then brings it left |
 | `⊘` | can't: it's running in a terminal outside tmux. Quit it there, then Enter resumes it here |
-| `↗` | it ended on another host: resumes it there over ssh, in a new window here (see `[ssh]`) |
+| `↗` | it ended on another host: resumes it there, in that host's `ctx` tmux, and shows it here over ssh (see `[ssh]`) |
 | `⇄` | it's live in a tmux on another host: Enter shows it here over ssh (see `[ssh]`) |
-| `⇢` | can't: it's live on another host, or there's no ssh route to it. The detail pane says which and what to run |
+| `⇢` | can't: it's live on another host outside a tmux there, or there's no ssh route to it. The detail pane says which and what to run |
 
 ### Sessions on other hosts
 `n` and `s` can start on another host — the board lists the ones `[ssh]` reaches, this one first. It runs in a tmux
@@ -204,7 +207,10 @@ named `ctx` **on that host**, as its own user, so it keeps working when the ssh 
 that opens here is only a view of it. A `⇄` row is live over there: `Enter` shows it here (`ctx`'s keys still work,
 the view has none of its own, and detaching leaves the agent running). An ended one (`↗`) resumes back into that same
 tmux, and `k` ends it there — the transcript stays resumable. Its profiles are its own, so from here you pick the
-harness (Claude Code, pi, a shell) and a directory, `~` being that machine's home. This works laptop→others: a host
+harness (Claude Code, pi, a shell) and a directory, `~` being that machine's home. A board filtered to this host
+(`h`) still lists the live sessions it runs on other hosts (the ones in that host's `ctx` tmux), with the host on the
+row (`sh·gpu-host`); other tmux sessions over there stay under that host's filter. Each host's collector reports where
+its live sessions run in its tmux, which is how the board knows a `⇄` row is there. This works laptop→others: a host
 that can't be reached by ssh is still on the board and still takes messages, it just can't be opened from here.
 
 **Detail pane** for the selected session, most useful first:
@@ -256,8 +262,8 @@ window, the last one on the left.
 | `Enter` | open it: swap it in, resume it, or say why not (see Reach) |
 | `1`…`9` | select the session with that number (its detail shows) without opening it; Enter, `k`, `m` and the rest then act on it |
 | `Alt+1`…`Alt+9` | open the session with that number (the list's first column; numbers follow the order shown). Works from any pane of the ctx session, agents included; outside it the key goes through as typed |
-| `n` | new session: a one-key picker (Claude Code per `[[claude_profiles]]` account, pi, Antigravity or a plain shell; only what's installed), then a directory (default: the selected session's). For Claude, `max: ~/repos/x` also picks the account |
-| `s` | start: one key per profile to start something new, and the recent ended sessions to resume (`Space` marks several, `Enter` resumes them all, each in its own window). Opens by itself when the board starts with nothing live |
+| `n` | new session: with other hosts reachable (`[ssh]`), first which host (`1 laptop (here)  2 devbox …`); then a one-key picker (here: Claude Code per `[[claude_profiles]]` account, pi, Antigravity or a plain shell, only what's installed; another host: Claude Code, pi or a shell), then a directory (here: the selected session's; another host: its `~`). For Claude here, `max: ~/repos/x` also picks the account |
+| `s` | start: one key per profile to start something new, and the recent ended sessions to resume (`Space` marks several, `Enter` resumes them all, each in its own window). `h` switches the host a digit starts on. Opens by itself when the board starts with nothing live |
 | `m` | message the selected session: type it, Enter sends (Esc cancels). On a workstream header (`w`): message the work |
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
@@ -274,7 +280,7 @@ window, the last one on the left.
 | `i` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
-| `k` | end the selected session's agent, after a y (see Ending a session) |
+| `k` | end the selected session's agent, after a `y` (the transcript stays: Enter resumes it). One on another host is ended there, in its own tmux |
 | `Q` | quit all: end the tmux session and every agent in it, after a y |
 
 A confirm takes one key: `y` does it at once, any other key (Esc included) cancels.
@@ -291,9 +297,13 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
   waits for Enter first so you can read the error.
 - **Outside tmux** (`ctx tui` on its own), Enter opens the session in a new Windows Terminal tab under WSL, or
   shows the command to run.
-- **Sessions on another host** (`↗`) resume there over ssh, in a new window here named `<host>/<title>`, so you
-  drive them from this machine. A session still live on that host stays `⇢`: quit it there first (two copies of
-  one session would fork it). The window closes when the agent (or ssh) exits.
+- **Sessions on another host** run in a tmux named `ctx` on that host (see Sessions on other hosts): an ended one
+  (`↗`) resumes into it, a live one in it (`⇄`) is attached, each through a window here named after it. If the ssh
+  drops, that window says `[agent exited rc=255] press Enter to close` and the agent keeps running over there: Enter
+  on its row attaches again. A session live on another host outside a tmux stays `⇢`: quit it there first (two
+  copies of one session would fork it).
+- **A Claude window moved into a background job** (Claude Code can park a window's conversation in its own daemon,
+  under a new session id): the board shows the one conversation, the job, in the pane of the window that shows it.
 - **Two Claude accounts** (say, corporate Bedrock and a personal Max subscription in its own config directory):
   list them as `[[claude_profiles]]` (see 10. Configuration). Rows then show the account instead of `cc`
   (`bedrock·laptop`, `max·laptop`). `n` lists one entry per account, `max: ~/repos/x` at the directory prompt does the same, the window is
@@ -572,7 +582,7 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | an answered prompt still shows | it clears on the agent's next tool call, turn end or idle; check the collector is running |
 | `hub unreachable` | `[hub] url` in your config, and that the hub is up (`curl <url>/v1/health`) |
 | a host is missing | `ctx hosts`; on that host, `systemctl --user status ctx-collector` and `~/.local/state/ctxswitch/collector.log` |
-| `↗` resume fails or hangs | Enter runs `ssh -t <target> bash -lc 'claude --resume …'`; try `ssh <target> true` by hand. ssh needs key auth (BatchMode isn't forced, so a password prompt shows in the window). The agent must be on the remote login PATH |
+| `↗` resume or a remote start fails or hangs | Enter runs `ssh -t <target> sh -c '…'`, which starts the agent in that host's `ctx` tmux and attaches a view; try `ssh <target> true` by hand. ssh needs key auth (BatchMode isn't forced, so a password prompt shows in the window). The agent must be on the remote login PATH; `ctx` (for shells) is looked up there, else in `~/repos/ctxswitch/.venv/bin`. An agent that fails over there keeps its window with `[ctx] it exited with N` |
 | a message stays `…` queued | the session isn't live on its host, or that host's collector is down (`ctx hosts`). It goes when the session next runs |
 | a message stays `→` sent | Claude in plan or bypass mode holds it for approval in its terminal. pi: it's still busy with the run before |
 | a message to a live pi session stays `…` queued | that pi process predates the extension's message socket; restart it (`/exit`, then Enter) |

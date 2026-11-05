@@ -144,6 +144,33 @@ Greenfield repo: `~/repos/ctxswitch`.
   `claude-opus-5-5`); per job, the estimate is the job's tokens × the window's energy per token, and a job's own turns are local
   whatever model the worker reports (never cloud dollars). The waiting line under a row moved to `└`, so `↳` means
   "subordinate" everywhere.
+- 2026-10-31 (usage + budget): Claude Code writes one API reply as a line per content block, each repeating the reply's
+  `usage`, so usage is counted once per `message.id` (the reply's latest line wins); summing lines had overstated cloud
+  spend 1.6–2.8× against ccwb's daily bill. Turns stored before the fix were left as they were (Rick's call). The
+  monthly Bedrock budget is the real bill, not an estimate: the collector on the host with a ccwb token runs
+  `bedrock-spend` (quota + month-to-date, browser off) every 15 min and pushes it; the hub keeps the latest per account.
+- 2026-11-02 (start screen): `s`, and on its own when the board's first load finds nothing live, lists a digit per
+  profile and the ended sessions this board can resume (pool-job workers left out); Space marks several, Enter resumes
+  each in its own window and the last into the viewer. A plain digit selects a row (Alt+N still opens it). A fresh
+  `ctx tmux` focuses the board, not the empty left pane.
+- 2026-11-03 (local pool mark): a Claude session's pool state is what it was last *told*, read from its transcript (the
+  `saint-pool --hook` SessionStart hook_success, or `saint-pool:` output from a command run in it), not the host's switch
+  now; the switch itself (`~/.claude/saint-pool` + a SAINT health probe, 5 s × 2: /health once took 3.3 s) comes from
+  each collector. `⌂` green on / dim green unreachable / grey off, and yellow (with the account) when the two disagree.
+- 2026-11-03 (background jobs): Claude Code 2.1.314 can park a window's conversation in a background job (new session
+  id, `kind: bg`, `jobId`; the window's entry keeps the old id with `parkedJobId` and only shows the job). The collector
+  reports the job alone, with the window's pid as `via_pid`, and the board finds its pane through it; an ended
+  session's old pane tag gives way to the live one.
+- 2026-11-03 (other hosts): an agent on another host runs in a tmux named `ctx` **on that host** and the local window
+  is a grouped view of it (`ctxview-*`: no prefix, no status line, destroyed when detached), so it survives the ssh
+  dropping. Everything goes over the operator's own ssh from the machine they sit at; the hub never starts anything on
+  a host (a hub that could would make its token a remote shell on every machine). Collectors report `tmux_at`
+  (session:@window.%pane, the real session over a view of it) and the board attaches by pane id, which survives ctx's
+  pane swaps. New remote Claude sessions start with `--session-id`, so their window is tagged before the collector
+  sees them. A board filtered to this host also lists the live sessions it runs in other hosts' `ctx` tmux.
+- 2026-11-04 (left pane): a board left alone in its window (left pane closed outright, no hand-off) moves the most
+  recently active session back on its left, or opens a shell, on its next refresh and when `ctx tmux` rejoins; never
+  when another pane shares its window.
 
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is
@@ -313,6 +340,8 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    decisions, claims, recap, open asks, the conversation) and starts the new agent with a prompt that names it;
    the prompt's `[ctxswitch-handoff:<key>]` marker links the sessions on ingest (links table) and the new one
    inherits active instructions and the purpose. Moves stay Claude-account-only.
+6e. Spend, budget, pool jobs (2026-10-30/31), start screen (11-02), pool mark, background jobs, other hosts
+   (11-03), left-pane repair (11-04): see the decisions log.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 
