@@ -247,6 +247,7 @@ class Store:
             # Claude shows a dialog only while "waiting": idle means any hook ask from before then was dismissed
             # (Esc on a permission prompt fires no hook at all).
             for i in items:
+                self._sync_hc_ask(i["key"], i)
                 if i["status"] == "idle" and i.get("status_since") and i["key"].split("/", 2)[1] == "claude":
                     self.db.execute("UPDATE asks SET answered=1, answer='closed: dismissed', answered_at=? WHERE key=? AND answered=0 "
                                     "AND ref LIKE 'hook:%' AND julianday(asked_at) < julianday(?)", (i["status_since"], i["key"], i["status_since"]))
@@ -259,7 +260,31 @@ class Store:
                     continue
                 if r["harness"] == "claude" or r["live_status"] in LIVE:
                     self.db.execute("UPDATE sessions SET live_status='ended', ended=1, pid=NULL, socket=NULL, live_name=NULL, via_pid=NULL, tmux_at=NULL, hc_at=NULL, updated=? WHERE key=?", (now, r["key"]))
+                    self.db.execute("UPDATE asks SET answered=1, answer='closed: dialog gone', answered_at=? WHERE key=? AND answered=0 AND ref LIKE 'hc:%'",
+                                    (_iso_now(), r["key"]))
             self._bump()
+
+    def _sync_hc_ask(self, key: str, item: dict[str, Any]) -> None:
+        """The dialog herdr-core saw (item ``hc_ask``, from OSC 7501) as this session's open ask.
+
+        A herdr-only session has no transcript and so no hook ask at all, and a Claude session's dialog can reach
+        herdr before (or instead of) our hook, so without this a blocked agent is a bare ``waiting`` row with nothing
+        to say. Refs are ``hc:<terminal>`` to keep them clear of the hook's and the tracker's; a session can hold a
+        hook ask and an hc ask for the one dialog, which is fine — both close when it goes idle. The ask rides on the
+        session's last turn, so ``attention`` still lists it but a later real prompt retires it as an answer."""
+        ask = item.get("hc_ask")
+        if not ask or item.get("status") != "waiting":
+            self.db.execute("UPDATE asks SET answered=1, answer='closed: dialog gone', answered_at=? WHERE key=? AND answered=0 AND ref LIKE 'hc:%'",
+                            (_iso_now(), key))
+            return
+        ref = f"hc:{item.get('hc_at') or 'dialog'}"
+        asked_at = item.get("status_since") or _iso_now()
+        idx = self.db.execute("SELECT COALESCE(MAX(idx),0) FROM turns WHERE key=?", (key,)).fetchone()[0]
+        self.db.execute("INSERT INTO asks(key,ref,kind,text,turn_idx,asked_at,answered) VALUES(?,?,?,?,?,?,0) "
+                        "ON CONFLICT(key,ref) DO UPDATE SET text=excluded.text, kind=excluded.kind, turn_idx=excluded.turn_idx, "
+                        "answered=0, answer=NULL, answered_at=NULL, "
+                        "asked_at=CASE WHEN asks.answered=1 THEN excluded.asked_at ELSE asks.asked_at END",
+                        (key, ref, ask.get("kind") or "plain", _clip(ask.get("text"), 600), idx, asked_at))
 
     # -- messages ---------------------------------------------------------------------------------------------------
     def add_message(self, key: str, body: str, from_host: str | None = None, ask_ref: str | None = None,
@@ -851,6 +876,10 @@ def typed(turn: dict[str, Any]) -> bool:
 
 def _norm(text: str | None) -> str:
     return " ".join((text or "").split())
+
+
+def _iso_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _clip(text: str | None, n: int) -> str:
