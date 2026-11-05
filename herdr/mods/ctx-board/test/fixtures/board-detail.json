@@ -1,0 +1,481 @@
+{
+ "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+ "title": "ctx switch",
+ "state": "busy",
+ "glyph": "\u25cf",
+ "recap": {
+  "text": "Phase 1 plumbing is live on branch herdr-phase1 (488 tests); agent is finishing the herdr dialog-to-ask store job.",
+  "reentry_lines": [
+   "Building Phase 1: hub view-model API, collector hc_at mapping, and runtime drivers are deployed and tested.",
+   "You chose the Linux herdr-app under WSLg because Windows core refuses --via; Windows copies stay installed but unused.",
+   "Agent is completing the background job to store herdr's reported dialog as the session's open ask.",
+   "No action needed from you right now."
+  ],
+  "stale": false
+ },
+ "waiting_on": [],
+ "reply_target": null,
+ "reply_why": "nothing to answer: it isn't asking you anything",
+ "spend": {
+  "line": "cloud $204.93 \u00b7 200.3M tokens \u00b7 claude-fable-5-1 \u00b7 max \u00b7 local $1.05 energy \u00b7 52.6M tokens \u00b7 709 requests \u00b7 9 pool jobs",
+  "local_usd": null,
+  "usd": 204.931381,
+  "tokens": 200296233,
+  "model": "claude-fable-5-1",
+  "account": "max"
+ },
+ "pool_jobs": [
+  {
+   "key": "laptop/claude/6e132442-96fe-4861-9cc8-01f4b10e89e1",
+   "label": "remote-board.md \u00b7 no-commit \u00b7 32 turns",
+   "cost_mark": "~$0.05",
+   "status": "no-commit"
+  },
+  {
+   "key": "laptop/claude/27e63e5d-e637-43d7-bd8c-aac56f1800f1",
+   "label": "remote-live.md \u00b7 ok \u00b7 62 turns",
+   "cost_mark": "~$0.05",
+   "status": "ok"
+  },
+  {
+   "key": "laptop/claude/73d5b5e2-f7de-4317-bd5f-40919f36c71f",
+   "label": "remote-board2.md \u00b7 error:error_max_turns \u00b7 111 turns",
+   "cost_mark": "~$0.20",
+   "status": "error:error_max_turns"
+  },
+  {
+   "key": "laptop/claude/f2b74251-cedc-478f-949a-a7d077d8ef24",
+   "label": "core-api.md \u00b7 error:error_max_turns \u00b7 121 turns",
+   "cost_mark": "~$0.23",
+   "status": "error:error_max_turns"
+  },
+  {
+   "key": "laptop/claude/495a3556-0766-4254-b8ec-d29d3b54b4d3",
+   "label": "hc-runtime.md \u00b7 ok \u00b7 108 turns",
+   "cost_mark": "~$0.21",
+   "status": "ok"
+  },
+  {
+   "key": "laptop/claude/36c74ee9-1899-42f0-8ae9-99094bc0b491",
+   "label": "hc-collector.md \u00b7 error:error_max_turns \u00b7 121 turns",
+   "cost_mark": "~$0.24",
+   "status": "error:error_max_turns"
+  }
+ ],
+ "info": {
+  "age_at": "2026-11-05T03:15:16.120000Z",
+  "turn_count": 46,
+  "started_at": "2026-10-31T07:20:18.936Z",
+  "last_viewed_at": "2026-11-05T00:53:33.139575Z",
+  "reach_hint": null,
+  "short_key": "laptop/cc/7c4a8b08",
+  "repo": "home",
+  "cwd": "/home/dev",
+  "model": "claude-fable-5-1",
+  "permission_mode": "auto",
+  "pool_line": "pool: on (told by a command, 1d ago) \u00b7 host switch: on",
+  "label": "max"
+ },
+ "purpose": "Plan project to integrate ctx and herdr, with herdr as front end and ctx core, aiming for ctx parity in phase 1",
+ "last_exchange": {
+  "you": {
+   "who": "you",
+   "at": "2026-11-05T01:57:22.049Z",
+   "text": "you@laptop:~$ hc server start\ncore laptopbox (6f762d6f) running, pid 4159498, up 28syou@laptop:~$ hc server start\ncore laptopbox (6f762d6f) running, pid 4159498, up 28s"
+  },
+  "agent": {
+   "who": "agent",
+   "at": "2026-11-05T03:22:31.483Z",
+   "text": "Live confirmation: the blocked herdr agent's row now reads `waiting_on = 'question: Ship it?'`, attention lists it, and it clears when the agent ends. The board-on-api job has finished too:"
+  },
+  "tally": {
+   "bash": 8,
+   "errors": 1
+  },
+  "events": [],
+  "in_progress": true,
+  "origin": "task"
+ },
+ "since_viewed": {
+  "exchanges": 11,
+  "rows": [
+   {
+    "id": 2247,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "decision",
+    "text": "Proceed with the comparative assessment of herdr vs ctx",
+    "quote": "Now let's take a look at a possible alternative to ctx. Dig into herdr and give me a pros/cons comparative assessment of the two.",
+    "turn_idx": 35,
+    "extra": {
+     "question": "Should we investigate herdr as an alternative to ctx?",
+     "answers": []
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793840221.0411193
+   },
+   {
+    "id": 2248,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "Completed comparative assessment of herdr and ctx with feature matrix",
+    "quote": "I've read herdr's site, its GitHub org, the agent guide it ships (`AGENTS.md`) and its docs pages for supported agents and remote machines.",
+    "turn_idx": 35,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793840221.0411193
+   },
+   {
+    "id": 2249,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "Generated a 4-page PDF of the herdr vs ctx analysis",
+    "quote": "The PDF is ready, 4 pages: **`C:\\Users\\RMellor\\Downloads\\herdr-vs-ctx.pdf`**.",
+    "turn_idx": 36,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793840660.7308316
+   },
+   {
+    "id": 2250,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "Agent started two explorations: herdr's mod/hc surface and OSC 7501 protocol, and mapping board behaviours in hub vs Python client.",
+    "quote": "Both explorations are running: one on herdr's mod and `hc` surface, the OSC 7501 protocol and whether the TUI can host a panel",
+    "turn_idx": 37,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793841060.7761428
+   },
+   {
+    "id": 2253,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "instruction",
+    "text": "Download herdr source and deep dive on it",
+    "quote": "Feel free to download the herdr source and deep dive on it.",
+    "turn_idx": 39,
+    "extra": {},
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793842665.018094
+   },
+   {
+    "id": 2254,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "S2 and S3 spikes completed and documented in SPIKES.md",
+    "quote": "Written up in `spikes/SPIKES.md` on branch `spikes-herdr`.",
+    "turn_idx": 39,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793842665.018094
+   },
+   {
+    "id": 2255,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "Agent performed a portable install of herdr-app and herdr-core into Windows user folders from WSL, but the Windows core did not start via WSL interop.",
+    "quote": "I downloaded both from WSL, verified the checksums in the release manifests, and unpacked them into those same folders.",
+    "turn_idx": 40,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793842876.4477375
+   },
+   {
+    "id": 2256,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "decision",
+    "text": "Confirmed herdr-app and core are running",
+    "quote": "herdr-app and core are running",
+    "turn_idx": 41,
+    "extra": {
+     "question": "Please start the Windows herdr-core from a Windows terminal and check its status.",
+     "answers": [
+      "llm:40:0",
+      "llm:40:1",
+      "llm:40:2"
+     ]
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793843484.5340984
+   },
+   {
+    "id": 2257,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "S4 passes; app reached hub from Windows",
+    "quote": "S4 passes. Your app reached the hub from Windows",
+    "turn_idx": 41,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793843484.5340984
+   },
+   {
+    "id": 2260,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "Phase 0 complete: all five spikes done and written up in spikes/SPIKES.md on branch spikes-herdr",
+    "quote": "All five spikes are written up in `spikes/SPIKES.md` on branch `spikes-herdr`, to merge with phase 1.",
+    "turn_idx": 43,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793845267.6708033
+   },
+   {
+    "id": 2261,
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "kind": "claim",
+    "text": "Three pool jobs (hub view model, collector hc support, runtime drivers) still running",
+    "quote": "The three pool jobs (hub view model, collector hc support, runtime drivers) are still running.",
+    "turn_idx": 43,
+    "extra": {
+     "claim": "done"
+    },
+    "active": true,
+    "retired_turn": null,
+    "retired_by": null,
+    "created": 1793845267.6708033
+   }
+  ],
+  "asks": [
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "toolu_bdrk_01T1y5xput9qJ8HpTEH15mGY",
+    "kind": "question",
+    "text": "Which herdr do we target? The desktop app and the TUI are separate products with separate servers; agents in one don't show in the other. | Where does herdr run for the laptop? Your Claude/pi/ctx live in WSL; the laptop blocks inbound connections. | Phase-1 parity scope: which of the board's features must the herdr front end have before you'd call it parity? (The rest moves to phase 2.)",
+    "turn_idx": 39,
+    "asked_at": "2026-11-05T01:22:21.127840Z",
+    "answered": 1,
+    "answer": "Which herdr do we target? The desktop app and the TUI are separate products with separate servers; agents in one don't show in the other.: #3 but let's get the desktop app working in phase 1. I want the solution to be generalized enough to support the desktop app and tui.; Where does herdr run for the laptop? Your Claude/pi/ctx live in WSL; the laptop blocks inbound connections.: Windows app, WSL as a machine; Phase-1 parity scope: which of the board's features must the herdr front end have before you'd call it parity? (The rest moves to phase 2.): Core board (Recommended)",
+    "answered_at": "2026-11-05T01:25:03.211Z"
+   },
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "toolu_bdrk_01CXhX5ZQ3dUrbUqnVwyMr7k",
+    "kind": "plan",
+    "text": "Plan approval requested",
+    "turn_idx": 39,
+    "asked_at": "2026-11-05T01:27:56.368052Z",
+    "answered": 1,
+    "answer": "approved",
+    "answered_at": "2026-11-05T01:28:45.922Z"
+   },
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "llm:40:0",
+    "kind": "text",
+    "text": "Please start the Windows herdr-core from a Windows terminal and check its status.",
+    "turn_idx": 40,
+    "asked_at": "2026-11-05T01:41:05.522Z",
+    "answered": 1,
+    "answer": "herdr-app and core are running",
+    "answered_at": "2026-11-05T01:48:39.009Z"
+   },
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "llm:40:1",
+    "kind": "text",
+    "text": "Please run the herdr-app and verify the sidebar shows the spike board status.",
+    "turn_idx": 40,
+    "asked_at": "2026-11-05T01:41:05.522Z",
+    "answered": 1,
+    "answer": "herdr-app and core are running",
+    "answered_at": "2026-11-05T01:48:39.009Z"
+   },
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "llm:40:2",
+    "kind": "text",
+    "text": "Please add the WSL machine to the Windows herdr-core.",
+    "turn_idx": 40,
+    "asked_at": "2026-11-05T01:41:05.522Z",
+    "answered": 1,
+    "answer": "herdr-app and core are running",
+    "answered_at": "2026-11-05T01:48:39.009Z"
+   },
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "llm:41:0",
+    "kind": "text",
+    "text": "Run 'hc server start' in a WSL terminal",
+    "turn_idx": 41,
+    "asked_at": "2026-11-05T01:51:09.048Z",
+    "answered": 1,
+    "answer": "C:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-core>herdr-core.exe server start core laptopbox (6c09d81b) running, pid 30220, up 550sC:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-core>herdr-core.exe server start core laptopbox (6c09d81b) running, pid 30220, up 550s",
+    "answered_at": "2026-11-05T01:56:47.525Z"
+   },
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "llm:42:0",
+    "kind": "text",
+    "text": "Start the WSL core with 'hc server start' from a WSL terminal",
+    "turn_idx": 42,
+    "asked_at": "2026-11-05T01:56:56.664Z",
+    "answered": 1,
+    "answer": "you@laptop:~$ hc server start core laptopbox (6f762d6f) running, pid 4159498, up 28syou@laptop:~$ hc server start core laptopbox (6f762d6f) running, pid 4159498, up 28s",
+    "answered_at": "2026-11-05T01:57:22.049Z"
+   },
+   {
+    "key": "laptop/claude/7c4a8b08-eb16-422d-95fc-b1d2c68530a1",
+    "ref": "toolu_bdrk_01GUhPBzCKV2K976C7LDQkno",
+    "kind": "question",
+    "text": "The Windows herdr-core refuses `--via` outright (its source: `if cfg!(windows) \u2026 \"one line, run by sh here\"`), so the Windows app can only reach WSL over plain ssh, which means running sshd inside WSL. Meanwhile the Linux herdr-app runs under WSLg: it's on your desktop now (welcome screen) with no extra plumbing. Which route?",
+    "turn_idx": 43,
+    "asked_at": "2026-11-05T02:00:48.688295Z",
+    "answered": 1,
+    "answer": "The Windows herdr-core refuses `--via` outright (its source: `if cfg!(windows) \u2026 \"one line, run by sh here\"`), so the Windows app can only reach WSL over plain ssh, which means running sshd inside WSL. Meanwhile the Linux herdr-app runs under WSLg: it's on your desktop now (welcome screen) with no extra plumbing. Which route?: We'll use the Linux app for now and revisit Windows later.",
+    "answered_at": "2026-11-05T02:11:16.411Z"
+   }
+  ],
+  "replies": []
+ },
+ "since_line": "11 exchanges \u00b7 8 questions \u00b7 2 decisions \u00b7 8 claims \u00b7 1 instruction",
+ "messages": [],
+ "workstream_messages": [],
+ "instructions": [
+  {
+   "n": 1,
+   "id": 2098,
+   "text": "Digit keys highlight the related session row; Enter switches to it; other keys work as expected; Alt+N unchanged",
+   "turn_idx": 11
+  },
+  {
+   "n": 2,
+   "id": 2253,
+   "text": "Download herdr source and deep dive on it",
+   "turn_idx": 39
+  }
+ ],
+ "claims": [
+  {
+   "glyph": "\u2713",
+   "kind": "done",
+   "text": "Agent performed a portable install of herdr-app and herdr-core into Windows user folders from WSL, but the Windows core did not start via WSL interop.",
+   "turn_idx": 40
+  },
+  {
+   "glyph": "\u2713",
+   "kind": "done",
+   "text": "S4 passes; app reached hub from Windows",
+   "turn_idx": 41
+  },
+  {
+   "glyph": "\u2713",
+   "kind": "done",
+   "text": "Phase 0 complete: all five spikes done and written up in spikes/SPIKES.md on branch spikes-herdr",
+   "turn_idx": 43
+  },
+  {
+   "glyph": "\u2713",
+   "kind": "done",
+   "text": "Three pool jobs (hub view model, collector hc support, runtime drivers) still running",
+   "turn_idx": 43
+  }
+ ],
+ "decisions": [
+  {
+   "question": "Which herdr do we target? The desktop app and the TUI are separate products with separate servers; agents in one don't show in the other. | Where does herdr run for the laptop? Your Claude/pi/ctx live in WSL; the laptop blocks inbound connections. | Phase-1 parity scope: which of the board's features must the herdr front end have before you'd call it parity? (The rest moves to phase 2.)",
+   "answer": "Which herdr do we target? The desktop app and the TUI are separate products with separate servers; agents in one don't show in the other.: #3 but let's get the desktop app working in phase 1. I want the solution to be generalized enough to support the desktop app and tui.; Where does herdr run for the laptop? Your Claude/pi/ctx live in WSL; the laptop blocks inbound connections.: Windows app, WSL as a machine; Phase-1 parity scope: which of the board's features must the herdr front end have before you'd call it parity? (The rest moves to phase 2.): Core board (Recommended)"
+  },
+  {
+   "question": "Plan approval requested",
+   "answer": "approved"
+  },
+  {
+   "question": "Please start the Windows herdr-core from a Windows terminal and check its status.",
+   "answer": "Confirmed herdr-app and core are running"
+  },
+  {
+   "question": "Run 'hc server start' in a WSL terminal",
+   "answer": "C:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-core>herdr-core.exe server start core laptopbox (6c09d81b) running, pid 30220, up 550sC:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-core>herdr-core.exe server start core laptopbox (6c09d81b) running, pid 30220, up 550s"
+  },
+  {
+   "question": "Start the WSL core with 'hc server start' from a WSL terminal",
+   "answer": "you@laptop:~$ hc server start core laptopbox (6f762d6f) running, pid 4159498, up 28syou@laptop:~$ hc server start core laptopbox (6f762d6f) running, pid 4159498, up 28s"
+  },
+  {
+   "question": "The Windows herdr-core refuses `--via` outright (its source: `if cfg!(windows) \u2026 \"one line, run by sh here\"`), so the Windows app can only reach WSL over plain ssh, which means running sshd inside WSL. Meanwhile the Linux herdr-app runs under WSLg: it's on your desktop now (welcome screen) with no extra plumbing. Which route?",
+   "answer": "The Windows herdr-core refuses `--via` outright (its source: `if cfg!(windows) \u2026 \"one line, run by sh here\"`), so the Windows app can only reach WSL over plain ssh, which means running sshd inside WSL. Meanwhile the Linux herdr-app runs under WSLg: it's on your desktop now (welcome screen) with no extra plumbing. Which route?: We'll use the Linux app for now and revisit Windows later."
+  }
+ ],
+ "siblings": [],
+ "earlier": [
+  {
+   "idx": 44,
+   "started_at": "2026-11-05T02:36:25.690Z",
+   "origin": "task",
+   "user_text": "<task-notification>\n<task-id>bv37x75v3</task-id>\n<tool-use-id>toolu_bdrk_01NWRF35W8qNvDsuezcZCsYT</tool-use-id>\n<output-file>/tmp/claude-0/-home-dev/7c4a8b08-eb16-422d-95fc-b1d2c68530a1/tasks/bv37x75v3.output</output-file>\n<status>completed</status>\n<summary>Background command \"Worktree + brief; launch the hub view-model job on the pool\" completed (exit code 0)</summary>\n</task-notification>",
+   "assistant_text": "Phase 1's plumbing is in place and running. Where things stand:\n\n**Done and deployed (branch `herdr-phase1`, 488 tests)**\n- **Hub view-model API:** `/v1/board` and `/v1/board/{key}` are live on the hub. A row carries the board's decisions (state, label, what it's waiting on, pool mark, nesting, cost), the header has counts, your pool switch and today's spend from local midnight. Warm calls take 0.1\u20130.25 s.\n- **Collector:** every live session now records which herdr terminal it runs in (`hc_at`), gets a `ctx.key` label on that terminal, and herdr's own agent states feed in. Verified live: your herdr-started Claude is labelled and mapped to `t1`; a foreign agent that reported `blocked` became a `waiting` row of its own; a `ctx shell` under herdr reports `idle`/`working` itself.\n- **Runtime drivers:** one interface over tmux and herdr-core, with the hc driver tested against a fake and a real core.\n- One fix of mine on top: the collector couldn't find `hc` under systemd (same PATH issue as `bedrock-spend`).\n\n**Running now**\n- The Textual board switching to the view model (the proof that both UIs render the same thing).\n- A small job so a dialog herdr reports becomes the session's open ask, so the `\u2514 Ship it?` line appears for herdr-only agents too.\n\n**Next:** merge those two, redeploy, docs, then the herdr mod itself (phase 3). Nothing needs you right now."
+  },
+  {
+   "idx": 43,
+   "started_at": "2026-11-05T01:57:22.049Z",
+   "origin": "human",
+   "user_text": "you@laptop:~$ hc server start\ncore laptopbox (6f762d6f) running, pid 4159498, up 28syou@laptop:~$ hc server start\ncore laptopbox (6f762d6f) running, pid 4159498, up 28s",
+   "assistant_text": "Phase 0 is done, with one decision made along the way and one lesson learned.\n\n**Spikes**\n- **S2:** Claude Code and pi report their state to herdr-core natively, including `blocked` with the question text. No spoofing needed for them.\n- **S3:** other hosts join your WSL core through your own ssh keys; `gpu-host` and `devbox` are connected now.\n- **S1:** the Windows core refuses `--via`, so the Windows app can't reach WSL without an sshd inside WSL. You chose the Linux app under WSLg for now; it runs, shows both machines in its sidebar, and the Windows copies stay installed but unused. You can close the Windows app and core.\n- **S4:** a mod in the Linux app reads the hub (`hub ok \u00b7 change \u2026 \u00b7 hosts 3`).\n- **S5:** a Claude started from the herdr app appeared on the ctx hub as a live row; after one prompt the hub had its folder, title and reply, while hc showed `done`. ctx's capture needs no change for herdr-run agents. I left that Claude running in a space called `ctx-s5`, so your ctx board and the herdr app are already showing the same session.\n\n**The lesson.** herdr-core starts its default core from any `hc` call and keeps that caller's environment for its whole life. A pool worker's test did exactly that, so the core you then \"started\" was really the worker's: it pointed Claude at the local pool, turned transcript saving off, and used the Max config dir. I replaced it with a core started from a clean login shell (zero agent variables) and saved the rule to memory: the operator's core starts clean, and every test or job that touches hc must isolate its state. I'll hold the runtime-driver job's tests to that when they land.\n\nAll five spikes are written up in `spikes/SPIKES.md` on branch `spikes-herdr`, to merge with phase 1. The three pool jobs (hub view model, collector hc support, runtime drivers) are still running."
+  },
+  {
+   "idx": 42,
+   "started_at": "2026-11-05T01:56:47.525Z",
+   "origin": "human",
+   "user_text": "C:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-core>herdr-core.exe server start\ncore laptopbox (6c09d81b) running, pid 30220, up 550sC:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-core>herdr-core.exe server start\ncore laptopbox (6c09d81b) running, pid 30220, up 550s",
+   "assistant_text": "That's the Windows core, which is already running. The one I need is the WSL copy, started as you from a WSL (Ubuntu) terminal:\n\n```\nhc server start\n```\n\nIf `hc` isn't on your PATH there, use `~/.local/bin/hc server start`. Once it's up I'll join it to the Windows core as the `wsl` machine."
+  },
+  {
+   "idx": 41,
+   "started_at": "2026-11-05T01:48:39.009Z",
+   "origin": "human",
+   "user_text": "herdr-app and core are running",
+   "assistant_text": "S4 passes. Your app reached the hub from Windows: the spike mod in tab 2 reads `hub ok \u00b7 change 90017 \u00b7 hosts 3 \u00b7 auth true`, and `herdr-app check` validated it. The mod didn't dock itself into the sidebar, so I opened it as a tab; the real board will claim its sidebar block in a layout. You can close tab 2 whenever you like.\n\n**S1 needs one command from you.** The WSL core must run as you, and my sandbox can't start processes as your user. In a WSL terminal:\n\n```\nhc server start\n```\n\nThen I'll add WSL as a machine from the Windows core and start a Claude on it from the app, which completes the spikes.\n\nMeanwhile the three pool jobs are still building: the hub view-model API, the collector's herdr support, and the runtime drivers."
+  },
+  {
+   "idx": 40,
+   "started_at": "2026-11-05T01:38:06.971Z",
+   "origin": "human",
+   "user_text": "Is there a portable install? I have admin issues on Windows.",
+   "assistant_text": "Yes: the install is portable, and I've done it for you.\n\n**What the installers actually do.** Neither needs admin. They unpack into `%LOCALAPPDATA%\\Programs\\herdr-app` and `\u2026\\herdr-core`, add those folders to your user PATH, and drop a Start-menu shortcut. The archives are plain, so I downloaded both from WSL, verified the checksums in the release manifests, and unpacked them into those same folders. I did not touch PATH or the Start menu. Removing both folders undoes it.\n\n- `C:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-app\\herdr-app.exe` (0.1.13)\n- `C:\\Users\\RMellor\\AppData\\Local\\Programs\\herdr-core\\herdr-core.exe` (0.1.18, with its ConPTY dll). The app looks for the core in exactly that folder, so no PATH entry is needed.\n- `C:\\Users\\RMellor\\.config\\herdr-app\\` holds `ctx.json` (hub URL and token, host map) and a small `ctx-hello` mod for spike S4. The token is on NTFS, protected by your profile's ACL only, so this is spike-grade and the real install will handle it more carefully.\n\n**One thing didn't work from here.** Starting the Windows core through WSL interop produced a running `herdr-core.exe` that never came up on its pipe, with an empty log. That may be the interop launch rather than a block, so please try it from a Windows terminal:\n\n1. `%LOCALAPPDATA%\\Programs\\herdr-core\\herdr-core.exe server start`, then `\u2026 server status`.\n2. Run `herdr-app.exe`. If the sidebar shows \"ctx board (spike) \u00b7 hub ok \u00b7 change N\", S4 passes.\n3. `herdr-core.exe machine add --name wsl --via \"wsl.exe -e /home/dev/.local/bin/hc connect\"`. In WSL first: `hc server start` (your own core; I removed the root-owned one).\n\nIf step 1 or 2 is refused, that's the endpoint-protection software blocking an unsigned exe (herdr says its Windows builds may be unsigned), and portability won't help. The fallback is the Linux herdr-app under WSLg, with nothing on the Windows side at all.\n\nSeparately, `sudo chown dev: ~/.local/bin/herdr-core ~/.local/bin/hc` in WSL when you get a moment."
+  },
+  {
+   "idx": 39,
+   "started_at": "2026-11-05T01:16:50.337Z",
+   "origin": "human",
+   "user_text": "Feel free to download the herdr source and deep dive on it.",
+   "assistant_text": "Progress so far, and three things only you can do.\n\n**Spikes decided**\n- **S2, agent state:** Claude Code 2.1.314 and pi 1.2.0 both report to herdr-core natively. Under `hc`, Claude went `idle` \u2192 `working` \u2192 `done`, and an `AskUserQuestion` showed as `blocked`, `kind=question`, `msg=\"answer: Continue? (Yes \u00b7 No)\"`. No spoofing needed for either; only `ctx shell` has to speak OSC 7501 itself.\n- **S3, other hosts:** the GPU host joined as an hc machine through your own ssh key, with `hc` installed there as you and a command running as `gpu-host/t1`. The same `--via` form will carry `wsl.exe` on Windows.\n- Written up in `spikes/SPIKES.md` on branch `spikes-herdr`.\n\n**Building now, three pool jobs in parallel**\n- Hub view-model API: `/v1/board` and `/v1/board/{key}`.\n- Collector: which hc terminal each session runs in, herdr state as a source, `ctx.key` labels, 7501 from `ctx shell`.\n- Runtime drivers: one interface over tmux and herdr-core.\n\n**What I need from you**\n1. **Windows installs**, for S1 and S4: `powershell -c \"irm https://releases.herdr.dev/app/install.ps1 | iex\"` and `powershell -c \"irm https://releases.herdr.dev/core/install.ps1 | iex\"`. That's your corporate machine, so I'd rather you ran them.\n2. **Start your own core in WSL:** `hc server start`. My sandbox runs as root, so the core I used for the spikes left root-owned state; I removed it, and the first start as you recreates it.\n3. **Take ownership of the binaries** I installed: `sudo chown dev: ~/.local/bin/herdr-core ~/.local/bin/hc`. They run fine as they are, but `hc update` would fail."
+  }
+ ],
+ "workstream": null,
+ "workstream_label": "(no repo)",
+ "change": 93806
+}
