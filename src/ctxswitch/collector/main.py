@@ -19,6 +19,7 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +42,8 @@ def ensure_shell_roots(roots) -> None:
 from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
-from ctxswitch.collector.liveness import (fill_tmux_at, read_agy_presence, read_claude_registry, read_claude_win_registry,
+from ctxswitch.collector.liveness import (HcLoop, fill_hc_at, fill_tmux_at, hc_terminals, label_sessions,
+                                          read_agy_presence, read_claude_registry, read_claude_win_registry,
                                           read_pi_registry, read_shell_registry, runtime_dir, tmux_panes)
 from ctxswitch.common.wsl import windows_pids
 from ctxswitch.collector.state import CollectorState
@@ -153,6 +155,8 @@ class Collector:
         self.spool = spool.spool_dir(cfg.collector.spool_dir)
         self.win_live: dict = {}                       # last Windows registry read (refreshed every WIN_POLL_S)
         self.live: dict = {}                           # key -> Liveness from the last registry read
+        self.hc = HcLoop(self.host_id)                 # this host's herdr-core, as seen through `hc events`
+        self._hc_ready = threading.Event()             # set when the events stream has ended (or died)
         base = cfg.hub.url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {cfg.hub.token}"} if cfg.hub.token else {}
         self.urls = {"ingest": base + "/v1/ingest", "outbox": base + "/v1/outbox", "messages": base + "/v1/messages"}
@@ -179,6 +183,17 @@ class Collector:
         need = [l for l in live.values() if l.pid and not l.tmux_at and l.key.split("/")[1] != "claude-win"]
         if need:
             fill_tmux_at(need, tmux_panes())
+        # herdr-core: where each session runs in this host's core, the ctx.key label that keeps that mapping across
+        # a restarted core, and what the core's agent reports (a dialog its own registry never shows). A host without
+        # hc on PATH skips all of it and a core that isn't running answers as no terminals, so a session keeps
+        # whatever its own source said. The terminals are listed only when something here still needs placing.
+        if shutil.which("hc"):
+            # a Windows pid is no pid on this host (see the walk above), and a herdr item brings its own address
+            want = [l for l in live.values() if not l.hc_at and l.key.split("/")[1] not in ("claude-win", "herdr")]
+            recs = hc_terminals() if want else []
+            fill_hc_at(want, recs)
+            label_sessions(want, recs)               # only what this poll just placed, never one it knows nothing of
+            self.hc.merge(live, recs)
         self.live = live
         self.ix.live_keys = set(live)
         snap = {"host_id": self.host_id, "sessions": [l.to_dict() for l in live.values()]}
@@ -329,6 +344,19 @@ class Collector:
                 log.exception("liveness poll")
             await asyncio.sleep(5)
 
+    async def hc_loop(self) -> None:
+        """herdr-core's events, read in a thread: the poll merges what it holds. A host without hc runs no thread;
+        a stream that dies (the core restarted, hc upgraded) restarts on its own, so this loop only waits."""
+        if shutil.which("hc") is None:
+            return
+        self._hc_ready.set()
+        try:
+            while True:
+                await asyncio.to_thread(self.hc.stream, self._hc_ready)
+                self._hc_ready.clear()
+        finally:
+            self.hc.stop()                           # a cancelled loop must take its reader down with it
+
     async def windows_loop(self) -> None:
         if not self.win_sessions_dirs():
             return
@@ -396,7 +424,7 @@ class Collector:
             await self.push_loop(); return
         await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop(),
                              self.spool_loop(), self.windows_loop(), self.inbox_loop(), self.budget_loop(),
-                             self.pool_loop())
+                             self.pool_loop(), self.hc_loop())
 
 
 def main() -> None:

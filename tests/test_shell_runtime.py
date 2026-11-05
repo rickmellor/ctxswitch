@@ -71,9 +71,10 @@ def wait_for(pred, timeout=8.0):
     return False
 
 
-@pytest.fixture
-def pane(tmp_path, monkeypatch):
-    """One private tmux server running `ctx shell --id t1` in tmp_path/work, with tmp_path as HOME."""
+def start_pane(tmp_path, monkeypatch, raw_to: str | None = None):
+    """One private tmux server running `ctx shell --id t1` in tmp_path/work, with tmp_path as HOME. ``raw_to``, when
+    given, also pipes the pane's bytes to that file of tmp_path, which is how a test sees the escape sequences the
+    shell sends only to its own terminal."""
     global SOCK, _n
     _n += 1
     SOCK = f"ctxshell{os.getpid()}_{_n}"
@@ -87,12 +88,30 @@ def pane(tmp_path, monkeypatch):
     monkeypatch.setenv("CTXSWITCH_RUNTIME", str(tmp_path / "run"))
     tm("new-session", "-d", "-x", "200", "-y", "50", "-s", "sh",
        f"cd {work} && PYTHONPATH={SRC} {sys.executable} -c 'from ctxswitch.client.cli import main; main()' shell --id t1")
-    ns = types.SimpleNamespace(pane=tm("list-panes", "-t", "sh:0.0", "-F", "#{pane_id}").splitlines()[0],
-                               sh=sh, log=sh / "t1.jsonl", out=sh / "t1.out", work=work, home=tmp_path,
-                               reg=tmp_path / "run" / "ctxswitch")
+    p = tm("list-panes", "-t", "sh:0.0", "-F", "#{pane_id}").splitlines()[0]
+    ns = types.SimpleNamespace(pane=p, sh=sh, log=sh / "t1.jsonl", out=sh / "t1.out", work=work, home=tmp_path,
+                               reg=tmp_path / "run" / "ctxswitch", raw=tmp_path / raw_to if raw_to else None)
     assert wait_for(lambda: records(ns.log)), "the shell never wrote its open record"
-    yield ns
+    return ns
+
+
+def stop_pane(ns):
     tm("kill-server", check=False)
+
+
+def capture_pane_bytes(ns, path):
+    """Point the pane's ONE pipe at ``path`` instead of the shell's .out: a pane has a single pipe-pane and this
+    replaces the one `ctx shell` installed, so from now on the test sees every byte the terminal sees."""
+    ns.raw = path
+    path.write_bytes(b"")
+    tm("pipe-pane", "-t", ns.pane, f"cat >> {path}")
+
+
+@pytest.fixture
+def pane(tmp_path, monkeypatch):
+    ns = start_pane(tmp_path, monkeypatch)
+    yield ns
+    stop_pane(ns)
 
 
 def send(pane, text=""):
@@ -251,3 +270,50 @@ def test_a_bashrc_histfile_and_ignoredups_dont_hide_commands(tmp_path, monkeypat
     send(pane, "history -w")
     assert wait_for(lambda: "echo again" in (pane.sh / "t1.history").read_text(errors="replace"))
     assert not (tmp_path / "global_history").exists() or "echo again" not in (tmp_path / "global_history").read_text()
+
+
+# -- telling herdr-core what this shell is doing --------------------------------------------------------------------
+# A terminal hc launched reads OSC 7501 to know its agent's state, so a ctx shell says idle at its prompt and
+# working while a command runs. tmux gives a pane one pipe, so the test hands the pane's bytes over from the
+# shell's own .out capture to see them: the same bytes hc would read.
+
+IDLE = b"\x1b]7501;state=idle:app=ctx-shell\x1b\\"
+WORKING = b"\x1b]7501;state=working:app=ctx-shell\x1b\\"
+
+
+def _said(raw):
+    i = raw.find(WORKING)
+    return i >= 0 and raw.find(IDLE, i) > i
+
+
+def test_a_ctx_shell_reports_its_state_to_herdr(tmp_path, monkeypatch):
+    from ctxswitch.collector.adapters.shell import output_tail
+    ns = start_pane(tmp_path, monkeypatch)
+    try:
+        send(ns, "echo hello")
+        assert wait_for(lambda: [r for r in records(ns.log) if r["t"] == "end"]), "the command never finished"
+        st = [r for r in records(ns.log) if r["t"] == "start"][0]
+        en = [r for r in records(ns.log) if r["t"] == "end"][0]
+        assert output_tail(ns.out, st["out"], en["out"]) == "hello"   # the sequence never reaches the transcript
+        assert b"7501" not in ns.log.read_bytes()
+        capture_pane_bytes(ns, tmp_path / "pane.raw")
+        send(ns, "echo again")
+        assert wait_for(lambda: len([r for r in records(ns.log) if r["t"] == "end"]) == 2)
+        # the pipe starts mid-stream, so what counts is the order around the command sent after it: working first,
+        # then the idle its next prompt reports
+        assert wait_for(lambda: _said(ns.raw.read_bytes())), "it never said working before running the command"
+        assert b"\x07" not in ns.raw.read_bytes(), "an OSC ends in ESC backslash, never BEL"
+    finally:
+        stop_pane(ns)
+
+
+def test_a_shell_with_no_terminal_says_nothing(tmp_path):
+    """The rcfile is what emits it, and only when its shell has a tty: a bash with pipes on both ends stays silent."""
+    rc = SRC / "ctxswitch" / "shell" / "ctx.bashrc"
+    (tmp_path / "reg").mkdir()
+    env = dict(os.environ, CTX_SHELL_LOG=str(tmp_path / "s.jsonl"), CTX_SHELL_OUT=str(tmp_path / "s.out"),
+               CTX_SHELL_REG_DIR=str(tmp_path / "reg"), CTX_SHELL_ID="quiet", PYTHONPATH=str(SRC))
+    p = subprocess.run(["bash", "--noprofile", "--rcfile", str(rc), "-i"], input=b"echo hi\nexit\n",
+                       capture_output=True, timeout=30, env=env)
+    assert b"7501" not in p.stdout + p.stderr
+    assert any(r["t"] == "open" for r in records(tmp_path / "s.jsonl"))     # it still recorded what it ran

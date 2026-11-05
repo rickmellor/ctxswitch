@@ -136,6 +136,10 @@ class Liveness:
                                         # conversation was parked into a background job (the board finds the pane by it)
     tmux_at: str | None = None          # "<session>:<window_id>.<pane_id>" ("ctx:@1.%2"): where it runs in a tmux on
                                         # ITS OWN host, so a board on another host can reach it through ssh
+    hc_at: str | None = None          # "<terminal address as this host's core names it>" ("t7"): where it runs in
+                                       # herdr-core on ITS OWN host, the same reach through ssh as tmux_at
+    hc_ask: dict | None = None        # herdr-core says a dialog is up: {"kind": "question"|"permission", "text": …};
+                                       # the hub stores nothing for it yet — it rides in the snapshot payload
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

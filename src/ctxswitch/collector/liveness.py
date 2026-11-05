@@ -9,13 +9,18 @@ tasklist.exe (no start time available, so a reused pid would read as live until 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ctxswitch.common.schema import LIVE, Liveness, session_key
+
+log = logging.getLogger("ctxswitch.collector")
 
 
 def _iso_ms(ms: Any) -> str | None:
@@ -163,6 +168,313 @@ def fill_tmux_at(items: list[Liveness], panes: list[tuple[str, str, str, int]], 
                 it.tmux_at = by_pid[cur]
                 break
             cur = _ppid(cur, proc)
+
+
+# -- herdr-core -----------------------------------------------------------------------------------------------------
+# herdr-core (``hc``) runs the same terminal on this host; a terminal is an address ("t7") on this host's core, and
+# a board on another host reaches it the same way it reaches a tmux pane: ssh in, use that address. Its agent
+# state (OSC 7501: working / idle / blocked) is richer than a registry file's busy/idle, so it also feeds
+# liveness (collector/main.py's hc_loop): terminals with a reporting agent but no local session of their own are
+# live sessions in their own right (harness "herdr" — an agent that has no transcript here, Codex, Cursor, …).
+
+HC_CTX_KEY = "ctx.key"
+HC_STATE_MAP = {"working": "busy", "blocked": "waiting", "idle": "idle", "done": "idle", "error": "unknown"}
+# an agent ctx already has its own way to see: a registry file (Claude, pi) or its own rcfile (ctx shell). herdr
+# never reports one of those as a session of its own — if no registry entry maps to that terminal, ctx's own
+# source says it isn't live, and a session with no transcript and no registry entry would be a phantom.
+HC_LOCAL_APPS = ("claude", "claude-code", "claude-win", "pi", "agy", "ctx-shell", "shell")
+
+
+def _hc_json(argv: list[str], run=subprocess.run) -> Any:
+    try:
+        p = run(argv, capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(p, "returncode", 1):
+        return None
+    try:
+        return json.loads(p.stdout or "")
+    except (ValueError, TypeError):
+        return None
+
+
+_hc_gets: dict[str, tuple] = {}        # address -> ((turn, status) the record was fetched at, the record)
+
+
+def hc_terminals(run=subprocess.run) -> list[dict]:
+    """Every LIVE terminal on this host's core as its ``hc get`` record, for the poll that calls it — at most one
+    ``hc get`` per terminal between the polls that ask: the get is skipped while its (turn, status) is what it was
+    when the record was fetched. ``hc ls`` carries no pid and no labels, and both are needed to place a session.
+    No hc binary, no server, or any other failure reads as no terminals (a host without herdr-core is normal);
+    nothing here may raise into the liveness poll."""
+    ls = _hc_json(["hc", "ls", "--json"], run)
+    terms = ls.get("terminals") if isinstance(ls, dict) else None
+    if not isinstance(terms, list):
+        _hc_gets.clear()                          # no answer at all: the terminals are gone, so are their records
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for t in terms:
+        if not isinstance(t, dict) or t.get("state") != "live":
+            continue
+        addr = t.get("address")
+        # a terminal on a machine this core is connected to ("gpu-host/t3") belongs to that host's own collector
+        if not isinstance(addr, str) or not addr or "/" in addr:
+            continue
+        seen.add(addr)
+        key = (t.get("turn"), t.get("status"))
+        hit = _hc_gets.get(addr)
+        if hit and hit[0] == key:
+            out.append(hit[1])
+            continue
+        got = _hc_json(["hc", "get", addr, "--json"], run)
+        rec = got if isinstance(got, dict) else dict(t)   # a get that failed still leaves the ls row to go on
+        rec.setdefault("address", addr)
+        _hc_gets[addr] = (key, rec)
+        out.append(rec)
+    for addr in [a for a in _hc_gets if a not in seen]:
+        del _hc_gets[addr]
+    return out
+
+
+def _hc_status(v: Any) -> dict | None:
+    """A status as the JSON carries it: an object from ``hc get`` and the events stream, a bare state string from
+    ``hc ls``. Anything else (null: never reported) has no state."""
+    if isinstance(v, dict):
+        return v
+    return {"state": v} if isinstance(v, str) and v else None
+
+
+def hc_status_of(status: Any) -> tuple[str | None, dict | None]:
+    """A terminal's herdr status -> (ctx status, ask or None). working→busy, blocked→waiting (with the dialog's
+    kind and text), idle|done→idle, error→unknown; no status (never reported) has no agent state of its own."""
+    if not isinstance(status, dict):
+        return None, None
+    st = status.get("state")
+    if st not in HC_STATE_MAP:
+        return None, None
+    ask = None
+    if st == "blocked" and status.get("msg"):
+        kind = status.get("kind")
+        ask = {"kind": kind if kind in ("question", "permission") else "plain",
+               "text": str(status["msg"]).strip()[:600]}
+    return HC_STATE_MAP[st], ask
+
+
+def fill_hc_at(items: list[Liveness], records: list[dict], proc: str = "/proc") -> None:
+    """Set hc_at on every live item that has a pid and none yet: the terminal whose pid (or its foreground pid)
+    is that pid or an ancestor of it (the session runs inside the terminal, like a tmux pane — same walk as
+    fill_tmux_at), or whose ctx.key label is the item's key (a hand-mapped terminal)."""
+    if not records:
+        return
+    by_pid: dict[int, str] = {}
+    for r in records:
+        addr = r.get("address")
+        if not isinstance(addr, str) or not addr:
+            continue
+        fg = r.get("foreground")
+        fg_pid = fg.get("pid") if isinstance(fg, dict) else None
+        if isinstance(fg_pid, int):
+            by_pid.setdefault(fg_pid, addr)
+        pid = r.get("pid")
+        if isinstance(pid, int):
+            by_pid.setdefault(pid, addr)
+    by_label = {r["labels"][HC_CTX_KEY]: r["address"] for r in records
+                if isinstance(r.get("address"), str) and isinstance(r.get("labels"), dict)
+                and r["labels"].get(HC_CTX_KEY)}
+    for it in items:
+        if it.hc_at or not it.pid:
+            continue
+        addr = by_label.get(it.key)
+        if not addr:
+            cur: int | None = it.pid
+            for _ in range(12):
+                if cur is None or cur <= 1:
+                    break
+                if cur in by_pid:
+                    addr = by_pid[cur]
+                    break
+                cur = _ppid(cur, proc)
+        if addr:
+            it.hc_at = addr
+
+
+_hc_labelled: set[str] = set()         # addresses this process has put its ctx.key on
+
+
+def label_sessions(items: list[Liveness], records: list[dict], run=subprocess.run) -> None:
+    """Give every terminal this poll mapped to a session its ctx.key label, so a later poll can place it by label
+    alone (the pid walk can fail on a restarted core, and a headless agent's pid is its own program's). One
+    ``hc label`` per terminal — remembered for this process — and none at all once the label is on the record."""
+    for it in items:
+        addr = it.hc_at
+        if not addr or addr in _hc_labelled:
+            continue
+        rec = next((r for r in records if r.get("address") == addr), None)
+        if rec is None:
+            continue
+        labels = rec.get("labels") if isinstance(rec.get("labels"), dict) else {}
+        if labels.get(HC_CTX_KEY) == it.key:
+            _hc_labelled.add(addr)                 # already labelled: nothing to do, ever again
+            continue
+        if labels.get(HC_CTX_KEY):
+            continue                               # it names another session: that mapping isn't ours to overwrite
+        p = run(["hc", "label", addr, f"{HC_CTX_KEY}={it.key}"], capture_output=True, text=True, timeout=3)
+        if not getattr(p, "returncode", 1):
+            _hc_labelled.add(addr)
+
+
+class HcLoop:
+    """This host's core as a liveness source: one long-lived ``hc events --json`` read line by line, keeping
+    ``state`` = {address: {state, kind, msg, app, turn, ts, title, pid, reported}} from its snapshot and its
+    status/turn/created/finished/removed lines. merge() feeds that into a poll: a blocked dialog on a terminal the
+    registries don't know about is a live session of its own; on one they do know it can only UPGRADE its status
+    (idle→waiting) and attach its ask. No hc on PATH: no reader, and merge() has nothing to say. The stream dies
+    and restarts with a 5→60 s backoff; a non-object line ("missed") means the core restarted — its fresh
+    snapshot is the next line anyway, so the reader just keeps reading."""
+    HC_ARGV = ["hc", "events", "--json"]
+
+    def __init__(self, host_id: str, popen=subprocess.Popen, which=shutil.which, sleep=time.sleep):
+        self.host_id, self.popen, self.which, self.sleep = host_id, popen, which, sleep
+        self.state: dict[str, dict] = {}
+        self._proc = None
+        self._stop = False
+
+    def stop(self) -> None:
+        self._stop = True
+        if self._proc is not None:
+            self._proc.kill()
+            try:
+                self._proc.wait(timeout=2)
+            except Exception:                       # noqa: BLE001 - it's a dying reader, nothing to learn from it
+                pass
+            self._proc = None
+
+    def _apply(self, d: dict, now: float) -> None:
+        """One snapshot terminal or event line: fold its fields into state[address]. ts is when THIS collector saw
+        the change (the stream carries no timestamps), so status_since is the same kind of stamp a registry gives."""
+        addr = d.get("terminal") or d.get("address")
+        if not isinstance(addr, str) or not addr:
+            return
+        typ = d.get("type")
+        if typ in ("finished", "removed", "lost"):
+            self.state.pop(addr, None)
+            return
+        s = self.state.get(addr)
+        if s is None or typ in ("created", "restarted"):
+            s = self.state[addr] = {"state": None, "kind": None, "msg": None, "app": None,
+                                    "turn": None, "ts": None, "title": "", "pid": None, "reported": False}
+        if typ is None:                             # a snapshot or "created" terminal: the whole record
+            st = _hc_status(d.get("status"))
+            s.update(state=st.get("state") if st else None, kind=st.get("kind") if st else None,
+                     msg=st.get("msg") if st else None,
+                     app=(st.get("app") if st else None) or d.get("agent"),
+                     turn=d.get("turn"), title=d.get("title") or d.get("name") or "",
+                     pid=d.get("pid") if isinstance(d.get("pid"), int) else None,
+                     reported=bool(d.get("reported")), ts=_iso_ms(now * 1000))
+            return
+        data = d.get("data") if isinstance(d.get("data"), dict) else {}
+        if typ == "status":
+            st = _hc_status(data.get("status")) or {"state": None}   # null: the program stopped reporting
+            s.update(state=st.get("state"), kind=st.get("kind"), msg=st.get("msg"),
+                     app=st.get("app") or s.get("app"), reported=True, ts=_iso_ms(now * 1000))
+        elif typ == "turn":
+            s.update(turn=data.get("turn"), ts=_iso_ms(now * 1000))
+
+    def _read_lines(self, p, ready) -> None:
+        for line in p.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(d, dict) and "params" in d:      # an event line: {"jsonrpc","method":"event","params":{…}}
+                d = d.get("params") or {}
+            if not isinstance(d, dict):
+                continue                                    # "missed": the core restarted; its snapshot is next
+            if "terminals" in d:                            # the snapshot: one whole record per terminal
+                for t in d.get("terminals") or []:
+                    if isinstance(t, dict):
+                        self._apply(t, time.time())
+                continue
+            if d.get("type") or d.get("terminal") is not None:
+                self._apply(d, time.time())
+        if ready is not None:
+            ready.set()
+
+    def stream(self, ready=None) -> None:
+        """Blocking reader: stream ``hc events --json`` until it dies, then restart after a 5→60 s backoff.
+        ``ready``, when given, is set whenever the stream ends (tests wait on it between their lines)."""
+        backoff = 5
+        while not self._stop:
+            if self.which("hc") is None:            # no herdr-core on this host: nothing to watch
+                return
+            p = None
+            try:
+                p = self.popen(self.HC_ARGV, stdout=subprocess.PIPE, text=True)
+                self._proc = p
+                self._read_lines(p, ready)
+            except Exception:                       # noqa: BLE001 - the poll's reader may not take the poll down
+                log.exception("herdr events")
+            finally:
+                self._proc = None
+                if p is not None:
+                    p.kill()
+                    try:
+                        p.wait(timeout=2)
+                    except Exception:               # noqa: BLE001
+                        pass
+            if ready is not None:
+                ready.set()
+            if self._stop:
+                return
+            self.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+    @staticmethod
+    def _tell(item: Liveness, st: dict) -> None:
+        """What herdr adds to a session ctx already has: the dialog its terminal is holding, and a blocked status
+        for one its own source calls idle. Nothing else — a registry's busy beats a core's idle."""
+        _, ask = hc_status_of({"state": st.get("state"), "kind": st.get("kind"), "msg": st.get("msg")})
+        item.hc_ask = {"kind": ask["kind"], "text": ask["text"]} if ask else None
+        if st.get("state") == "blocked" and item.status == "idle":
+            item.status, item.status_since = "waiting", st.get("ts") or item.status_since
+
+    def merge(self, live: dict, records: list[dict] | None = None) -> None:
+        """Feed herdr's state into this host's liveness (call after fill_hc_at, with the poll's records).
+
+        The events stream owns the sessions ctx has no other way to see: a terminal reporting a status no session
+        maps to is a session of its own, harness "herdr" — an agent with no transcript here (Codex, Cursor, …). It
+        is also what knows one is gone, since finished/removed drops it: a poll whose ``hc ls`` briefly failed
+        still reports what the stream holds rather than ending every herdr session. This poll's own records can
+        only speak about a session ctx already knows, which is where their fresher status and ask land."""
+        placed: set[str] = set()
+        for addr, st in list(self.state.items()):   # the reader thread may add one while this poll runs
+            if "/" in addr:
+                continue                                # "gpu-host/t3": that host's own collector reports it
+            item = next((it for it in live.values() if it.hc_at == addr), None)
+            if item is not None:
+                self._tell(item, st)
+                placed.add(addr)
+                continue
+            status, ask = hc_status_of({"state": st.get("state"), "kind": st.get("kind"), "msg": st.get("msg")})
+            key = session_key(self.host_id, "herdr", addr)
+            if key in live or status is None or (st.get("app") or "").lower() in HC_LOCAL_APPS:
+                continue     # reporting nothing of its own, or an agent ctx sees through its own source already
+            live[key] = Liveness(key=key, status=status, status_since=st.get("ts"), pid=st.get("pid"), hc_at=addr,
+                                 name=(st.get("title") or None) or st.get("app"), hc_ask=ask)
+            placed.add(addr)
+        for r in records or []:
+            addr = r.get("address")
+            if not isinstance(addr, str) or not addr or addr in placed or "/" in addr or r.get("state") != "live":
+                continue
+            item = next((it for it in live.values() if it.hc_at == addr), None)
+            if item is not None:
+                st = _hc_status(r.get("status"))
+                self._tell(item, {"state": st.get("state") if st else None, "kind": st.get("kind") if st else None,
+                                  "msg": st.get("msg") if st else None, "ts": None})
 
 
 def read_agy_presence(conversations_dir: Path, host_id: str, proc: str = "/proc") -> dict[str, Liveness]:
