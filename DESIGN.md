@@ -182,7 +182,9 @@ Greenfield repo: `~/repos/ctxswitch`.
   because bash says nothing. A dialog herdr-core saw (OSC 7501) is the session's open ask, refs `hc:<terminal>`, closed
   when the dialog is gone; `hc_at` links the row to its terminal, as `tmux_at` does for tmux. Laptop route (Rick):
   the Linux app under WSLg now, the Windows app later — a Windows core refuses `--via` and so can't add WSL or the
-  other hosts. The mod is render-only: its `act(name, row, cx)` logs, and open/start/message/answer join there.
+  other hosts. The mod's actions are plans (`actions.js`: pure functions from a row + the hub's answer to herdr
+  commands / hub POSTs, tested in node); `main.js` only runs them. `ctx tui --runtime hc` drives the Textual board
+  through the same hc driver, so both front ends run against one hub at once.
   Deferral: running the Textual board itself on `/v1/board` — the Textual board still reads `/v1/sessions`, and
   `tests/test_board_api.py` proves the two answer the same questions; the move buys the mod, not the TUI. Rule that
   cost an hour: herdr-core auto-starts a default core from ANY `hc` call, with that caller's environment, for the
@@ -363,7 +365,8 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
 6f. herdr front end (2026-11-04): the hub's view model (`/v1/board`, `/v1/board/{key}`, `/v1/launch`,
    `/v1/hosts` with what each host published), the collector's herdr support (`hc_at`, `ctx.key` labels,
    7501 as a live-status source, the dialog as the session's ask), the hc runtime driver under the same seam
-   as tmux, and the render-only `ctx-board` mod.
+   as tmux, the `ctx-board` mod (list, card, open/start/resume/message/answer/retire/end/host filter), `ctx tui
+   --runtime hc`, and `ctx install --herdr` / the doctor's herdr line.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 

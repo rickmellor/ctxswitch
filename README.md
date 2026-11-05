@@ -639,13 +639,24 @@ JSON the hub returns. It reads its hub URL and token from `ctx.json` beside the 
    which turns transcript saving off in anything it starts — the agent is then invisible to ctx.
 3. Add the other hosts: `hc machine add --name gpu-host --install --via '<your ssh command>'` —
    the same ssh you use by hand.
-4. `ctx install --herdr` wires the rest (landing with phase 1). Until then the only file to write
-   is the mod's `ctx.json` (see [herdr/mods/ctx-board](herdr/mods/ctx-board/README.md)).
+4. `ctx install --herdr` wires the rest: the mod into the app's `mods/ctx-board`, its `ctx.json` (hub url,
+   token, this host id, the `[ssh]` hosts as the machines map; mode 0600), the key bindings merged into the
+   app's `keys.json`, and it prints the `hc machine add` line for each `[ssh]` host. `ctx doctor` has a
+   `herdr` line (core answering, app found, mod current, ctx.json present).
 
-**Limits.** The mod is render-only: its actions (open, start, message, answer) go through an
-`act(name, row, cx)` stub that logs for now. The Windows app is deferred — a Windows core refuses
-`--via`, so it can't add WSL or the other hosts. The Textual board still reads `/v1/sessions`;
-`tests/test_board_api.py` proves `/v1/board` answers the same questions.
+**Keys in the mod** (`keys.json`, section `mod:ctx-board`; see [its README](herdr/mods/ctx-board/README.md)):
+`1`–`9` select a row · Enter opens it (its herdr terminal to the front; an ended one is resumed from
+`/v1/launch`, on its own machine) · `n`/`s` start (host → agent → folder) · `m` message · `a` answer ·
+`i` retire an instruction · `k` end (after a confirm) · `h` cycle the host filter · `e` show ended · Esc
+closes a popup. Click a row to select it, double-click to open.
+
+**Side by side.** `ctx tui --runtime hc` runs the Textual board against herdr-core instead of tmux (Enter,
+`n`/`s`, `k` and resume go through the hc driver), so the Textual board and the mod can show the same
+hub at once — the board even runs inside one of herdr's own terminals.
+
+**Limits.** The Windows app is deferred — a Windows core refuses `--via`, so it can't add WSL or the
+other hosts. The Textual board still reads `/v1/sessions`; `tests/test_board_api.py` proves `/v1/board`
+answers the same questions. Not in the mod yet: the `$` spend screen, `x` exchange, multi-resume.
 
 ## Tests
 ```sh
