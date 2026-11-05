@@ -106,3 +106,18 @@ add --name gpu-host|devbox --install --via '<the operator's ssh command>'` puts 
 machines. `herdr-app do tab.new --mod ctx-hello` then showed `hub ok · change 90535 · hosts 3 · auth true`. Decision
 (Rick): the Linux app now, Windows later. The Bash sandbox is a user namespace (uid 0 inside = the operator), so the
 cores and files it made were the operator's all along.
+
+**S5 — an agent herdr starts shows up on ctx.** `herdr-app do space.new --folder <dir> --argv '["claude"]'` on the
+clean core: hc `t1 claude-code idle`; the collector's registry read had it within its 5 s poll and the hub listed
+`laptop/claude/<id>` as `idle` with its pid — but with no `cwd`/`title` until the first exchange (a placeholder row
+holds only what the registry says; filtering the hub by directory finds nothing yet). After `hc send t1 "Reply with
+exactly the word OK"`: hub row `cwd`, title, 1 turn, reply "OK"; hc `done`, turn 1. So nothing in ctx's capture needs
+to change for herdr-run agents; `hc_at` (the collector job) is what links the row to its terminal.
+
+**Gotcha that cost an hour: herdr-core auto-starts the default core from ANY `hc` call, with that caller's whole
+environment, for the core's lifetime.** A pool worker's test (and then one of this session's own commands) did that:
+the core carried `ANTHROPIC_BASE_URL` (the local pool), `CLAUDE_CODE_CHILD_SESSION=1` (transcript saving OFF → the agent
+invisible to ctx), `CLAUDE_CONFIG_DIR`, a foreign `CLAUDE_CODE_SESSION_ID`. Rule: the operator's core starts only from
+a clean login shell (`env -i HOME=… XDG_RUNTIME_DIR=/run/user/1000 bash -lc 'hc server start'`; a user unit later),
+and every test or job touching hc isolates with `XDG_STATE_HOME`/`XDG_RUNTIME_DIR`/`HC_SESSION` and stops its server.
+Check `/proc/<core pid>/environ` before trusting herdr behaviour.
