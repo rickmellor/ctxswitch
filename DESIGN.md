@@ -171,6 +171,24 @@ Greenfield repo: `~/repos/ctxswitch`.
 - 2026-11-04 (left pane): a board left alone in its window (left pane closed outright, no hand-off) moves the most
   recently active session back on its left, or opens a shell, on its next refresh and when `ctx tmux` rejoins; never
   when another pane shares its window.
+- 2026-11-04 (herdr): herdr-core is a second runtime under the same seam as tmux (`client/runtime/`, `get_runtime`:
+  tmux inside tmux, hc when hc answers) and the ctx board becomes a herdr-app mod. herdr is the terminal runtime —
+  machines, terminals that survive a disconnect — ctx is the memory layer (recap, asks, ledger, spend, messages).
+  The view model moves into the hub (`hub/board.py`, `GET /v1/board`, `/v1/board/{key}`): the board's decisions are
+  made server-side, so a mod that isn't Python renders the same board; pinning and filtering stay client-side.
+  `GET /v1/launch` answers "how do I start or resume this on its own host" (argv, env, directory, label, key) from
+  what the host published, so a foreign front end never re-derives the client's launch rules. State stays 7501-only:
+  herdr infers nothing, and we don't spoof it for Claude or pi (their own reports arrive); only `ctx shell` emits it,
+  because bash says nothing. A dialog herdr-core saw (OSC 7501) is the session's open ask, refs `hc:<terminal>`, closed
+  when the dialog is gone; `hc_at` links the row to its terminal, as `tmux_at` does for tmux. Laptop route (Rick):
+  the Linux app under WSLg now, the Windows app later — a Windows core refuses `--via` and so can't add WSL or the
+  other hosts. The mod is render-only: its `act(name, row, cx)` logs, and open/start/message/answer join there.
+  Deferral: running the Textual board itself on `/v1/board` — the Textual board still reads `/v1/sessions`, and
+  `tests/test_board_api.py` proves the two answer the same questions; the move buys the mod, not the TUI. Rule that
+  cost an hour: herdr-core auto-starts a default core from ANY `hc` call, with that caller's environment, for the
+  core's lifetime — an agent's core (a pool worker's `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_CHILD_SESSION=1` = transcripts
+  off, a foreign `CLAUDE_CODE_SESSION_ID`) poisons every agent it starts; the operator's core starts from a clean
+  login shell, and tests isolate with `XDG_STATE_HOME`/`XDG_RUNTIME_DIR`/`HC_SESSION` and stop their server.
 
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is
@@ -342,6 +360,10 @@ ctxswitch/  pyproject.toml README.md DESIGN.md config.example.toml deploy/{hub.D
    inherits active instructions and the purpose. Moves stay Claude-account-only.
 6e. Spend, budget, pool jobs (2026-10-30/31), start screen (11-02), pool mark, background jobs, other hosts
    (11-03), left-pane repair (11-04): see the decisions log.
+6f. herdr front end (2026-11-04): the hub's view model (`/v1/board`, `/v1/board/{key}`, `/v1/launch`,
+   `/v1/hosts` with what each host published), the collector's herdr support (`hc_at`, `ctx.key` labels,
+   7501 as a live-status source, the dialog as the session's ask), the hc runtime driver under the same seam
+   as tmux, and the render-only `ctx-board` mod.
 7. Hub hardening: backups to NAS, token rotation, optional TLS; move-to-NAS runbook.
 8. Experimental flags (drift, re-ask, cross-session contradictions), off by default.
 

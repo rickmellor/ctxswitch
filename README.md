@@ -598,6 +598,55 @@ Start with **`ctx doctor`**: each line is ✓, ! (works, but look) or ✗ (broke
 | no recaps | `ctx doctor` (recaps line); the hub log (`docker logs ctxswitch-hub`) shows `recap … failed` lines if the endpoint is unreachable or the model is wrong |
 | a TUI change didn't show up | `ctx tmux --restart` (`q` only detaches: the old board keeps running) |
 
+## 12. herdr front end
+[herdr](https://herdr.dev) is a desktop app: a terminal manager (herdr-core, `hc`) that runs your
+agents in its own terminals and shows their state. The state is what the agent reports itself over
+OSC 7501 — herdr infers nothing.
+
+ctx adds the memory layer herdr doesn't have: recaps, asks, the ledger, spend, messages. herdr
+adds what the tmux manager gives in a desktop: a terminal runtime, machines on other hosts, and
+sessions that survive a disconnect. The two meet in three places:
+
+- **The hub's board API.** `GET /v1/board` and `GET /v1/board/{key}` are the board's view model —
+  the same rules the Textual board uses, ported into `hub/board.py` — with the header's counts and
+  today's cost. `GET /v1/launch` answers "how do I start or resume this session on its own host":
+  the argv, environment, directory, label and key, built from what that host published, so a front
+  end that isn't Python never re-derives the client's launch rules. `GET /v1/hosts` carries what
+  each host published — its profiles, the agents installed there, and its `hc` core.
+- **The collector's herdr support.** A session running in one of herdr's terminals gets an `hc_at`
+  in the collector's liveness, like the `tmux_at` of a session in ctx's tmux; the collector labels
+  herdr's terminals with the session's `ctx.key` so it finds its terminal. Herdr's own 7501 state
+  (working, idle, blocked, done) feeds the same live-status column — blocked shows as waiting, and
+  the dialog herdr sees becomes the session's open ask. `ctx shell` emits its own 7501 (bash
+  reports nothing).
+- **The runtime driver.** The client's manager is a seam now (`client/runtime/`): one interface,
+  two drivers, tmux and hc. `get_runtime` picks — tmux inside tmux, hc when hc is installed and
+  answering. Both drivers answer the same reach words for each row, so a row says the same thing
+  about itself under either manager.
+
+**The ctx-board mod.** `herdr/mods/ctx-board` draws the board inside the herdr app: the header,
+one row per session, and the detail card for the selected one, from `/v1/board` and
+`/v1/board/{key}`. The mod holds no business rules — every glyph, state word and mark is in the
+JSON the hub returns. It reads its hub URL and token from `ctx.json` beside the app's
+`settings.json` and refetches when the hub's `change` number moves.
+
+### Setup
+1. Install herdr-core and the herdr app from [herdr.dev](https://herdr.dev). A WSL laptop uses the
+   Linux app under WSLg; the Windows app waits (Limits, below).
+2. Start the core from a plain terminal, `hc server start` — never from inside an agent. herdr-core
+   auto-starts a default core from any `hc` call, with that caller's whole environment, for the
+   core's lifetime; a core born inside a Claude session carries its `CLAUDE_CODE_CHILD_SESSION`,
+   which turns transcript saving off in anything it starts — the agent is then invisible to ctx.
+3. Add the other hosts: `hc machine add --name gpu-host --install --via '<your ssh command>'` —
+   the same ssh you use by hand.
+4. `ctx install --herdr` wires the rest (landing with phase 1). Until then the only file to write
+   is the mod's `ctx.json` (see [herdr/mods/ctx-board](herdr/mods/ctx-board/README.md)).
+
+**Limits.** The mod is render-only: its actions (open, start, message, answer) go through an
+`act(name, row, cx)` stub that logs for now. The Windows app is deferred — a Windows core refuses
+`--via`, so it can't add WSL or the other hosts. The Textual board still reads `/v1/sessions`;
+`tests/test_board_api.py` proves `/v1/board` answers the same questions.
+
 ## Tests
 ```sh
 .venv/bin/python -m pytest -q     # the tmux tests run against a private tmux server and skip if tmux is missing
