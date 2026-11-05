@@ -62,13 +62,20 @@ export function newestInSpace(all, spaceId) {
 
 /** `space.new`'s arguments, from a launch recipe: its label, its folder, its argv, on the machine ctx.json names. */
 export function spaceArgs(recipe, cfg) {
-  return {
-    name: recipe?.label ?? "",
-    machine: machineFor(cfg, recipe?.host),
-    folder: recipe?.cwd || "~",
-    argv: recipe?.argv ?? [],
-  };
+  const out = { name: recipe?.label ?? "", machine: machineFor(cfg, recipe?.host), argv: recipe?.argv ?? [] };
+  const cwd = String(recipe?.cwd ?? "").trim();
+  // herdr-core takes `folder` literally (no `~`, no relative paths): a bare `~` or nothing means that machine's
+  // home, which is where a space starts with no folder at all; `~/x` is spelled out by a shell on that machine,
+  // since only it knows what `~` is there.
+  if (cwd.startsWith("~/") && out.argv.length) {
+    out.argv = ["sh", "-c", `cd ~/${shq(cwd.slice(2))} && exec "$@"`, "ctx", ...out.argv];
+  } else if (cwd && cwd !== "~" && !cwd.startsWith("~")) {
+    out.folder = cwd;
+  }
+  return out;
 }
+
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 // A session's key rides in these paths as itself, slashes and all — the hub's routes are `{key:path}`, which is
 // what ctx's own client sends. Only query values get encoded.

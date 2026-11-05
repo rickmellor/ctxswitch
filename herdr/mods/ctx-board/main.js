@@ -5,7 +5,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import {
-  appHome, readTextFile, theme, nextCommand, run, hc, spaces, terminals, panes, openOverlay, closeOverlay, notify, props,
+  appHome, readTextFile, theme, nextCommand, run, hc, spaces, terminals, panes, notify,
 } from "herdr";
 import { rowParts, headerLines, detailSections, detailTitle, toneColor, hasBold, tzOffset } from "./view.js";
 import {
@@ -14,15 +14,12 @@ import {
 } from "./actions.js";
 
 const POLL_MS = 2000;
-const PICKER = { width: 360, height: 280 };
 const DOUBLE_MS = 500;                                              // two clicks on one row this close apart = open
 
 export default class CtxBoard extends View {
   init(_props, cx) {
-    const p = props() ?? {};
-    this.overlay = p.overlay ?? null;                               // set when this copy is a popup
-    this.action = p.action ?? null;                                 // that popup's pending work, as plain data
-    this.chain = p.action?.kind === "start" ? { hosts: p.action.hosts ?? [], me: p.action.me ?? "", host: null, harness: null, profile: null } : null;
+    this.action = null;                                             // the popup up now (start/send/retire/end), plain data
+    this.chain = null;                                              // the start picker's steps so far
     this.cfg = null;
     this.cfgError = null;
     this.rows = [];
@@ -35,24 +32,20 @@ export default class CtxBoard extends View {
     this.dirty = true;
     this.notifiedAt = 0;
     this.filter = { host: null, ended: false };                     // null: this computer's host, as ctx.json names it
-    this.popup = null;                                              // a popup this copy opened, so keys go to it
     this.clickedAt = 0;
-    this.input = null;
-    if (p.action?.kind === "send") this.makeInput("");               // state is made here or in a handler, never in render
+    this.input = null;                                              // the popup's text field, made in a handler, never in render
     this.handle = cx.focus_handle();
     // mod.json says focusable: pane.go can step onto this copy; it takes the keyboard on "focus".
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c === "focus") { this.popup = null; this.handle.focus(); }   // also what we get when our popup closes
+        if (c === "focus") this.handle.focus();
         else this.command(c, cx);
         cx.notify();
       }
     });
-    if (!this.overlay) {                                            // a popup polls nothing; the board does
-      cx.timer.every(POLL_MS, (cx) => this.poll(cx));
-      this.poll(cx);
-    }
+    cx.timer.every(POLL_MS, (cx) => this.poll(cx));
+    this.poll(cx);
   }
 
   // ctx.json: {hub_url, token, host_id, machines}. The token only ever goes into a header.
@@ -158,13 +151,12 @@ export default class CtxBoard extends View {
   // A key command for this mod ("<mod>.<command>", from keys.json), or a click that names the same thing.
   command(c, cx) {
     const { command, index } = parseCommand(c);
-    if (this.overlay) {                                             // a popup copy: digits choose, Esc closes
-      if (command === "select" && index) this.pick(this.overlayChoices()[index - 1]?.value, cx);
-      else if (command === "clear") closeOverlay(this.overlay);
-      else if (command === "open" && this.overlayIsText()) this.submitText(cx);
+    if (this.action) {                                              // a popup is up: digits choose, Enter sends the
+      if (command === "clear") this.closePopup();                   // field, Esc closes; the letters stay out of it
+      else if (this.overlayIsText()) { if (command === "open") this.submitText(cx); }
+      else if (command === "select" && index) this.pick(this.overlayChoices()[index - 1]?.value, cx);
       return;
     }
-    if (this.popup && command !== "clear") return;                  // our own popup is up: its copy has the keys
     switch (command) {
       case "focus": this.handle.focus(); break;
       case "open": this.open(this.selected, cx); break;
@@ -175,8 +167,7 @@ export default class CtxBoard extends View {
       case "end": this.confirmEnd(this.selected, cx); break;
       case "host": this.cycleHost(cx); break;
       case "ended": this.filter.ended = !this.filter.ended; this.refresh(cx); break;
-      case "clear":                                                // Esc: a popup first, else back to the plain view
-        if (this.popup) { closeOverlay(this.popup); this.popup = null; break; }
+      case "clear":                                                // Esc with no popup up: back to the plain view
         this.filter = { host: null, ended: false }; this.selected = null; this.detail = null;
         this.refresh(cx); break;
       case "prev": this.move(-1, cx); break;
@@ -246,12 +237,8 @@ export default class CtxBoard extends View {
           hc(["label", String(t.address), `ctx.key=${key}`]).catch(() => null).then(() => done());
           return;
         }
-        if (++tries >= 12) {
-          notify({ title: "ctx", body: `started: couldn't label the terminal for ${key}`, level: "warning" });
-          done();
-          return;
-        }
-        cx.timer.after(150, look);
+        if (++tries >= 30) { done(); return; }                   // the collector labels it from the pid walk anyway
+        cx.timer.after(300, look);
       };
       look();
     });
@@ -331,16 +318,25 @@ export default class CtxBoard extends View {
     this.openPopup({ kind: "end", row, title: `end ${row.title || row.key} on ${row.host_id || "?"}?` }, cx);
   }
 
-  // A popup is this same mod with plain props: whichever copy shows one carries out its own action.
+  // The popup is drawn by this same view, in the list's place (not an app overlay: an overlay is a second copy of
+  // the mod, and the work it started died with it when it closed, with the keys left pointing at it).
   openPopup(action, cx) {
-    const id = openOverlay({ mod: "ctx-board", kind: "popup", ...PICKER, props: { action } });
-    if (!this.overlay) this.popup = id;                             // only the board copy tracks its own popup
+    this.action = action;
+    this.chain = action.kind === "start"
+      ? { hosts: action.hosts ?? [], me: action.me ?? "", host: null, harness: null, profile: null } : null;
+    this.input = null;
+    if (action.kind === "send") this.makeInput("");
     cx?.notify();
   }
 
-  // The start picker steps inside one popup — hosts, then what to run, then a folder — because a popup that
-  // opens another hands the keyboard to whichever copy shows it, and two copies answering the same key is
-  // never right. The steps are this copy's own state; props only carry where it began.
+  closePopup() {
+    this.action = null;
+    this.chain = null;
+    this.input = null;
+    this.handle.focus();
+  }
+
+  // The start picker steps inside one popup — hosts, then what to run, then a folder.
   overlayChoices() {
     const a = this.action ?? {};
     const c = this.chain ?? {};
@@ -385,7 +381,7 @@ export default class CtxBoard extends View {
       cx?.notify();
       return;
     }
-    closeOverlay(this.overlay);
+    this.closePopup();
     if (a.kind === "retire") this.doRetire(a.row, value.instruction);
     else if (a.kind === "end" && value.yes) this.doEnd(a.row, cx);
   }
@@ -396,7 +392,7 @@ export default class CtxBoard extends View {
     const c = this.chain ?? {};
     const text = String(this.input?.value?.() ?? "").trim();
     if (a.kind === "start" && !c.harness) return;                   // nothing chosen yet: nothing to start
-    closeOverlay(this.overlay);
+    this.closePopup();
     if (a.kind === "send") this.doSend(a.row, text, a.mode ?? "m");
     else this.doLaunch({ host: c.host, harness: c.harness, profile: c.profile }, text || "~", cx);
   }
@@ -516,7 +512,7 @@ export default class CtxBoard extends View {
         .children(s.lines.map((l) => this.text2(t, l)))));
   }
 
-  // The popup this mod draws as an overlay: a titled list of choices, or one text field.
+  // The popup, in the list's place: a titled list of choices, or one text field.
   popupView(t) {
     const a = this.action ?? {};
     if (this.overlayIsText()) {
@@ -525,7 +521,7 @@ export default class CtxBoard extends View {
     const list = this.overlayChoices();
     const c = this.chain ?? {};
     const empty = a.kind === "start" && c.host ? `${c.host} says it has nothing to start` : "nothing to choose here";
-    return v_flex().id("ctx-pick").w_full().p(12).gap(4).bg(t.popover).text_size(12.5)
+    return v_flex().id("ctx-pick").flex_none().m(10).p(12).gap(4).rounded(8).border_1().border_color(t.border).bg(t.popover).text_size(12.5)
       .child(h_flex().pb(4).items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(this.overlayTitle()))
         .child(div().text_size(10.5).text_color(t.dim).child("Esc")))
@@ -539,8 +535,8 @@ export default class CtxBoard extends View {
           : [div().p(8).text_size(11.5).text_color(t.dim).child(empty)]));
   }
 
-  // The field holds its own text; it is read at Send. gpui-kit refuses state made during render, so the popup copy
-  // makes it in init (a message) or in the pick that reaches the folder step (a start).
+  // The field holds its own text; it is read at Send. gpui-kit refuses state made during render, so it is made
+  // when the popup opens (a message) or in the pick that reaches the folder step (a start).
   makeInput(value) {
     this.input = InputState.new({ value: String(value ?? "") });
     this.input.on("submit", (_e, cx) => this.submitText(cx));
@@ -549,22 +545,23 @@ export default class CtxBoard extends View {
 
   textOverlay(t, a) {
     if (!this.input) return div().p(14).text_size(12).text_color(t.dim).child("…");
-    return v_flex().id("ctx-ask").w_full().min_h(0).p(14).gap(8).bg(t.popover).text_size(12.5)
+    return v_flex().id("ctx-ask").flex_none().m(10).p(14).gap(8).rounded(8).border_1().border_color(t.border).bg(t.popover).text_size(12.5)
       .child(h_flex().items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(String(a.title ?? "ctx")))
-        .child(div().flex_none().text_size(10.5).text_color(t.dim).child("Enter sends · Esc closes")))
+        .child(div().flex_none().text_size(10.5).text_color(t.dim)
+          .child(this.action?.kind === "send" ? "Enter sends · Esc closes" : "Enter starts · Esc closes")))
       .child(Input.new(this.input).h(34).px(10).rounded(8).border_1().border_color(t.accent).bg(t.background)
         .text_size(12.5).text_color(t.foreground))
       .child(h_flex().gap(8).justify_end().pt(4)
         .child(h_flex().id("ctx-ask-cancel").h(28).px(12).rounded(7).items_center().border_1().border_color(t.input)
-          .bg(t.raised).text_color(t.foreground).on_click(() => closeOverlay(this.overlay)).child("Cancel"))
+          .bg(t.raised).text_color(t.foreground).on_click(() => this.closePopup()).child("Cancel"))
         .child(h_flex().id("ctx-ask-go").h(28).px(12).rounded(7).items_center().border_1().border_color(t.solid)
-          .bg(t.solid).text_color(t.solid_foreground).on_click((_e, cx) => this.submitText(cx)).child("Send")));
+          .bg(t.solid).text_color(t.solid_foreground).on_click((_e, cx) => this.submitText(cx))
+          .child(this.action?.kind === "send" ? "Send" : "Start")));
   }
 
   render(_cx) {
     const t = theme();
-    if (this.overlay) return this.popupView(t);
     const root = v_flex().id("ctx-root").size_full().min_h(0).bg(t.chrome).border_r(1).border_color(t.border)
       .track_focus(this.handle)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); });
@@ -575,6 +572,7 @@ export default class CtxBoard extends View {
           .child(`hub unreachable: ${this.cfgError ?? this.error}`)));
     }
     if (!this.cfg) return root.child(div().p(10).text_size(12).text_color(t.dim).child("loading…"));
-    return root.child(this.headerView(t)).child(this.listView(t)).when(this.detail, (el) => el.child(this.detailView(t)));
+    return root.child(this.headerView(t)).child(this.action ? this.popupView(t) : this.listView(t))
+      .when(this.detail, (el) => el.child(this.detailView(t)));
   }
 }

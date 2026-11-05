@@ -104,7 +104,12 @@ test("spaceArgs: a launch recipe as space.new's arguments", () => {
   assert.deepEqual(spaceArgs(recipe({ host: "gpu-host" }), CFG),
     { name: "claude[bedrock]", machine: "vps", folder: "/home/dev/scratch/x", argv: ["claude", "--resume", "fdf857"] });
   assert.deepEqual(spaceArgs({ label: "shell", host: "devbox" }, CFG),
-    { name: "shell", machine: "", folder: "~", argv: [] });       // no cwd: that machine's home
+    { name: "shell", machine: "", argv: [] });                    // no cwd: no folder, so that machine's home
+  // herdr-core takes folder literally: "~" is dropped (home), "~/x" is spelled out by a shell over there
+  assert.deepEqual(spaceArgs({ label: "shell", host: "laptop", cwd: "~", argv: ["ctx", "shell"] }, CFG),
+    { name: "shell", machine: "", argv: ["ctx", "shell"] });
+  assert.deepEqual(spaceArgs({ label: "pi", host: "gpu-host", cwd: "~/repos/x", argv: ["pi"] }, CFG),
+    { name: "pi", machine: "vps", argv: ["sh", "-c", `cd ~/'repos/x' && exec "$@"`, "ctx", "pi"] });
 });
 
 // ── open (Enter / double-click) ───────────────────────────────────────────────────────────────────────
@@ -152,10 +157,10 @@ test("startPlan: a recipe is one space.new; a key nothing else carries also gets
 
   const fresh = startPlan(recipe({ key: "laptop/shell/<uuid>", host: "gpu-host", label: "shell", cwd: "~", argv: ["ctx", "shell"] }), CFG);
   assert.deepEqual(fresh.steps, [
-    { command: "space.new", args: { name: "shell", machine: "vps", folder: "~", argv: ["ctx", "shell"] }, as: "made" }, LABEL,
+    { command: "space.new", args: { name: "shell", machine: "vps", argv: ["ctx", "shell"] }, as: "made" }, LABEL,
   ]);
   assert.deepEqual(startPlan(null, CFG).steps,
-    [{ command: "space.new", args: { name: "", machine: "", folder: "~", argv: [] }, as: "made" }]);
+    [{ command: "space.new", args: { name: "", machine: "", argv: [] }, as: "made" }]);
 });
 
 test("hostChoices / harnessChoices: the picker's steps, from the hosts' own words", () => {
