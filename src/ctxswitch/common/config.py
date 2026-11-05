@@ -128,6 +128,22 @@ class ClaudeProfile:
         out += [f"{k}={v}" for k, v in kv.items()]
         return out + list(self.command)
 
+    def to_public(self) -> dict:
+        """This profile as a collector publishes it to the hub, so a front end that isn't this code (a herdr-app JS
+        mod) can start or resume a session without re-implementing ``argv()``. ``argv`` is the launch command itself:
+        where ``env -u`` and the ``K=V`` pairs sit in it follows from the dict/list order below, so the hub must be
+        handed the answer rather than the inputs. No secrets: a value whose *name* smells like a credential (key,
+        token, secret) is published as "***", in the ``env`` map and inside ``argv``'s ``K=V`` pairs alike — a
+        profile that passes a key this way publishes the command's shape, not the key."""
+        def masked(k: str, v: str) -> str:
+            return "***" if any(t in k.lower() for t in ("key", "token", "secret")) else str(v)
+
+        env = {str(k): masked(str(k), str(v)) for k, v in self.env.items()}
+        # argv carries those same K=V pairs, so mask them there too — else the map is secret and the command isn't
+        argv = [(a.split("=", 1)[0] + "=" + masked(*a.split("=", 1))) if "=" in a else a for a in self.argv()]
+        return {"name": self.name, "argv": argv, "config_dir": str(self.home) if self.config_dir else "",
+                "env": env, "unset": list(self.unset), "model": self.model}
+
     def owns(self, transcript_path: str | None) -> bool:
         """Whether a transcript (``<config_dir>/projects/<slug>/<id>.jsonl``) belongs to this profile."""
         if not transcript_path:
