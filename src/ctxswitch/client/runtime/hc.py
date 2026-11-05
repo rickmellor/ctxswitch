@@ -331,12 +331,12 @@ class HcRuntime:
         return f"resumed {short} in {self._run(argv, row, ssh=ssh)}"
 
     def start(self, host: str, harness: str, cwd: str, *, profile: str | None = None,
-              profiles: list | None = None, ssh: dict) -> str:
+              profiles: list | None = None, ssh: dict, this_host: str | None = None) -> str:
         """A fresh session in its own terminal. The key is known up front only where ctx chooses the session id (a
         shell's, a remote claude's ``--session-id``); an agent that picks its own id gets ``ctx.host`` now and its
         ``ctx.key`` from the pid walk as soon as the collector has seen its transcript."""
         ssh = tmux._ssh() if ssh is None else ssh
-        here = not tmux._is_remote({"host_id": host}, tmux._this_host())
+        here = not tmux._is_remote({"host_id": host}, this_host or tmux._this_host())
         try:
             argv, key = self._start_argv(harness, profile, profiles) if here else self._remote_argv(host, harness)
         except ValueError as e:
@@ -370,7 +370,7 @@ class HcRuntime:
                 fails.append(f"{tmux._short_title(row)}: {e}")
         return "resumed " + str(done) + "".join(f" · failed: {f}" for f in fails)
 
-    def end(self, row: dict, *, ssh: dict) -> str:
+    def end(self, row: dict, *, ssh: dict, this_host: str | None = None) -> str:
         t = self.terminal_for(row)
         if t is None:
             return "it isn't in a herdr-core terminal"

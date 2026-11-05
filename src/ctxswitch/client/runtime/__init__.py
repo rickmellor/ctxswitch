@@ -35,15 +35,16 @@ class Runtime(Protocol):
         ...
 
     def start(self, host: str, harness: str, cwd: str, *, profile: str | None = None,
-              profiles: list | None = None, ssh: dict) -> str:
-        """A fresh session of ``harness`` on ``host``, started so it stays alive. Returns its message."""
+              profiles: list | None = None, ssh: dict, this_host: str | None = None) -> str:
+        """A fresh session of ``harness`` on ``host``, started so it stays alive. Returns its message. ``this_host``
+        names the board's own host (the config's host id by default), so a driver knows which starts are local."""
         ...
 
     def resume_many(self, rows: list[dict], *, ssh: dict) -> str:
         """Resume each marked row, one message for all of them."""
         ...
 
-    def end(self, row: dict, *, ssh: dict) -> str:
+    def end(self, row: dict, *, ssh: dict, this_host: str | None = None) -> str:
         """End its program; its transcript stays, so the row comes back as resumable."""
         ...
 

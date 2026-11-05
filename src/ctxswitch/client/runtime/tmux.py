@@ -23,16 +23,18 @@ class TmuxRuntime:
         return tmux.show(row, ssh=ssh)
 
     def start(self, host: str, harness: str, cwd: str, *, profile: str | None = None,
-              profiles: list | None = None, ssh: dict) -> str:
-        if tmux._is_remote({"host_id": host}, tmux._this_host()):
+              profiles: list | None = None, ssh: dict, this_host: str | None = None) -> str:
+        if tmux._is_remote({"host_id": host}, this_host or tmux._this_host()):
             return tmux.new_remote_agent(host, harness, cwd, ssh or {})
-        return tmux.new_agent(harness, cwd, profile=profile, profiles=profiles)
+        if profile or profiles:
+            return tmux.new_agent(harness, cwd, profile=profile, profiles=profiles)
+        return tmux.new_agent(harness, cwd)
 
     def resume_many(self, rows: list[dict], *, ssh: dict) -> str:
         return tmux.resume_many(rows, ssh=ssh)
 
-    def end(self, row: dict, *, ssh: dict) -> str:
-        if tmux._is_remote(row, tmux._this_host()):
+    def end(self, row: dict, *, ssh: dict, this_host: str | None = None) -> str:
+        if tmux._is_remote(row, this_host or tmux._this_host()):
             return tmux.end_remote(row, ssh or {})
         p = tmux.agent_pane(row["key"])
         n = tmux.end_agent(p) if p is not None else 0

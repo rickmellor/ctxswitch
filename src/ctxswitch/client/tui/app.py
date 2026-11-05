@@ -18,7 +18,8 @@ a y/n) · a answer its open question (a quick-reply message) · w group by works
 Opening a session (enter) marks it viewed; the detail shows what changed since you last looked. New questions pop
 up on the tmux status line (client/notify.py; config notify / notify_idle).
 Inside tmux, enter swaps the session's pane into pane 0 of this window (see client/tmux.py); `ctx tmux` builds
-the layout. Outside tmux it opens a Windows Terminal tab.
+the layout. Outside tmux it opens a Windows Terminal tab. Enter/n/s/k go through a runtime driver (client/runtime/):
+tmux by default, herdr-core with `ctx tui --runtime hc`, so the same board drives either manager.
 Live: WebSocket change notices from the hub; falls back to polling every 10 s.
 """
 from __future__ import annotations
@@ -41,6 +42,8 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
+from ctxswitch.client.runtime import Runtime
+from ctxswitch.client.runtime.tmux import TmuxRuntime
 from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
@@ -165,6 +168,29 @@ def _here(board) -> str | None:
     """Which host a board runs on, or None for a board that never got as far as naming it (a stub in a test): on
     such a board nothing can be called remote, and there is no "here" to name in a picker."""
     return getattr(board, "this_host", None)
+
+
+def _rt(board) -> Runtime:
+    """The board's runtime driver; a stub board without one (a test) drives tmux, as the board always did."""
+    return getattr(board, "rt", None) or TmuxRuntime()
+
+
+def _ssh(board) -> dict:
+    """The board's ssh targets by host, {} on a stub board."""
+    return dict(getattr(getattr(board, "cfg", None), "ssh", None) or {})
+
+
+def _can_drive(board) -> bool:
+    """Whether Enter/n/s/k can act on terminals from here: inside ctx's tmux, or on any runtime that isn't tmux."""
+    return _rt(board).name != "tmux" or tmux.in_tmux()
+
+
+def _needs_manager(board, what: str) -> bool:
+    """The notice when they can't: True when the action has to stop."""
+    if _can_drive(board):
+        return False
+    board.notify(f"{what} needs the tmux manager (ctx tmux) or herdr-core (ctx tui --runtime hc)", severity="warning")
+    return True
 
 
 def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
@@ -583,6 +609,10 @@ class StartScreen(Screen):
         self.dismiss(None)
 
 
+class _Done(Exception):
+    """Leaves the tmux half of a refresh once the runtime driver has answered instead."""
+
+
 class CtxApp(App):
     CSS = """
     #summary { height: 2; padding: 0 1; background: $panel; }
@@ -611,9 +641,10 @@ class CtxApp(App):
         *(Binding(str(n), f"select_slot({n})", show=False) for n in range(1, SLOTS + 1)),   # a plain digit only selects
     ]
 
-    def __init__(self, cfg: Config, host: str | None):
+    def __init__(self, cfg: Config, host: str | None, runtime: Runtime | None = None):
         super().__init__()
         self.cfg = cfg
+        self.rt: Runtime = runtime or TmuxRuntime()  # what keeps the terminals: tmux (the default) or herdr-core (hc)
         self.client = HubClient(cfg)
         self.this_host = cfg.host_id or socket.gethostname()
         self.host_filter: str | None = host          # None = all
@@ -680,6 +711,11 @@ class CtxApp(App):
             self.call_from_thread(self.sub_title_set, f"hub unreachable: {e.__class__.__name__}")
             return
         try:
+            if self.rt.name != "tmux":                  # herdr-core: no viewer pane to mend, the driver says what's reachable
+                self.visible_key = None
+                self.on_screen = self.rt.visible_keys(data["sessions"])
+                self.reach = self.rt.reach(data["sessions"], self.this_host, self.cfg.ssh)
+                raise _Done
             said = tmux.restore_viewer()                # the left pane is gone (closed, its wrapper killed): put one back
             if said:
                 popup_log(f"viewer: {said}")
@@ -688,6 +724,8 @@ class CtxApp(App):
             self.visible_key = tmux.visible_key(ps, sessions=data["sessions"])
             self.on_screen = tmux.on_screen_keys(ps, sessions=data["sessions"])
             self.reach = tmux.reach_all(data["sessions"], self.this_host, self.cfg.ssh)
+        except _Done:
+            pass
         except Exception:                               # noqa: BLE001 - tmux is optional
             self.visible_key = None
             self.on_screen = set()
@@ -1248,7 +1286,7 @@ class CtxApp(App):
         if not s:
             return
         self.mark_opened(s["key"])                     # opening it is looking at it
-        if tmux.in_tmux():
+        if _can_drive(self):
             self.show_in_tmux(s)
         else:
             self.notify(open_tab(s, self.this_host, self.cfg.ssh), timeout=8)
@@ -1263,9 +1301,9 @@ class CtxApp(App):
     @work(exclusive=True, group="tmux", thread=True)
     def show_in_tmux(self, s: dict) -> None:
         try:
-            msg = tmux.show(s, ssh=self.cfg.ssh)
+            msg = _rt(self).open(s, ssh=self.cfg.ssh)
         except Exception as e:                          # noqa: BLE001
-            msg = f"tmux: {e}"
+            msg = f"{_rt(self).name}: {e}"
         popup_log(f"open {s['key']}: {msg}")            # what Enter (on a row or in the box) did
         self.call_from_thread(self.notify, msg, timeout=6)
         self.refresh_data()
@@ -1292,8 +1330,8 @@ class CtxApp(App):
     def action_new_session(self) -> None:
         """n: pick the host when others are reachable, the agent (Claude per account, pi, Antigravity, or a plain
         shell), then the directory."""
-        if not tmux.in_tmux():
-            self.notify("new sessions need the tmux manager (ctx tmux)", severity="warning"); return
+        if _needs_manager(self, "new sessions"):
+            return
         here = _here(self)
         hosts = [here, *self._remote_hosts()] if here else []   # no host named yet: nothing to pick between
         if len(hosts) > 1:                            # another host reachable: say up front which one it lands on
@@ -1346,8 +1384,8 @@ class CtxApp(App):
 
     def action_start(self) -> None:
         """s: the Start screen — a key per profile to start new, and the ended sessions to resume."""
-        if not tmux.in_tmux():
-            self.notify("starting sessions needs the tmux manager (ctx tmux)", severity="warning"); return
+        if _needs_manager(self, "starting sessions"):
+            return
         options = [*new_session_options(self.cfg), ("shell", "shell", None)]
         here = _here(self)
         self.push_screen(StartScreen(options, fmt.recent_sessions(self.sessions, self.reach), self.reach,
@@ -1359,8 +1397,8 @@ class CtxApp(App):
         if result[0] == "new":
             self._ask_dir(result[1], result[2], result[3], host=result[4] if len(result) > 4 else None)
         elif result[0] == "resume":
-            if not tmux.in_tmux():
-                self.notify("resuming needs the tmux manager (ctx tmux)", severity="warning"); return
+            if _needs_manager(self, "resuming"):
+                return
             self.resume_many_sessions(list(result[1]))
 
     @work(exclusive=True, group="tmux", thread=True)
@@ -1369,9 +1407,9 @@ class CtxApp(App):
         by_key = {s["key"]: s for s in self.sessions}
         sessions = [by_key[k] for k in keys if k in by_key]
         try:
-            msg = tmux.resume_many(sessions, ssh=self.cfg.ssh)
+            msg = _rt(self).resume_many(sessions, ssh=self.cfg.ssh)
         except Exception as e:                          # noqa: BLE001
-            msg = f"tmux: {e}"
+            msg = f"{_rt(self).name}: {e}"
         popup_log(f"resume {len(sessions)}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=8)
         for s in sessions:
@@ -1380,15 +1418,17 @@ class CtxApp(App):
 
     @work(exclusive=True, group="tmux", thread=True)
     def start_agent(self, harness: str, cwd: str, profile: str | None = None) -> None:
+        here = _here(self)
         try:
             if harness == "claude":
                 typed, cwd = split_profile(cwd, [p.name for p in self.cfg.claude_profiles])
                 profile = typed or profile
-                msg = tmux.new_agent(harness, cwd, profile=profile, profiles=self.cfg.claude_profiles)
+                msg = _rt(self).start(here, harness, cwd, profile=profile, profiles=self.cfg.claude_profiles,
+                                      ssh=_ssh(self), this_host=here)
             else:
-                msg = tmux.new_agent(harness, cwd)
+                msg = _rt(self).start(here, harness, cwd, ssh=_ssh(self), this_host=here)
         except Exception as e:                          # noqa: BLE001
-            msg = f"tmux: {e}"
+            msg = f"{_rt(self).name}: {e}"
         popup_log(f"new {harness}{f'[{profile}]' if profile else ''} in {cwd}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=6)
 
@@ -1397,9 +1437,9 @@ class CtxApp(App):
         """Start an agent on another host: it runs in a tmux named ``ctx`` over there, so it survives the ssh
         dropping; the window this opens is only the view of it (see tmux.new_remote_agent)."""
         try:
-            msg = tmux.new_remote_agent(host, harness, cwd, self.cfg.ssh)
+            msg = _rt(self).start(host, harness, cwd, ssh=self.cfg.ssh, this_host=_here(self))
         except Exception as e:                          # noqa: BLE001
-            msg = f"tmux: {e}"
+            msg = f"{_rt(self).name}: {e}"
         popup_log(f"new {harness} on {host} in {cwd}: {msg}")
         self.call_from_thread(self.notify, msg, timeout=6)
 
@@ -1628,6 +1668,11 @@ class CtxApp(App):
         s = self._selected_session()
         if not s:
             return
+        if _rt(self).name != "tmux":                    # another runtime ends what it holds; it says so when it can't
+            busy = " (busy: it's working)" if s.get("live_status") == "busy" else ""
+            self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)} ({fmt.HARNESS.get(s['harness'], s['harness'])}·{s['host_id']}){busy}?",
+                         lambda: self.end_via_runtime(s))
+            return
         if not tmux.in_tmux():
             self.notify("k ends sessions in ctx's tmux (ctx tmux); quit this one where it runs", severity="warning"); return
         reach = self.reach.get(s["key"], "")
@@ -1649,6 +1694,17 @@ class CtxApp(App):
         busy = " (busy: it's working)" if s.get("live_status") == "busy" else ""
         self.confirm(f"end {fmt.one_line(fmt.display_title(s), 30)} ({fmt.HARNESS.get(s['harness'], s['harness'])}·{s['host_id']}){busy}?",
                      lambda: self.notify(f"ending {fmt.one_line(fmt.display_title(s), 30)}" if tmux.end_agent(p) else "its agent had already exited", timeout=4))
+
+    @work(exclusive=True, group="tmux", thread=True)
+    def end_via_runtime(self, s: dict) -> None:
+        """k under a runtime other than tmux: the driver ends the terminal it holds for the row."""
+        try:
+            msg = _rt(self).end(s, ssh=self.cfg.ssh, this_host=_here(self))
+        except Exception as e:                          # noqa: BLE001
+            msg = f"{_rt(self).name}: {e}"
+        popup_log(f"end {s['key']}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=6)
+        self.refresh_data()
 
     @work(exclusive=True, group="tmux", thread=True)
     def end_remote_session(self, s: dict) -> None:
@@ -1702,5 +1758,5 @@ class CtxApp(App):
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
 
 
-def run(cfg: Config, host: str | None = None) -> None:
-    CtxApp(cfg, host).run()
+def run(cfg: Config, host: str | None = None, runtime: Runtime | None = None) -> None:
+    CtxApp(cfg, host, runtime).run()

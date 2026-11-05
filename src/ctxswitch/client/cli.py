@@ -10,7 +10,7 @@
   ctx hosts                              collectors seen by the hub
   ctx search <words> [--kind K] [--host H]   decisions, instructions, claims and your prompts, every session
   ctx mcp                                an MCP server on stdio (read-only) for agents: sessions, ledgers, search
-  ctx tui                                the board (narrow; built for a tmux side pane)
+  ctx tui [--runtime tmux|hc]            the board (narrow; built for a tmux side pane, or herdr-core terminals)
   ctx tmux [--width 18%|40]             create/attach the tmux manager: session left, ctx tui right
   ctx shell [--id ID]                   a bash whose commands show on the board (started by n → shell)
   ctx install / uninstall [--claude --pi --collector]   wire this host up (hooks, pi extension, collector unit)
@@ -311,8 +311,10 @@ def cmd_shell(a) -> int:
 
 
 def cmd_tui(a) -> int:
+    from ctxswitch.client.runtime import get_runtime
     from ctxswitch.client.tui.app import run
-    run(load(), host=_host_arg(a))
+    rt = get_runtime(getattr(a, "runtime", None))      # tmux inside tmux, hc when a core answers, --runtime to say
+    run(load(), host=_host_arg(a), runtime=rt)
     return 0
 
 
@@ -323,6 +325,9 @@ def main(argv=None) -> None:
     for name, fn in (("ls", cmd_ls), ("attention", cmd_attention), ("tui", cmd_tui)):
         p = sub.add_parser(name); p.set_defaults(fn=fn)
         p.add_argument("--host"); p.add_argument("--all", action="store_true")
+        if name == "tui":
+            p.add_argument("--runtime", choices=("tmux", "hc"),
+                           help="what runs the terminals: tmux (inside ctx tmux) or herdr-core; picked by itself when left out")
         if name == "ls": p.add_argument("--live", action="store_true")
     p = sub.add_parser("show"); p.set_defaults(fn=cmd_show)
     p.add_argument("key"); p.add_argument("--turns", type=int, default=6); p.add_argument("--decisions", type=int, default=8)
