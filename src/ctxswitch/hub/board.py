@@ -243,12 +243,18 @@ def board(store: Store, *, host: str | None = None, ended: bool = False, q: str 
 
 def detail(store: Store, key: str, turns: int = DEFAULT_TURNS, tz: str | None = None,
            prices: dict[str, dict[str, float]] | None = None, saint: Any = None,
-           price_as: str = "claude-opus-5-5", price_jobs: Any = None) -> dict[str, Any] | None:
+           price_as: str = "claude-opus-5-5", price_jobs: Any = None, add_local: Any = None) -> dict[str, Any] | None:
     """GET /v1/board/{key}'s body: app.render_detail's data choices, section by section, none of its text. None for a
-    key the store doesn't know (the route turns that into a 404)."""
+    key the store doesn't know (the route turns that into a 404).
+
+    ``add_local`` is the hub's own ``_add_local`` — the card the Textual board draws came from ``GET /v1/session``,
+    which asks SAINT what this session cost it, so the card here asks too (one call, and only for a session SAINT
+    could have run). ``tz`` is validated the same way as on the list, for a front end that asks both the same way."""
     s = store.session(key, turns=turns)
     if s is None:
         return None
+    if add_local:
+        add_local(s)
     prices = prices or {}
     now = datetime.now(timezone.utc)
     host_pools = store.host_pools()

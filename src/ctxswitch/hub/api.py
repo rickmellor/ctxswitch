@@ -358,7 +358,8 @@ class Hub:
         except ValueError:
             return JSONResponse({"error": "turns must be a number"}, 400)
         d = board_detail(self.store, req.path_params["key"], turns=turns, tz=p.get("tz"), prices=self.prices,
-                         saint=self.saint, price_as=self.price_as, price_jobs=self._price_jobs)
+                         saint=self.saint, price_as=self.price_as, price_jobs=self._price_jobs,
+                         add_local=self._add_local)
         return JSONResponse(d) if d else JSONResponse({"error": "not found"}, 404)
 
     async def search(self, req: Request) -> Response:
