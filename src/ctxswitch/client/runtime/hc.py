@@ -27,6 +27,7 @@ KEY_LABEL = "ctx.key"
 HOST_LABEL = "ctx.host"
 FOCUS_APP = "herdr-app"                   # the app that fronts the herdr window, when this host has one
 PROC = "/proc"
+_AUTO = object()                        # "where" a terminal runs: on the machine its row's host names
 
 
 class HcError(RuntimeError):
@@ -153,7 +154,7 @@ class HcRuntime:
         self.machines = machines if machines is not None else {}
         self.proc = proc
         self.timeout = timeout
-        self.focus_app = FOCUS_APP if focus_app is None else focus_app
+        self.focus_app = FOCUS_APP if focus_app is None else focus_app    # "": never try the app
 
     # -- plumbing -------------------------------------------------------
 
@@ -278,9 +279,10 @@ class HcRuntime:
             return "resume" if tmux.resume_argv(row) else "none"
         if t is not None and self._machine_matches(t, row, ssh, ms):
             return "pane"                                         # its core is added here: hc shows it from here
-        if row.get("live_status") in LIVE and row.get("tmux_at"):
+        if row.get("live_status") in LIVE and row.get("tmux_at") and tmux.ssh_target(row.get("host_id"), ssh or {}):
             return "attach"                                       # live over there in a tmux: ssh shows it
-        if row.get("live_status") not in LIVE and tmux.resume_argv(row) and self._has_machine(row.get("host_id"), ssh, ms):
+        if row.get("live_status") not in LIVE and tmux.resume_argv(row) \
+                and self._has_machine(row.get("host_id"), ssh, ms):
             return "ssh"                                          # ended: it starts again there, through this core
         return "remote"
 
@@ -297,21 +299,36 @@ class HcRuntime:
                                     for m in (self.machines_here() if ms is None else ms))
 
     def open(self, row: dict, *, ssh: dict) -> str:
+        """Its terminal in front (the app, or the attach to type); an ended row starts again, on its own machine when
+        that is one of this core's; one live in a tmux over there is shown by the ssh that views it. Anything else
+        answers what the row's reach column already said, in the same words."""
         ssh = tmux._ssh() if ssh is None else ssh
         this_host = tmux._this_host()
         ts, ms = self.terminals(), self.machines_here()
+        short = (row.get("title") or row.get("session_id") or "")[:40]
         t = self.terminal_for(row, ts)
         if t is not None:
             addr = t.get("address") or ""
             if self._focus(addr):
                 return f"showing {(row.get('title') or addr)[:40]}"
             return f"attach with: hc attach {addr}"               # a library can't take over this terminal
-        if tmux._is_remote(row, this_host):                       # not on a core we can see: what ssh can do
-            return tmux.reach_help(row, self._reach_row(row, ts, ms, this_host, ssh), ssh)
+        r = self._reach_row(row, ts, ms, this_host, ssh)
+        if r == "foreign":
+            return f"running in another terminal (pid {row.get('pid')}): quit it there, then Enter resumes it here"
+        if r == "none":
+            return f"cannot resume a {row.get('harness')} session"
+        if r == "remote":
+            return tmux.reach_help(row, r, ssh)
         argv = tmux.resume_argv(row)
         if not argv:
             return f"cannot resume a {row.get('harness')} session"
-        return f"resumed {(row.get('title') or row.get('session_id') or '')[:40]} in {self._run(argv, row, ssh=ssh)}"
+        if r == "attach":
+            # a terminal here running the ssh that views that window (tmux.view_command, tagged with the key)
+            sess, window, pane = tmux._tmux_at_parts(row.get("tmux_at") or "")
+            argv = tmux.remote_argv(tmux.ssh_target(row.get("host_id"), ssh) or "",
+                                    tmux.view_command(f"{sess}:{window}", pane))
+            return f"attached {short} in {self._run(argv, row, on='')}"
+        return f"resumed {short} in {self._run(argv, row, ssh=ssh)}"
 
     def start(self, host: str, harness: str, cwd: str, *, profile: str | None = None,
               profiles: list | None = None, ssh: dict) -> str:
@@ -371,10 +388,11 @@ class HcRuntime:
 
     # -- starting and resuming -----------------------------------------
 
-    def _run(self, argv: list[str], row: dict, *, ssh: dict | None = None) -> str:
-        """terminal.run, backgrounded, labelled with the row's key so the next look finds it by that alone."""
+    def _run(self, argv: list[str], row: dict, *, ssh: dict | None = None, on: str | None = _AUTO) -> str:
+        """terminal.run, backgrounded, labelled with the row's key so the next look finds it by that alone.
+        ``on`` is the machine to run it on: left out, a row from another host runs on its own machine."""
         host = row.get("host_id") or ""
-        remote = tmux._is_remote(row, tmux._this_host())
+        remote = on is _AUTO and tmux._is_remote(row, tmux._this_host())
         cwd = (row.get("cwd") or "").strip() or None
         if remote and cwd and cwd.startswith("~"):
             cwd = None                                            # ~ over there is not ~ here: leave it its own home
@@ -383,8 +401,11 @@ class HcRuntime:
             params["labels"][KEY_LABEL] = row["key"]
         if cwd:
             params["cwd"] = cwd
-        if remote:
-            params["on"] = self.machine_name(host, ssh)
+        if on is _AUTO:
+            if remote:
+                params["on"] = self.machine_name(host, ssh)
+        elif on:
+            params["on"] = on
         if name := self._name(row.get("title") or row.get("key")):
             params["name"] = name
         return self.rpc("terminal.run", params).get("address") or ""

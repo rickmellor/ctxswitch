@@ -155,7 +155,8 @@ def core(tmp_path, monkeypatch):
 
 @pytest.fixture
 def rt(core, tmp_path):
-    return HcRuntime(proc=str(tmp_path / "proc"))
+    # focus_app off: a test that wants the herdr app names the one it wrote, and none can reach the operator's
+    return HcRuntime(proc=str(tmp_path / "proc"), focus_app="")   # "" = no herdr app on this host
 
 
 def row(**kw) -> dict:
@@ -268,7 +269,8 @@ def test_reach_on_another_host_found_attach_ssh_and_remote(core, rt):
     assert rt.reach([remote(live_status="idle", pid=7)], HERE, {}) == {"gpu-host/claude/r1": "pane"}
     assert rt.where(remote(live_status="idle", pid=7)) == "gpu-host/t7"
     core.remote["gpu-host"] = []                                             # that core shows nothing of ours
-    assert rt.reach([remote(live_status="busy", pid=7, tmux_at="ctx:@2.%9")], HERE, {}) == {"gpu-host/claude/r1": "attach"}
+    assert rt.reach([remote(live_status="busy", pid=7, tmux_at="ctx:@2.%9")], HERE, {}) == \
+        {"gpu-host/claude/r1": "attach"}
     assert rt.reach([remote(live_status="busy", pid=7)], HERE, {}) == {"gpu-host/claude/r1": "remote"}
     assert rt.reach([remote(live_status="ended")], HERE, {}) == {"gpu-host/claude/r1": "ssh"}
     assert rt.reach([remote(live_status="ended", harness="mystery")], HERE, {}) == {"gpu-host/claude/r1": "remote"}
@@ -285,6 +287,9 @@ def test_reach_on_another_host_found_attach_ssh_and_remote(core, rt):
     core.remote = {}
     assert rt.reach([remote(live_status="ended")], HERE, {"gpu-host": "gpu-host.internal"}) == \
         {"gpu-host/claude/r1": "ssh"}
+    # live over there but no ssh route from here: nothing Enter can do
+    assert rt.reach([remote(live_status="busy", pid=7, tmux_at="ctx:@2.%9")], HERE, {"gpu-host": ""}) == \
+        {"gpu-host/claude/r1": "remote"}
     # a machine that isn't connected lists nothing, so nothing there can be reached but over ssh
     core.machines = [{"name": "gpu-host", "host": "gpu-host", "state": "unreachable", "target": "gpu-host.internal"}]
     assert rt.reach([remote(live_status="ended")], HERE, {}) == {"gpu-host/claude/r1": "ssh"}
@@ -336,13 +341,35 @@ def test_open_an_ended_pi_or_shell(core, rt, tmp_path):
 
 def test_open_says_no_when_nothing_can_resume_it(core, rt):
     assert rt.open(row(harness="mystery"), ssh={}) == "cannot resume a mystery session"
+    assert rt.open(row(live_status="busy", pid=4321), ssh={}) == \
+        "running in another terminal (pid 4321): quit it there, then Enter resumes it here"
     assert core.runs == 0
 
 
-def test_open_a_remote_row_says_what_reach_said(core, rt):
-    r = row(key="gpu-host/claude/r1", host_id="gpu-host", live_status="busy", pid=7)
-    assert rt.open(r, ssh={}) == "running on gpu-host: quit it there, then Enter resumes it here over ssh"
-    assert core.runs == 0
+def test_open_a_remote_row_views_it_starts_it_there_or_says_help(core, rt):
+    remote = lambda **kw: row(key="gpu-host/claude/r1", host_id="gpu-host", **kw)   # noqa: E731
+    # live in a tmux over there: a terminal here running the ssh that views that window
+    msg = rt.open(remote(live_status="busy", pid=7, tmux_at="ctx:@2.%9"), ssh={"gpu-host": "gpu.dev"})
+    p = sent(core)
+    assert msg == "attached Widget work in t1"
+    assert "on" not in p and p["argv"][0] == "ssh" and p["argv"][6] == "gpu.dev"   # a terminal here, not one there
+    assert "ctxview-" in p["argv"][-1] and "%9" in p["argv"][-1]        # a view of that one pane, not a takeover
+    # the view terminal carries the key, as tmux tags its view pane: the next Enter finds that view again
+    assert rt.open(remote(live_status="busy", pid=7, tmux_at="ctx:@2.%9"), ssh={"gpu-host": "gpu.dev"}) \
+        == "attach with: hc attach t1"
+    # ended, and this core has a machine for that host: it starts again over there
+    core.machines = [{"name": "gpu-host", "host": "gpu-host", "state": "connected", "target": "gpu-host"}]
+    gone = row(key="gpu-host/claude/sid2", host_id="gpu-host", session_id="sid2", live_status="ended")
+    assert rt.open(gone, ssh={}) == "resumed Widget work in t2"
+    assert sent(core, 1)["on"] == "gpu-host" and sent(core, 1)["argv"] == ["claude", "--resume", "sid2"]
+    # nothing this core can do: the row's own reach, spelled out
+    core.machines = []
+    assert rt.open(row(key="gpu-host/claude/r2", host_id="gpu-host", session_id="r2",
+                        live_status="busy", pid=8), ssh={}) == \
+        "running on gpu-host: quit it there, then Enter resumes it here over ssh"
+    assert rt.open(row(key="gpu-host/claude/r3", host_id="gpu-host", session_id="r3", harness="mystery",
+                        live_status="ended"), ssh={}) == "on gpu-host: can't be resumed"
+    assert core.runs == 2
 
 
 def test_start_claude_pi_and_shell_here(core, rt, tmp_path, monkeypatch):
@@ -493,7 +520,7 @@ def test_a_real_core_over_the_socket(monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
         pytest.skip(f"no private herdr-core here: {started.stderr.strip()[:120]}")
     key = f"{HERE}/shell/{uuid.uuid4()}"
-    r = HcRuntime(sock=str(base / "r" / "herdr-core" / f"{env['HC_SESSION']}.sock"), env=env)
+    r = HcRuntime(sock=str(base / "r" / "herdr-core" / f"{env['HC_SESSION']}.sock"), env=env, focus_app="")
     try:
         assert r.available() is True
         addr = r._run(["sleep", "30"], {"key": key, "host_id": HERE, "cwd": str(base)})
@@ -502,8 +529,8 @@ def test_a_real_core_over_the_socket(monkeypatch):
         assert r.reach([{"key": key, "host_id": HERE, "live_status": "idle"}], HERE, {}) == {key: "pane"}
         live = [t for t in r.terminals() if t["address"] == addr]
         assert live and live[0]["state"] == "live" and live[0]["labels"]["ctx.key"] == key
-        assert r.open({"key": key, "host_id": HERE, "live_status": "idle", "title": "sleep"}, ssh={}).startswith(
-            ("attach with: hc attach ", "showing "))
+        assert r.open({"key": key, "host_id": HERE, "live_status": "idle", "title": "sleep"}, ssh={}) == \
+            f"attach with: hc attach {addr}"
         assert r.end({"key": key, "host_id": HERE, "title": "sleep"}, ssh={}) == "ended sleep"
         got = subprocess.run(["hc", "get", addr, "--json"], capture_output=True, text=True,
                              env={**os.environ, **env})
