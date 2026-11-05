@@ -144,6 +144,28 @@ def read_pool(path: str, get=httpx.get) -> dict[str, Any] | None:
             "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
+def claude_installed(cfg: Config, which=None) -> bool:
+    """Whether this host can start Claude Code at all: a profile's command on the PATH, or an absolute wrapper
+    (what ``n`` offers a host by — see client/tui/app.py's ``new_session_options``)."""
+    which = which or shutil.which
+    return any(which(p.command[0] if p.command else "claude")
+               or os.path.isabs(p.command[0] if p.command else "claude") for p in cfg.claude_profiles)
+
+
+def host_info(cfg: Config, which=None, hc=None) -> dict[str, Any]:
+    """What this host says of itself with every ingest, so the hub (hub/launch.py) can answer ``GET /v1/launch`` for
+    a front end that isn't Python: the profiles it can start Claude Code under (masked: see
+    ``ClaudeProfile.to_public``) and which harnesses are actually on its PATH. ``ctx`` is whether this install's
+    ``ctx`` is reachable — ``ctx shell`` sessions resume through it."""
+    which = which or shutil.which
+    hc = hc or hc_bin
+    return {"collector": "0.0.1", "platform": platform.platform(), "python": platform.python_version(),
+            "profiles": [p.to_public() for p in cfg.claude_profiles],
+            "agents": {"claude": claude_installed(cfg, which), "pi": bool(which("pi")),
+                       "agy": bool(which("agy")), "ctx": bool(which("ctx"))},
+            "hc": hc() is not None}
+
+
 class Collector:
     def __init__(self, cfg: Config, once: bool = False):
         self.cfg, self.once = cfg, once
@@ -231,7 +253,7 @@ class Collector:
     # -- pusher ---------------------------------------------------------------------------------------------------
     async def push_loop(self) -> None:
         url, headers = self.urls["ingest"], self.headers
-        info = {"collector": "0.0.1", "platform": platform.platform(), "python": platform.python_version()}
+        info = host_info(self.cfg)                  # what this host can start (hub/launch.py reads it back off the store)
         backoff = 1.0
         async with httpx.AsyncClient(timeout=20) as client:
             while True:

@@ -26,6 +26,10 @@
                                      ledger, siblings, earlier exchanges): the data behind app.render_detail, no text
   GET  /v1/spend?from=ISO&to=ISO&host=    what the window cost: cloud turns priced per account / model, SAINT's local
                                      energy, one row per pool job, the top sessions (hub/spend.py)
+  GET  /v1/launch?key= | ?host=&harness=&profile=&cwd=    how to start or resume a session on its own host — the argv,
+                                     environment, directory, label and key, built from what that host published of its
+                                     [[claude_profiles]] and what's installed there (hub/launch.py), so a front end
+                                     that isn't Python never re-derives the client's launch rules
   GET  /v1/health
   WS   /v1/ws                      server pushes {"change": N} whenever the store changes
 Auth: ``Authorization: Bearer <token>`` when hub.token is set (collectors and clients share it).
@@ -52,6 +56,7 @@ from ctxswitch.hub.board import detail as board_detail
 from ctxswitch.hub.board import window as board_window
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
+from ctxswitch.hub.launch import HARNESSES, recipe
 from ctxswitch.hub.spend import SaintUsage, iso_instant, spend_report, tok_total, utc
 from ctxswitch.hub.store import NOT_DELIVERABLE, REPLYABLE, SEARCH_KINDS, Store
 
@@ -362,6 +367,28 @@ class Hub:
                          add_local=self._add_local)
         return JSONResponse(d) if d else JSONResponse({"error": "not found"}, 404)
 
+    async def launch(self, req: Request) -> Response:
+        """GET /v1/launch?key=<session key> | ?host=&harness=&profile=&cwd=: how to start or resume a session on its
+        own host, built from what that host published about itself (hub/launch.py). A front end that isn't Python
+        gets the argv, the environment and the label, and never re-derives a profile's command."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        p = req.query_params
+        r = recipe(self.store, key=p.get("key") or None, host=p.get("host") or None, harness=p.get("harness") or None,
+                   profile=p.get("profile") or None, cwd=p.get("cwd") or None)
+        if r is None:
+            if p.get("key"):
+                s = self.store.session(p["key"], turns=0)
+                return JSONResponse({"error": f"a {s.get('harness')} session can't be resumed" if s
+                                             else f"no session {p['key']!r}"}, 400 if s else 404)
+            if not p.get("host"):
+                return JSONResponse({"error": "host required"}, 400)
+            if not p.get("harness"):
+                return JSONResponse({"error": "harness required"}, 400)
+            if p.get("harness") not in HARNESSES:
+                return JSONResponse({"error": f"unknown harness {p['harness']!r} (have: {', '.join(HARNESSES)})"}, 400)
+            return JSONResponse({"error": f"no claude profile {p['profile']!r} on {p['host']}"}, 400)
+        return JSONResponse(r)
+
     async def search(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         p = req.query_params
@@ -426,6 +453,7 @@ class Hub:
             Route("/v1/board", self.board),
             Route("/v1/board/{key:path}", self.board_detail),
             Route("/v1/spend", self.spend),
+            Route("/v1/launch", self.launch),
             Route("/v1/search", self.search),
             Route("/v1/health", self.health),
             WebSocketRoute("/v1/ws", self.ws),
