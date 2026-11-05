@@ -54,3 +54,70 @@ Transcript side: received peer messages are `user` entries carrying `origin: {ki
 the collector can match a reply to the `msg_id` it sent and take the agent text of that turn.
 
 ## (b) pi `sendUserMessage` idle vs busy — pending (do with the extension in Phase 2, via `pi --mode rpc`)
+
+## herdr (2026-11-04): can herdr-core be ctx's terminal runtime?
+
+Context: the plan to render the ctx board inside the herdr desktop app (a herdr-app mod on herdr-core) and keep the
+Textual board beside it on the same hub. Four spikes; S1/S4 need the Windows app and were run by hand later.
+
+**S2 — do the agents report OSC 7501 to herdr-core?** `hc 0.1.18`, `hc run --bg --name s2c -- claude` (Claude
+Code 2.1.314) and `-- pi` (1.2.0), then `hc get <t> --json` every 2 s:
+- At the prompt: `{"app": "claude-code", "state": "idle"}`, `reported: true`; pi: `{"app": "pi", "state": "idle"}`.
+- `hc send s2c "Reply with exactly the word OK"`: `working` within 2 s, then `done` with `turn` 0→1.
+- `hc send s2c "Use the AskUserQuestion tool to ask me one yes/no question"`: `working`, then
+  `{"state": "blocked", "kind": "question", "msg": "answer: Continue? (Yes · No)"}`, turn 2, until answered.
+- herdr-core infers nothing (its docs: status comes only from 7501), so these are the agents' own reports.
+**Decision:** no 7501 spoofing for Claude Code or pi. `ctx shell` still needs to emit it (bash reports nothing).
+Note: a Claude started from inside another Claude's tool inherits `CLAUDE_CODE_CHILD_SESSION` and disables
+transcript saving ("Transcript saving is off"); a launch from herdr or a shell doesn't.
+
+**S3 — another host as an hc machine, through the operator's own ssh.**
+`hc machine add --name gpu-host --install --via 'ssh <the usual options> rick@gpu-host'`: hc copied to the GPU
+host's `~/.local/bin` and its core started there as that user; `hc machine ls` → `connected`, version 0.1.18;
+`hc run --on gpu-host --cwd /home/rick --rm -- bash -lc hostname` ran as `gpu-host/t1`. A custom `--via` is what
+the Windows app will use for WSL (`wsl.exe -e hc connect`) and for the other hosts (`wsl.exe -e ssh <host> hc
+connect`), so Windows needs no ssh keys of its own.
+
+**Facts for the drivers:** socket `$XDG_RUNTIME_DIR/herdr-core/default.sock` (plus a `default.holder.*.sock`);
+state `~/.local/state/herdr-core/default/` (`terminals.json`, `core.json`, screens); `hc kill` takes ONE terminal;
+`hc run --json` answers `{"address", "agent", "cwd", "name", "state", "turn"}`; a finished record keeps
+`reason: "killed"`, `exit_code`, `status: null`. The core must run as the operator (files created by a root sandbox
+had to be removed: `hc` can't chown there), so `hc server start` belongs in a user systemd unit beside
+`ctx-collector`.
+
+**S4 — a mod reaches the hub from the Windows app.** herdr-app 0.1.13 and herdr-core 0.1.18 unpacked by hand into
+`%LOCALAPPDATA%\Programs\{herdr-app,herdr-core}` (the official installers need no admin either: they only write
+there, the user PATH and a Start-menu shortcut; the archives are plain tar.gz/zip, checksums in
+`releases.herdr.dev/{app,core}/latest.json`). The app home is `%USERPROFILE%\.config\herdr-app` on Windows too.
+A 30-line mod (`mods/ctx-hello`: `readTextFile(appHome()+"/ctx.json")` for the hub URL + token, `fetch(/v1/health)`
+with the bearer header every 2 s, `cx.notify()`) passed `herdr-app check`, opened with `herdr-app do tab.new --mod
+ctx-hello`, and showed `hub ok · change 90017 · hosts 3 · auth true`. `herdr-app shot <png>` gives a window
+screenshot from the CLI, so the app can be checked without looking at it. A mod folder created BEFORE the app's first
+start was not docked into the sidebar by its `mod.json` place; a layout block (or tab.new/pane.split) places it.
+Starting the Windows core through WSL interop (`herdr-core.exe server start` from WSL) left a process that never
+listened; started from a Windows terminal it worked at once.
+
+**S1 — the laptop route. Windows app: no.** herdr-core refuses `--via` on Windows (`machines.rs check_target`:
+`cfg!(windows)` → "one line, run by sh here"), so a Windows core reaches WSL only through an sshd inside WSL plus
+Windows-side keys; a Windows core started through WSL interop also never came up (started from a Windows terminal it
+did). **Linux app under WSLg: yes.** herdr-app 0.1.13 (`~/.local/share/herdr-app`) runs with `DISPLAY=:0
+WAYLAND_DISPLAY=wayland-0` (MESA/ZINK warnings, software GL, the window renders), finds the WSL core, and `hc machine
+add --name gpu-host|devbox --install --via '<the operator's ssh command>'` puts both hosts in its sidebar as connected
+machines. `herdr-app do tab.new --mod ctx-hello` then showed `hub ok · change 90535 · hosts 3 · auth true`. Decision
+(Rick): the Linux app now, Windows later. The Bash sandbox is a user namespace (uid 0 inside = the operator), so the
+cores and files it made were the operator's all along.
+
+**S5 — an agent herdr starts shows up on ctx.** `herdr-app do space.new --folder <dir> --argv '["claude"]'` on the
+clean core: hc `t1 claude-code idle`; the collector's registry read had it within its 5 s poll and the hub listed
+`laptop/claude/<id>` as `idle` with its pid — but with no `cwd`/`title` until the first exchange (a placeholder row
+holds only what the registry says; filtering the hub by directory finds nothing yet). After `hc send t1 "Reply with
+exactly the word OK"`: hub row `cwd`, title, 1 turn, reply "OK"; hc `done`, turn 1. So nothing in ctx's capture needs
+to change for herdr-run agents; `hc_at` (the collector job) is what links the row to its terminal.
+
+**Gotcha that cost an hour: herdr-core auto-starts the default core from ANY `hc` call, with that caller's whole
+environment, for the core's lifetime.** A pool worker's test (and then one of this session's own commands) did that:
+the core carried `ANTHROPIC_BASE_URL` (the local pool), `CLAUDE_CODE_CHILD_SESSION=1` (transcript saving OFF → the agent
+invisible to ctx), `CLAUDE_CONFIG_DIR`, a foreign `CLAUDE_CODE_SESSION_ID`. Rule: the operator's core starts only from
+a clean login shell (`env -i HOME=… XDG_RUNTIME_DIR=/run/user/1000 bash -lc 'hc server start'`; a user unit later),
+and every test or job touching hc isolates with `XDG_STATE_HOME`/`XDG_RUNTIME_DIR`/`HC_SESSION` and stops its server.
+Check `/proc/<core pid>/environ` before trusting herdr behaviour.
