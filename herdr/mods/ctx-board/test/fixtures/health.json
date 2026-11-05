@@ -1,29 +1,9 @@
 {
  "ok": true,
- "change": 93806,
+ "change": 42,
  "hosts": 3,
  "auth": true,
- "recap": {
-  "seat": "http://laptop:4000/v1",
-  "model": "saint-local-text",
-  "last_ok": 1793848964.2974298,
-  "last_error": null,
-  "error_at": null
- },
- "ledger": {
-  "extracted": 0,
-  "dropped": 0,
-  "skipped": 0,
-  "last_ok": null,
-  "last_error": null,
-  "error_at": null,
-  "backlog": 0
- },
- "budget": {
-  "bedrock": {
-   "remaining_usd": 530.0977,
-   "pct_used": 47.0,
-   "as_of": "2026-11-05T03:19:03Z"
-  }
- }
+ "recap": null,
+ "ledger": null,
+ "budget": null
 }

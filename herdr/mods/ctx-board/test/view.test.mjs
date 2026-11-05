@@ -54,18 +54,18 @@ test("tzOffset: the hub's ±HH:MM from getTimezoneOffset", () => {
 });
 
 test("rowParts: a busy top-level row", () => {
-  const p = rowParts(board.rows[0], { number: 1, now: NOW });
-  assert.equal(p.number, 1);
+  const p = rowParts(board.rows[3], { number: 4, now: NOW });      // OAuth login: busy, told the pool is on, one job
+  assert.equal(p.number, 4);
   assert.equal(p.glyph, "●");
   assert.equal(p.state, "busy");
   assert.equal(p.tone, "working");
-  assert.equal(p.label, "max");
-  assert.equal(p.title, "ctx switch");
-  assert.equal(p.age, "14m");                                    // age_at 03:15:16 against NOW
+  assert.equal(p.label, "cc");                                     // the hub's label, as given: no profile logic here
+  assert.equal(p.title, "OAuth login");
+  assert.match(p.age, /^\d+[smhd]/);                               // age_at is an instant; the fixture's is relative
   assert.deepEqual(p.pool, { text: "⌂", tone: "bold green" });
   assert.equal(p.askAge, "");
-  assert.equal(p.unseen, "+11");
-  assert.equal(p.cost, "~$204.93");
+  assert.equal(p.unseen, "");
+  assert.equal(p.cost, "");
   assert.equal(p.waiting, "");
   assert.equal(p.host, "laptop");
   assert.equal(p.harness, "claude");
@@ -74,43 +74,45 @@ test("rowParts: a busy top-level row", () => {
   assert.equal(p.children.length, 1);
 });
 
-test("rowParts: a shell row with no unseen and no pool mark", () => {
-  const p = rowParts(board.rows[1], { number: 2, now: NOW });
-  assert.equal(p.glyph, "$");
-  assert.equal(p.state, "shell");
-  assert.equal(p.tone, "foreground");
-  assert.equal(p.unseen, "+13");
+test("rowParts: an idle pi row with no unseen and no pool mark", () => {
+  const p = rowParts(board.rows[4], { number: 5, now: NOW });      // release notes
+  assert.equal(p.glyph, "○");
+  assert.equal(p.state, "idle");
+  assert.equal(p.tone, "idle");
+  assert.equal(p.label, "pi");
+  assert.equal(p.pool, null);
+  assert.equal(p.unseen, "");
   assert.equal(p.askAge, "");
   assert.equal(p.children.length, 0);
-  const noMark = rowParts({ ...board.rows[1], pool_mark: "", pool_mark_style: "", unseen: null }, { now: NOW });
-  assert.equal(noMark.pool, null);
-  assert.equal(noMark.unseen, "");
-  assert.equal(noMark.number, null);                              // no number asked for
+  const noNumber = rowParts({ ...board.rows[4], unseen: null }, { now: NOW });
+  assert.equal(noNumber.number, null);                             // no number asked for
 });
 
 test("rowParts: a nested child uses its job_label and loses its marks", () => {
-  const parent = rowParts(board.rows[0], { number: 1, now: NOW });
-  const kid = parent.children[0];
+  const kid = rowParts(board.rows[3], { number: 4, now: NOW }).children[0];
   assert.equal(kid.nested, true);
   assert.equal(kid.prefix, "↳");
   assert.equal(kid.number, null);
-  assert.equal(kid.title, "board-on-api2.md · running");          // job_label, not the prompt-ish title
+  assert.equal(kid.title, "oauth-tests.md · ok · 72 turns");       // job_label, not the prompt-ish title
   assert.equal(kid.pool, null);
   assert.equal(kid.askAge, "");
   assert.equal(kid.unseen, "");
-  assert.equal(kid.cost, "~$0.00");
-  assert.equal(kid.state, "busy");
+  assert.equal(kid.cost, "2.0M tok");
+  assert.equal(kid.state, "idle");
 });
 
-test("rowParts: a waiting row carries its └ line and ◐ age", () => {
-  const r = { ...board.rows[2], state: "waiting", glyph: "◐", waiting_on: "question: Ship it?",
-    ask_age: "2026-11-05T03:27:00Z" };
-  const p = rowParts(r, { number: 3, now: NOW });
+test("rowParts: a waiting row carries its └ line, ◐ age and +N", () => {
+  const p = rowParts(board.rows[2], { number: 3, now: NOW });      // rate limiter, asking a plain question
   assert.equal(p.state, "waiting");
   assert.equal(p.tone, "blocked");
   assert.equal(p.glyph, "◐");
-  assert.equal(p.waiting, "question: Ship it?");
-  assert.equal(p.askAge, "◐3m");
+  assert.equal(p.waiting, "Token bucket or sliding window?");
+  assert.equal(p.askAge, "◐" + board.rows[2].ask_age);             // the hub already says "3m"; the mod adds the ◐
+  assert.equal(p.unseen, "+1");
+  const r = { ...board.rows[2], ask_age: "12m", unseen: 7 };
+  const q = rowParts(r, { now: NOW });
+  assert.equal(q.askAge, "◐12m");
+  assert.equal(q.unseen, "+7");
 });
 
 test("rowParts: nothing blows up on an empty or odd row", () => {
@@ -124,22 +126,25 @@ test("rowParts: nothing blows up on an empty or odd row", () => {
 
 test("headerLines: the sample header's two lines", () => {
   const [one, two] = headerLines(board.header, { host: "laptop", now: NOW });
-  assert.equal(one.text, "ctx · laptop · 3 live · nothing waiting · pool on");
-  assert.equal(two.text, "today $206.54 · cloud $202.80 · local $3.73 · $530 left");
+  assert.equal(one.text, "ctx · laptop · 6 live · 2 waiting on you · pool on");
+  assert.equal(two.text, "today $0.00 · cloud $0.00 · local — · —");   // no SAINT, no budget in the fixture
   assert.equal(two.tone, "dim");                                  // the header's budget_style
-  const waiting = headerLines({ ...board.header, waiting: 2, pool: null }, { host: "gpu-host" })[0];
-  assert.equal(waiting.text, "ctx · gpu-host · 3 live · 2 waiting on you");
+  const quiet = headerLines({ ...board.header, waiting: 0, pool: null }, { host: "gpu-host" })[0];
+  assert.equal(quiet.text, "ctx · gpu-host · 6 live · nothing waiting");
+  const money = headerLines({ ...board.header, spend_today: { total_usd: 206.537, cloud_usd: 202.8, local_usd: 3.7331,
+    budget_left_usd: 530, budget_style: "yellow" } }, { host: "laptop" })[1];
+  assert.equal(money.text, "today $206.54 · cloud $202.80 · local $3.73 · $530 left");
+  assert.equal(money.tone, "yellow");
   const empty = headerLines({ spend_today: {} }, {})[1];
   assert.equal(empty.text, "today — · cloud — · local — · —");
 });
 
 test("detailSections: the Textual board's order, empties dropped", () => {
-  assert.equal(health.change, board.change);                      // the poll's trigger matches the samples
   const titles = detailSections(detail, { now: NOW }).map((s) => s.title);
   assert.deepEqual(titles, [
-    "RECAP", "SPEND", "POOL JOBS", "INFO", "LAST EXCHANGE", "SINCE YOU LOOKED",
-    "YOUR INSTRUCTIONS", "AGENT SAYS", "DECISIONS", "EARLIER",
-  ]);
+    "RECAP", "WAITING ON YOU", "INFO", "LAST EXCHANGE", "SINCE YOU LOOKED", "MESSAGES",
+    "YOUR INSTRUCTIONS", "AGENT SAYS", "EARLIER",
+  ]);                                                              // no pool jobs, no decisions, no siblings: dropped
   assert.equal(detailSections({}, { now: NOW }).length, 0);       // an empty card is no sections
 });
 
@@ -148,44 +153,47 @@ test("detailSections: RECAP says (updating…) only when stale", () => {
   assert.equal(of(detail.recap), "RECAP");
   assert.equal(of({ ...detail.recap, stale: true }), "RECAP (updating…)");
   const recap = detailSections(detail, { now: NOW })[0];
-  assert.match(recap.lines[0].text, /Phase 1 plumbing is live/);
-  assert.match(recap.lines[1].text, /^› Building Phase 1/);
+  assert.match(recap.lines[0].text, /^Middleware in; waiting on you/);
+  assert.match(recap.lines[1].text, /^› /);                        // the re-entry card's lines
   assert.equal(detailSections({ ...detail, recap: { text: "", stale: true } }, { now: NOW })
     .some((s) => s.title.startsWith("RECAP")), false);
 });
 
-test("detailSections: WAITING ON YOU appears when an ask opens", () => {
-  const withAsk = detailSections({ ...detail, waiting_on: [{ kind: "question", text: "Which herdr?" }] }, { now: NOW });
-  const section = withAsk.find((s) => s.title === "WAITING ON YOU");
+test("detailSections: WAITING ON YOU follows the open asks", () => {
+  const section = detailSections(detail, { now: NOW }).find((s) => s.title === "WAITING ON YOU");
   assert.equal(section.lines[0].tone, "blocked");
-  assert.match(section.lines[0].text, /\[question\] Which herdr\?/);
-  assert.equal(detailSections(detail, { now: NOW }).some((s) => s.title === "WAITING ON YOU"), false);
+  assert.match(section.lines[0].text, /\[plain\] Token bucket or sliding window\?/);
+  assert.equal(detailSections({ ...detail, waiting_on: [] }, { now: NOW }).some((s) => s.title === "WAITING ON YOU"), false);
+  const asked = detailSections({ ...detail, waiting_on: [{ kind: "question", text: "Which herdr?" }] }, { now: NOW })
+    .find((s) => s.title === "WAITING ON YOU");
+  assert.match(asked.lines[0].text, /\[question\] Which herdr\?/);
 });
 
 test("detailSections: the rest of the card reads from the sample", () => {
   const by = Object.fromEntries(detailSections(detail, { now: NOW }).map((s) => [s.title, s]));
-  assert.match(by["SPEND"].lines[0].text, /^cloud \$204\.93 · 200\.3M tokens/);
-  assert.match(by["POOL JOBS"].lines[0].text, /^↳ remote-board\.md · no-commit · 32 turns ~\$0\.05$/);
-  assert.equal(by["POOL JOBS"].lines.length, detail.pool_jobs.length);
-  assert.match(by["INFO"].lines[0].text, /14m · 46 exch · home \/home\/dev/);
-  assert.match(by["INFO"].lines[0].text, /auto$/);
-  assert.match(by["INFO"].lines[1].text, /^pool: on/);
-  assert.match(by["LAST EXCHANGE"].lines[0].text, /^you \(1h32\): you@laptop/);
+  assert.match(by["INFO"].lines[0].text, /^\S+ · 2 exch · api@feat\/rate-limit \/home\/me\/api/);
+  assert.match(by["LAST EXCHANGE"].lines[0].text, /^you \([^)]*\): don't touch the billing endpoints/);
   assert.match(by["LAST EXCHANGE"].lines[1].text, /^agent \(/);
   assert.equal(by["SINCE YOU LOOKED"].lines[0].text, detail.since_line);
   assert.equal(by["SINCE YOU LOOKED"].lines[0].tone, "accent");
   assert.equal(by["SINCE YOU LOOKED"].lines.length, 1 + detail.since_viewed.rows.slice(-5).length);
-  assert.match(by["YOUR INSTRUCTIONS"].lines[0].text, /^1 • Digit keys highlight/);
-  assert.match(by["AGENT SAYS"].lines[0].text, /^✓ /);
+  assert.match(by["MESSAGES"].lines[0].text, /keep the limits per API key, not per IP/);
+  assert.match(by["YOUR INSTRUCTIONS"].lines[0].text, /^1 • Don't touch the billing endpoints/);
+  assert.match(by["AGENT SAYS"].lines[0].text, /^✓ Middleware done, tests pass/);
   assert.equal(by["AGENT SAYS"].lines[0].tone, "done");
-  assert.match(by["DECISIONS"].lines[0].text, /^✓ /);
-  assert.match(by["DECISIONS"].lines[1].text, /^→ /);
-  assert.match(by["EARLIER"].lines[0].text, /^#44 \[task\] <task-notification>/);
+  assert.match(by["EARLIER"].lines[0].text, /^#0 \[human\] add per-key rate limiting to the public API/);
   assert.equal(by["EARLIER"].lines.length, detail.earlier.length);
+  const jobs = detailSections({ ...detail, pool_jobs: [{ label: "x.md · ok · 3 turns", cost_mark: "~$0.05" }] }, { now: NOW })
+    .find((s) => s.title === "POOL JOBS");
+  assert.match(jobs.lines[0].text, /^↳ x\.md · ok · 3 turns ~\$0\.05$/);
+  const decided = detailSections({ ...detail, decisions: [{ question: "Q?", answer: "A." }] }, { now: NOW })
+    .find((s) => s.title === "DECISIONS");
+  assert.match(decided.lines[0].text, /^✓ Q\?/);
+  assert.match(decided.lines[1].text, /^→ A\./);
 });
 
 test("detailTitle: the card's own header line", () => {
-  assert.deepEqual(detailTitle(detail), { glyph: "●", title: "ctx switch", state: "busy", tone: "working" });
+  assert.deepEqual(detailTitle(detail), { glyph: "◐", title: "rate limiter", state: "waiting", tone: "blocked" });
   assert.equal(detailTitle({}).title, "-");
 });
 

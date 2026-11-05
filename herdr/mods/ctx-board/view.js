@@ -95,7 +95,7 @@ export function rowParts(row, opts = {}) {
     pool: poolMark(r),
     title: short(title, 90),
     age: age(r.age_at, now),
-    askAge: r.ask_age ? `◐${age(r.ask_age, now)}` : "",
+    askAge: r.ask_age ? `◐${r.ask_age}` : "",                 // the hub already says how long ("3m"); the mod adds the ◐
     unseen: Number.isFinite(r.unseen) && r.unseen > 0 ? `+${r.unseen}` : "",
     cost: r.cost_mark ?? "",
     waiting: r.waiting_on ? short(r.waiting_on, 120) : "",
