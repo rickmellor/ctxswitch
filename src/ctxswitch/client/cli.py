@@ -14,6 +14,7 @@
   ctx tmux [--width 18%|40]             create/attach the tmux manager: session left, ctx tui right
   ctx shell [--id ID]                   a bash whose commands show on the board (started by n → shell)
   ctx install / uninstall [--claude --pi --collector]   wire this host up (hooks, pi extension, collector unit)
+  ctx install --herdr [--herdr-home DIR]                the ctx board mod, ctx.json and keys for the herdr app
   ctx doctor                             check this host's wiring, one line per check
   ctx hub / ctx collector                run the services (same as ctx-hub / ctx-collector)
 """

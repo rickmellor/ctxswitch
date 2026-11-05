@@ -9,6 +9,10 @@
   --mcp      (opt-in, not part of the default) `ctx mcp` registered with Claude Code for this user, through
              `claude mcp add/remove -s user` (~/.claude.json is Claude's own and rewritten constantly, so no edits to it),
              and the skill that says when to use it linked at ~/.claude/skills/ctxswitch.
+  --herdr    (opt-in) the ctx board mod for the herdr app: copied into <herdr home>/mods/ctx-board, its ctx.json
+             (hub url, token, host id, the [ssh] hosts as machines) and its keys.json bindings merged beside the
+             operator's own, plus the `hc machine add` lines for the [ssh] hosts. herdr-core itself is the operator's;
+             this only hands the app what it reads and says what the core still needs.
   doctor     one line per check (✓ ok, ! warning, ✗ broken, with the fix); exit 1 on any ✗.
 """
 from __future__ import annotations
@@ -17,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -26,7 +31,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import ctxswitch
 from ctxswitch import hook
+from ctxswitch.collector.liveness import find_tool, hc_bin
 from ctxswitch.common.config import Config, default_path, load
 
 VALIDATED = {"claude": "2.1.280", "pi": "1.2.0", "agy": "1.4.11"}   # versions whose hook/extension/store payloads were checked
@@ -34,6 +41,9 @@ MARK = "ctx-hook"                                           # identifies our hoo
 UNIT = "ctx-collector.service"
 EXT_NAME = "ctxswitch.ts"
 MCP_NAME = "ctxswitch"
+MOD_NAME = "ctx-board"                              # the herdr-app mod: <herdr home>/mods/ctx-board
+MOD_KEY = "mod:ctx-board"                           # its bindings' section in the app's keys.json
+MOD_EXCLUDE = {"package.json", "test"}              # the mod's own npm/test scaffolding stays in the repo
 
 
 # -- paths ------------------------------------------------------------------------------------------------------
@@ -60,6 +70,37 @@ def pi_mcp_json() -> Path:
 
 def unit_path() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user" / UNIT
+
+
+def herdr_home(explicit: str | None = None) -> Path:
+    """The herdr app's home — what its mods read as `appHome()`: --herdr-home, else $HERDR_APP_HOME, else
+    $XDG_CONFIG_HOME/herdr-app, else ~/.config/herdr-app."""
+    p = explicit or os.environ.get("HERDR_APP_HOME") or \
+        (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "herdr-app")
+    return Path(os.path.expanduser(str(p)))
+
+
+def herdr_mod_src() -> Path:
+    """The mod as it ships, in the checkout this code came from (<repo>/herdr/mods/ctx-board — like the pi extension
+    and the skill, it isn't package data, so an installed wheel has no such path). The caller checks exists()."""
+    return Path(hook.__file__).parents[2] / "herdr" / "mods" / MOD_NAME
+
+
+def herdr_mod_src_note() -> str:
+    return (f"herdr: the mod isn't in this install ({herdr_mod_src()} is missing): re-run from a ctxswitch checkout, "
+            f"or copy herdr/mods/{MOD_NAME} into {herdr_home() / 'mods' / MOD_NAME} yourself")
+
+
+def herdr_mod_dir(home: Path | None = None) -> Path:
+    return (home or herdr_home()) / "mods" / MOD_NAME
+
+
+def herdr_ctx_json(home: Path | None = None) -> Path:
+    return (home or herdr_home()) / "ctx.json"
+
+
+def herdr_keys_json(home: Path | None = None) -> Path:
+    return (home or herdr_home()) / "keys.json"
 
 
 def scripts_dir() -> Path:
@@ -516,6 +557,205 @@ def uninstall_collector(dry: bool, log) -> None:
     log(f"collector: stopped and removed {p} (queue and config kept)")
 
 
+# -- herdr app: the ctx board mod -------------------------------------------------------------------------------
+def herdr_machines(cfg: Config) -> dict[str, Any]:
+    """The app's `machines` map: every [ssh] host by the same name, and this host mapped to null (the core's own
+    machine). A host set to "" isn't reachable from here, so it isn't a machine either."""
+    return {h: h for h, target in sorted((cfg.ssh or {}).items()) if target} | {cfg.host_id: None}
+
+
+def herdr_machine_lines(cfg: Config) -> list[str]:
+    """What the core still has to be told: one `hc machine add` per [ssh] host, the same destination tmux would
+    ssh to (client/tmux.py's ssh_target: the [ssh] entry, else the host id)."""
+    from ctxswitch.client.tmux import ssh_target
+    out = []
+    for host in sorted(cfg.ssh or {}):
+        target = ssh_target(host, cfg.ssh)
+        if not target:
+            continue
+        out.append(f"hc machine add --name {shlex.quote(host)} --via {shlex.quote(f'ssh -t {target}')}")
+    return out
+
+
+def _mod_files(src: Path) -> list[Path]:
+    return sorted(p for p in src.rglob("*") if p.is_file() and not (set(p.relative_to(src).parts) & MOD_EXCLUDE))
+
+
+def _mod_stale(src: Path, dest: Path) -> list[Path]:
+    """The source files the installed copy doesn't hold yet, or holds different bytes of."""
+    return [p for p in _mod_files(src)
+            if not (dest / p.relative_to(src)).is_file() or (dest / p.relative_to(src)).read_bytes() != p.read_bytes()]
+
+
+def _copy_mod(src: Path, dest: Path, log, dry: bool) -> None:
+    """src's files into dest, MOD_EXCLUDE left out; only files whose content differs are written."""
+    files, stale = _mod_files(src), _mod_stale(src, dest)
+    if not stale:
+        log(f"herdr: mod {MOD_NAME} unchanged ({len(files)} files in {dest})"); return
+    if not dry:
+        for p in stale:
+            _write(dest / p.relative_to(src), p.read_bytes())
+    what = f"({len(files)} files)" if len(stale) == len(files) else f"{len(stale)} of {len(files)} files"
+    log(f"herdr: mod {MOD_NAME} {'would copy' if dry else 'copied'} {what} -> {dest}")
+
+
+def _write_herdr_ctx(cfg: Config, p: Path, log, dry: bool) -> None:
+    """The app's ctx.json. Written when it's missing, or when the hub it points at or this host's id is not ours;
+    a user's edited `machines` map is merged key by key (existing values win), never rewritten."""
+    cur: dict[str, Any] = {}
+    if p.exists():
+        try:
+            cur = json.loads(p.read_text())
+        except ValueError:
+            log(f"herdr: {p} isn't JSON; left alone"); return
+        if not isinstance(cur, dict):
+            log(f"herdr: {p} isn't a JSON object; left alone"); return
+        if cur.get("hub_url") == cfg.hub.url and cur.get("host_id") == cfg.host_id:
+            log(f"herdr: {p} already points at {cfg.hub.url} as {cfg.host_id!r}"); return
+    new = dict(cur)
+    new["hub_url"], new["token"], new["host_id"] = cfg.hub.url, cfg.hub.token, cfg.host_id
+    machines = cur.get("machines") if isinstance(cur.get("machines"), dict) else {}
+    new["machines"] = herdr_machines(cfg) | machines
+    if dry:
+        log(f"herdr: would write {p}"); return
+    _write(p, (json.dumps(new, indent=2) + "\n").encode(), mode=0o600)   # 0600: it holds the hub token
+    log(f"herdr: {'wrote' if not cur else 'updated'} {p} ({len(new['machines'])} machines, hub {cfg.hub.url})")
+
+
+def _merge_keys(src: Path | None, p: Path, log, dry: bool) -> None:
+    """The mod's bindings into the app's keys.json, created as {} when it isn't there, every other section and
+    binding kept as it was. A command the mod wants that another section already bound is kept, not duplicated;
+    the file is backed up as keys.json.bak before the first change to it."""
+    ours: dict[str, Any] = {}
+    if src and src.exists():
+        try:
+            ours = (json.loads(src.read_text()).get(MOD_KEY) or {})
+        except (ValueError, AttributeError):
+            log(f"herdr: {src} isn't readable as JSON; no key bindings to merge"); return
+    cur: dict[str, Any] = {}
+    new = not p.exists()
+    if not new:
+        try:
+            cur = json.loads(p.read_text())
+        except ValueError:
+            log(f"herdr: {p} isn't JSON; left alone"); return
+        if not isinstance(cur, dict):
+            log(f"herdr: {p} isn't a JSON object; left alone"); return
+    if not isinstance(cur.get(MOD_KEY), dict):
+        cur[MOD_KEY] = {}
+    taken = {v for sec in cur.values() if isinstance(sec, dict) for v in sec.values()} - set(cur[MOD_KEY].values())
+    added = {k: v for k, v in ours.items() if k not in cur[MOD_KEY] and v not in taken}
+    already = len([k for k in ours if k in cur[MOD_KEY]])
+    held = len(ours) - already - len(added)                      # bound elsewhere: left to whoever holds it
+    plural = lambda n: "" if n == 1 else "s"
+    if not added:
+        what = f"unchanged: {MOD_KEY} holds {already} binding{plural(already)}" if not new else \
+            f"left uncreated (no {MOD_KEY} bindings to add)"
+        log(f"herdr: keys.json {what}" + (f" ({held} of the mod's held by another mod)" if held and not new else "") +
+            (f" in {p}" if not new else ""))
+        return
+    if dry:
+        log(f"herdr: would {'create' if new else 'update'} {p}" +
+            (f" with {len(added)} {MOD_KEY} binding{plural(len(added))}" if added else "")); return
+    cur[MOD_KEY].update(added)
+    if not new:
+        _backup_keys(p)
+    _write(p, (json.dumps(cur, indent=2) + "\n").encode())
+    if new:
+        log(f"herdr: keys.json created at {p} with {len(added)} {MOD_KEY} binding{plural(len(added))}")
+    else:
+        log(f"herdr: keys.json added {len(added)} binding{plural(len(added))} to {MOD_KEY}, kept {already} there"
+            + (f" ({held} held by another mod)" if held else "") + f" in {p}")
+
+
+def _backup_keys(p: Path) -> None:
+    bak = p.with_name(f"{p.name}.bak")
+    if p.exists() and not bak.exists():
+        _write(bak, p.read_bytes(), mode=p.stat().st_mode & 0o7777)
+
+
+def hc_app_exe(which=shutil.which) -> str | None:
+    """The herdr app's CLI, on PATH or in the operator's own bin dirs (a systemd --user PATH has no ~/.local/bin)."""
+    return find_tool("herdr-app", which)
+
+
+def hc_core_ok(which=None, run=subprocess.run) -> bool:
+    """herdr-core answering on this host: `hc server status --json` exits 0 (a core that isn't running is normal —
+    it starts from a clean login shell, see install_herdr)."""
+    hc = hc_bin(which or shutil.which)
+    if hc is None:
+        return False
+    try:
+        return run([hc, "server", "status", "--json"], capture_output=True, text=True, timeout=3,
+                   stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _hc_app_run(argv: list[str], run=subprocess.run, which=shutil.which) -> subprocess.CompletedProcess | None:
+    exe = hc_app_exe(which)
+    if exe is None:
+        return None
+    try:
+        return run([exe, *argv], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def install_herdr(cfg: Config, home: Path | None = None, dry: bool = False, log=print, run=subprocess.run) -> None:
+    home = home or herdr_home()
+    src = herdr_mod_src()
+    if not src.is_dir():
+        log(herdr_mod_src_note())
+    else:
+        _copy_mod(src, herdr_mod_dir(home), log, dry)
+    _write_herdr_ctx(cfg, herdr_ctx_json(home), log, dry)
+    _merge_keys(src / "keys.example.json", herdr_keys_json(home), log, dry)
+    for line in herdr_machine_lines(cfg):
+        log(f"herdr: {line}")
+    log("herdr: the core runs from a clean login shell — `hc server start` in a normal terminal, never from inside an agent")
+    if dry or not src.is_dir():
+        return
+    r = _hc_app_run(["check", str(herdr_mod_dir(home))], run)
+    if r is None:
+        log("herdr: herdr-app not found, so the mod wasn't checked (run: herdr-app check "
+            f"{herdr_mod_dir(home)})")
+    elif r.returncode == 0:
+        log(f"herdr: herdr-app check passed for {herdr_mod_dir(home)}")
+    else:
+        why = (r.stderr or r.stdout).strip().splitlines()
+        log(f"herdr: herdr-app check failed: {why[-1] if why else 'no output'}")
+
+
+def herdr_check(which=shutil.which, run=subprocess.run) -> Check:
+    """One line: hc found and its core answering, the app found, the mod installed and identical to the repo's copy,
+    ctx.json present with a hub_url."""
+    facts: list[str] = []
+    bad = False
+    if hc_bin(which) is None:
+        facts.append("hc missing"); bad = True
+    else:
+        ok = hc_core_ok(which, run)
+        facts.append("core ok" if ok else "core down"); bad = bad or not ok
+    facts.append("app ok" if hc_app_exe(which) else "app missing")
+    src, dest = herdr_mod_src(), herdr_mod_dir()
+    if not dest.is_dir():
+        facts.append("mod missing"); bad = True
+    elif src.is_dir() and _mod_stale(src, dest):
+        facts.append("mod stale")                                   # the repo's copy moved; `ctx install --herdr` again
+    else:
+        facts.append("mod ok")
+    try:
+        hub = json.loads(herdr_ctx_json().read_text()).get("hub_url")
+    except (OSError, ValueError, AttributeError):
+        hub = None
+    if hub:
+        facts.append(f"ctx.json -> {hub}")
+    else:
+        facts.append("ctx.json missing"); bad = True
+    return Check("!" if bad else "✓", "herdr", ", ".join(facts), "ctx install --herdr")
+
+
 # -- doctor -----------------------------------------------------------------------------------------------------
 @dataclass
 class Check:
@@ -631,6 +871,7 @@ def doctor(cfg: Config | None = None) -> list[Check]:
                    Check("!", "pi mcp", f"{MCP_NAME} missing from {pi_mcp_json()} or another command", "ctx install --mcp"))
     out.append(Check("✓", "tmux", shutil.which("tmux")) if shutil.which("tmux") else
                Check("!", "tmux", "not installed: `ctx tmux` (the manager) won't work"))
+    out.append(herdr_check())
     return out
 
 
@@ -683,7 +924,7 @@ def _check_pi() -> Check:
 # -- CLI --------------------------------------------------------------------------------------------------------
 def _parts(a) -> tuple[bool, bool, bool]:
     picked = (a.claude, a.pi, a.collector)
-    return picked if any(picked) or a.mcp else (True, True, True)
+    return picked if any(picked) or a.mcp or getattr(a, "herdr", False) else (True, True, True)
 
 
 def cmd_install(a) -> int:
@@ -701,6 +942,8 @@ def cmd_install(a) -> int:
         install_mcp(st, a.dry_run, log)
         install_skill(st, a.dry_run, log)
         install_pi_mcp(st, a.dry_run, log)
+    if getattr(a, "herdr", False):
+        install_herdr(load(), Path(a.herdr_home) if a.herdr_home else None, a.dry_run, log)
     if not a.dry_run:
         log("next: `ctx doctor`")
     return 0
@@ -723,6 +966,8 @@ def cmd_uninstall(a) -> int:
         uninstall_mcp(st, a.dry_run, log)
         uninstall_skill(st, a.dry_run, log)
         uninstall_pi_mcp(st, a.dry_run, log)
+    if getattr(a, "herdr", False):
+        log(f"herdr: nothing removed: the mod, ctx.json and keys.json under {herdr_home()} are the app's to manage")
     return 0
 
 
@@ -741,9 +986,13 @@ def add_parsers(sub) -> None:
         p.add_argument("--claude", action="store_true"); p.add_argument("--pi", action="store_true")
         p.add_argument("--collector", action="store_true", help="(uninstall: only removed when given)")
         p.add_argument("--mcp", action="store_true", help="`ctx mcp` registered with Claude Code (only when given)")
+        p.add_argument("--herdr", action="store_true",
+                       help="the ctx board mod for the herdr app (only when given; uninstall: nothing of ours is removed)")
         p.add_argument("--dry-run", action="store_true")
         if name == "install":
             p.add_argument("--hub", help="hub url for the config"); p.add_argument("--token", help="hub token for the config")
+            p.add_argument("--herdr-home", metavar="DIR",
+                           help="the herdr app's home (default: $HERDR_APP_HOME, else $XDG_CONFIG_HOME/herdr-app)")
             p.add_argument("--no-start", action="store_true", help="write the unit but don't (re)start it")
             p.add_argument("--force", action="store_true", help="replace a non-link pi extension file")
     sub.add_parser("doctor", help="check this host's wiring").set_defaults(fn=cmd_doctor)

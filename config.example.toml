@@ -72,6 +72,7 @@ disable_thinking = true
 # [ssh]
 # devbox = "me@devbox.lan"
 # laptop = ""                          # inbound blocked: show the command to run there instead
+# The same hosts become herdr-core machines (and rows in the herdr app's board) with `ctx install --herdr`.
 
 notify = true                         # tmux pop-up on this machine for each new question or dialog
 notify_idle = false                   # ... and when an agent finishes its turn

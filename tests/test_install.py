@@ -14,10 +14,12 @@ ORIGINAL = '{\n    "model": "opus",\n    "hooks": {"SessionStart": [' + json.dum
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    for v in ("CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "CTXSWITCH_SPOOL", "CTXSWITCH_CONFIG"):
+    for v in ("CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "CTXSWITCH_SPOOL", "CTXSWITCH_CONFIG",
+              "HERDR_APP_HOME"):
         monkeypatch.delenv(v, raising=False)
     (tmp_path / ".claude").mkdir()
     monkeypatch.setattr(ins, "windows_claude_root", lambda: None)               # not this laptop's real Windows home
+    monkeypatch.setattr(ins, "hc_app_exe", lambda which=None: None)             # nor necessarily herdr-app
     return tmp_path
 
 
@@ -307,3 +309,224 @@ def test_doctor_checks_pi_mcp_once_installed(home, monkeypatch):
     assert [c.status for c in ins.doctor(cfg) if c.name == "pi mcp"] == ["✓"]
     (home / ".pi/agent/mcp.json").write_text(json.dumps({"mcpServers": {"ctxswitch": {"command": "/old/ctx", "args": ["mcp"]}}}))
     assert [c.status for c in ins.doctor(cfg) if c.name == "pi mcp"] == ["!"]
+
+
+# -- herdr app: the ctx-board mod, ctx.json and keys.json -------------------------------------------------------
+MOD_FILES = ("main.js", "view.js", "mod.json", "README.md")
+
+
+def _herdr_src(home, monkeypatch, keys_example=None):
+    """A fake repo mod at <tmp>/repo/herdr/mods/ctx-board (the locator pointed at it, no herdr-app on this host)."""
+    sdir = home / "repo" / "herdr" / "mods" / "ctx-board"
+    (sdir / "test" / "fixtures").mkdir(parents=True)
+    for name in MOD_FILES:
+        (sdir / name).write_text(f"// {name}\n")
+    (sdir / "package.json").write_text('{ "type": "module" }\n')
+    (sdir / "test" / "view.test.mjs").write_text("// a test\n")
+    (sdir / "test" / "fixtures" / "board.json").write_text("{}\n")
+    if keys_example:
+        (sdir / "keys.example.json").write_text(json.dumps({"mod:ctx-board": keys_example, "core": {"quit": "ctrl+q"}}))
+    monkeypatch.setattr(ins, "herdr_mod_src", lambda: sdir)
+    return sdir
+
+
+def _herdr_cfg():
+    from ctxswitch.common.config import Config
+    cfg = Config()
+    cfg.hub.url, cfg.hub.token = "http://laptop:7433/v1", "t0k"
+    cfg.collector.host_id = "laptop"
+    cfg.ssh = {"devbox": "me@devbox.lan", "gpu-host": "gpu-host", "blocked": ""}
+    return cfg
+
+
+def _herdr_install(cfg, home, **kw):
+    lines = []
+    ins.install_herdr(cfg, ins.herdr_home(), kw.pop("dry", False), lines.append, **kw)
+    return lines
+
+
+def test_herdr_home_defaults_to_env_or_xdg(home, monkeypatch):
+    assert ins.herdr_home() == home / ".config" / "herdr-app"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "xdg"))
+    assert ins.herdr_home() == home / "xdg" / "herdr-app"
+    monkeypatch.setenv("HERDR_APP_HOME", str(home / "elsewhere"))
+    assert ins.herdr_home() == home / "elsewhere"
+    assert ins.herdr_home(str(home / "given")) == home / "given"          # --herdr-home wins
+
+
+def test_install_herdr_copies_the_mod_and_writes_ctx_json(home, monkeypatch):
+    sdir = _herdr_src(home, monkeypatch)
+    cfg = _herdr_cfg()
+    lines = _herdr_install(cfg, home)
+    dest = home / ".config/herdr-app/mods/ctx-board"
+    assert f"herdr: mod {ins.MOD_NAME} copied ({len(MOD_FILES)} files) -> {dest}" == lines[0]
+    assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()) == sorted(MOD_FILES)
+    assert not (dest / "package.json").exists() and not (dest / "test").exists()   # npm/test scaffolding stays in the repo
+    p = ins.herdr_ctx_json()
+    assert json.loads(p.read_text()) == {"hub_url": cfg.hub.url, "token": "t0k", "host_id": "laptop",
+                                         "machines": {"devbox": "devbox", "gpu-host": "gpu-host", "laptop": None}}
+    assert oct(p.stat().st_mode & 0o777) == "0o600"                     # it holds the hub token
+    assert "herdr: hc machine add --name devbox --via 'ssh -t me@devbox.lan'" in lines   # [ssh] hosts become machines
+    assert "herdr: hc machine add --name gpu-host --via 'ssh -t gpu-host'" in lines
+    assert not any("blocked" in ln for ln in lines)                     # "" = no route, so no machine
+    assert any("`hc server start`" in ln for ln in lines)               # the core starts from a clean login shell
+    assert any("herdr-app not found" in ln for ln in lines)             # nothing could check the mod
+    before = p.read_bytes()
+    lines = _herdr_install(cfg, home)
+    assert lines[0].endswith(f"unchanged ({len(MOD_FILES)} files in {dest})") and "already points at" in lines[1]
+    assert p.read_bytes() == before
+
+
+def test_install_herdr_replaces_only_files_that_differ(home, monkeypatch):
+    sdir = _herdr_src(home, monkeypatch)
+    _herdr_install(_herdr_cfg(), home)
+    dest = ins.herdr_mod_dir()
+    (dest / "main.js").write_text("// edited by hand\n")
+    kept = (dest / "view.js").read_bytes()
+    lines = _herdr_install(_herdr_cfg(), home)
+    assert lines[0] == f"herdr: mod {ins.MOD_NAME} copied 1 of {len(MOD_FILES)} files -> {dest}"
+    assert (dest / "main.js").read_text() == "// main.js\n" and (dest / "view.js").read_bytes() == kept
+
+
+def test_install_herdr_keeps_an_edited_machines_map(home, monkeypatch):
+    sdir = _herdr_src(home, monkeypatch)
+    cfg = _herdr_cfg()
+    _herdr_install(cfg, home)
+    p = ins.herdr_ctx_json()
+    d = json.loads(p.read_text()); d["machines"] = {"laptop": "mine", "extra": "elsewhere"}; p.write_text(json.dumps(d))
+    lines = _herdr_install(cfg, home)                                   # same hub, same host id: not rewritten at all
+    assert "already points at" in lines[1] and json.loads(p.read_text())["machines"] == d["machines"]
+    cfg.hub.url = "http://other:7433/v1"                                # a hub moved: refresh, keeping their map
+    lines = _herdr_install(cfg, home)
+    assert "updated" in lines[1]
+    d = json.loads(p.read_text())
+    assert d["hub_url"] == "http://other:7433/v1" and d["token"] == "t0k"
+    assert d["machines"] == {"devbox": "devbox", "gpu-host": "gpu-host", "laptop": "mine", "extra": "elsewhere"}
+    assert oct(p.stat().st_mode & 0o777) == "0o600"
+    for bad in ("[1, 2]", "{not json"):
+        p.write_text(bad)
+        assert "left alone" in _herdr_install(cfg, home)[1] and p.read_text() == bad
+
+
+def test_install_herdr_merges_keys_json_once_and_keeps_other_sections(home, monkeypatch):
+    ours = {"board.select": "ctrl+alt+b", "board.refresh": "ctrl+alt+r"}
+    sdir = _herdr_src(home, monkeypatch, keys_example=ours)
+    cfg = _herdr_cfg()
+    p = ins.herdr_keys_json()
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"core": {"quit": "ctrl+q"}, "app": {"refresh": "ctrl+alt+r"}}))   # one held elsewhere
+    lines = _herdr_install(cfg, home)
+    d = json.loads(p.read_text())
+    assert d["mod:ctx-board"] == {"board.select": "ctrl+alt+b"}         # the bound-elsewhere one isn't duplicated
+    assert d["core"] == {"quit": "ctrl+q"} and d["app"] == {"refresh": "ctrl+alt+r"}   # the operator's, as they were
+    assert "added 1 binding" in lines[2] and "1 held by another mod" in lines[2]
+    assert p.with_name("keys.json.bak").read_text() == json.dumps({"core": {"quit": "ctrl+q"}, "app": {"refresh": "ctrl+alt+r"}})
+    before = p.read_bytes()
+    assert "unchanged" in _herdr_install(cfg, home)[2] and p.read_bytes() == before    # idempotent, no second backup
+    (sdir / "keys.example.json").write_text(json.dumps({"mod:ctx-board": ours | {"board.open": "ctrl+alt+o"}}))
+    assert "added 1 binding" in _herdr_install(cfg, home)[2]
+    assert json.loads(p.read_text())["mod:ctx-board"] == {"board.select": "ctrl+alt+b", "board.open": "ctrl+alt+o"}
+    assert p.with_name("keys.json.bak").read_text() == json.dumps({"core": {"quit": "ctrl+q"}, "app": {"refresh": "ctrl+alt+r"}})
+    p.with_name("keys.json.bak").unlink()
+    p.unlink()
+    assert "created" in _herdr_install(cfg, home)[2]                    # none yet: created with our section
+    assert json.loads(p.read_text())["mod:ctx-board"] == ours | {"board.open": "ctrl+alt+o"}   # nothing holds any of them now
+    assert not p.with_name("keys.json.bak").exists()                    # nothing to back up of a file that wasn't there
+
+
+def test_install_herdr_no_keys_example_and_no_mod_source(home, monkeypatch):
+    sdir = _herdr_src(home, monkeypatch)
+    cfg = _herdr_cfg()
+    lines = _herdr_install(cfg, home)
+    assert not ins.herdr_keys_json().exists() and "left uncreated" in lines[2]      # no keys.example.json: no file made
+    import shutil as sh; sh.rmtree(sdir)                                            # an installed wheel has no mod
+    lines = _herdr_install(cfg, home)
+    assert lines[0].startswith("herdr: the mod isn't in this install") and str(sdir) in lines[0]
+    assert "copy herdr/mods/ctx-board into" in lines[0]                             # and how to do it by hand
+    assert not any("herdr-app check" in ln for ln in lines)                         # nothing to check, nothing checked
+    assert ins.herdr_ctx_json().exists()                                            # ctx.json still written all the same
+
+
+def test_install_herdr_checks_the_mod_with_the_app(home, monkeypatch):
+    _herdr_src(home, monkeypatch)
+    cfg = _herdr_cfg()
+    calls = []
+
+    def run(argv, **kw):
+        calls.append((argv, kw.get("timeout")))
+        return type("R", (), {"returncode": 0, "stdout": "ok\n", "stderr": ""})()
+    monkeypatch.setattr(ins, "hc_app_exe", lambda which=None: "/usr/local/bin/herdr-app")
+    lines = _herdr_install(cfg, home, run=run)
+    assert calls == [(["/usr/local/bin/herdr-app", "check", str(ins.herdr_mod_dir())], 60)]
+    assert f"herdr-app check passed for {ins.herdr_mod_dir()}" in lines[-1]
+
+    def fail(argv, **kw):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "ctx-board main.js: syntax error\n"})()
+    lines = _herdr_install(cfg, home, run=fail)
+    assert lines[-1] == f"herdr: herdr-app check failed: {ins.MOD_NAME} main.js: syntax error"
+    assert "check passed" not in _herdr_install(cfg, home, dry=True, run=fail)[-1]      # dry run checks nothing
+
+
+def test_install_herdr_is_opt_in(home, monkeypatch, capsys):
+    _herdr_src(home, monkeypatch)
+    seen = []
+    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_herdr"):
+        monkeypatch.setattr(ins, name, lambda *a, _n=name, **k: seen.append(_n))
+    args = dict(claude=False, pi=False, collector=False, mcp=False, herdr=False, herdr_home=None, dry_run=False,
+                hub=None, token=None, no_start=True, force=False)
+    ins.cmd_install(type("A", (), args)())
+    assert seen == ["write_config", "install_collector", "install_claude", "install_pi"]     # --herdr isn't part of it
+    seen.clear()
+    ins.cmd_install(type("A", (), args | {"herdr": True})())
+    assert seen == ["install_herdr"]                                          # --herdr alone: only that
+    ins.cmd_uninstall(type("A", (), args | {"herdr": True})())
+    assert "the app's to manage" in capsys.readouterr().out                   # nothing of ours is removed
+
+
+def test_install_herdr_dry_run_writes_nothing(home, monkeypatch):
+    _herdr_src(home, monkeypatch, keys_example={"board.select": "ctrl+alt+b"})
+    lines = _herdr_install(_herdr_cfg(), home, dry=True)
+    assert any("would copy" in ln for ln in lines) and any("would write" in ln for ln in lines)
+    assert any("would create" in ln for ln in lines)
+    assert not ins.herdr_mod_dir().exists() and not ins.herdr_ctx_json().exists() and not ins.herdr_keys_json().exists()
+
+
+def test_doctor_herdr_line(home, monkeypatch):
+    from ctxswitch.common.config import Config
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: None)
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    monkeypatch.setattr(ins, "hc_bin", lambda which=None: None)
+    monkeypatch.setattr(ins, "hc_app_exe", lambda which=None: None)
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    c = next(c for c in ins.doctor(cfg) if c.name == "herdr")
+    assert c.status == "!" and c.detail == "hc missing, app missing, mod missing, ctx.json missing"
+    assert c.fix == "ctx install --herdr"
+    monkeypatch.setattr(ins, "hc_bin", lambda which=None: "/usr/local/bin/hc")
+    monkeypatch.setattr(ins, "hc_core_ok", lambda which=None, run=None: True)
+    monkeypatch.setattr(ins, "hc_app_exe", lambda which=None: "/usr/local/bin/herdr-app")
+    _herdr_src(home, monkeypatch)
+    _herdr_install(cfg, home)
+    c = next(c for c in ins.doctor(cfg) if c.name == "herdr")
+    assert c.status == "✓" and c.detail == f"core ok, app ok, mod ok, ctx.json -> {cfg.hub.url}"
+    (ins.herdr_mod_dir() / "main.js").write_text("// edited by hand\n")
+    assert "mod stale" in next(c for c in ins.doctor(cfg) if c.name == "herdr").detail
+    ins.herdr_ctx_json().unlink()
+    c = next(c for c in ins.doctor(cfg) if c.name == "herdr")
+    assert c.status == "!" and c.detail.endswith("ctx.json missing")
+
+
+def test_hc_core_ok_runs_hc_server_status(home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ins, "hc_bin", lambda which=None: "/usr/local/bin/hc")
+
+    def run(argv, **kw):
+        calls.append((argv, kw.get("timeout")))
+        return type("R", (), {"returncode": 0})()
+    assert ins.hc_core_ok(run=run) and calls == [(["/usr/local/bin/hc", "server", "status", "--json"], 3)]
+    calls.clear()
+
+    def boom(argv, **kw):
+        raise OSError("no hc")
+    assert not ins.hc_core_ok(run=boom)
+    monkeypatch.setattr(ins, "hc_bin", lambda which=None: None)
+    assert not ins.hc_core_ok(run=run) and calls == []
