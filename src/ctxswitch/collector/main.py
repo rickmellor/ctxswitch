@@ -42,7 +42,7 @@ def ensure_shell_roots(roots) -> None:
 from ctxswitch.collector.deliver import deliver
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
-from ctxswitch.collector.liveness import (HcLoop, fill_hc_at, fill_tmux_at, hc_terminals, label_sessions,
+from ctxswitch.collector.liveness import (HcLoop, fill_hc_at, fill_tmux_at, hc_bin, hc_terminals, label_sessions,
                                           read_agy_presence, read_claude_registry, read_claude_win_registry,
                                           read_pi_registry, read_shell_registry, runtime_dir, tmux_panes)
 from ctxswitch.common.wsl import windows_pids
@@ -187,7 +187,7 @@ class Collector:
         # a restarted core, and what the core's agent reports (a dialog its own registry never shows). A host without
         # hc on PATH skips all of it and a core that isn't running answers as no terminals, so a session keeps
         # whatever its own source said. The terminals are listed only when something here still needs placing.
-        if shutil.which("hc"):
+        if hc_bin():
             # a Windows pid is no pid on this host (see the walk above), and a herdr item brings its own address
             want = [l for l in live.values() if not l.hc_at and l.key.split("/")[1] not in ("claude-win", "herdr")]
             recs = hc_terminals() if want else []
@@ -347,7 +347,7 @@ class Collector:
     async def hc_loop(self) -> None:
         """herdr-core's events, read in a thread: the poll merges what it holds. A host without hc runs no thread;
         a stream that dies (the core restarted, hc upgraded) restarts on its own, so this loop only waits."""
-        if shutil.which("hc") is None:
+        if hc_bin() is None:
             return
         self._hc_ready.set()
         try:

@@ -178,6 +178,19 @@ def fill_tmux_at(items: list[Liveness], panes: list[tuple[str, str, str, int]], 
 # live sessions in their own right (harness "herdr" — an agent that has no transcript here, Codex, Cursor, …).
 
 HC_CTX_KEY = "ctx.key"
+HC_HOME_DIRS = ("bin", ".local/bin", ".herdr/bin")   # where hc lives when a systemd --user PATH leaves it out
+
+
+def hc_bin(which=shutil.which) -> str | None:
+    """The hc binary: on PATH, else in the operator's own bin dirs (a systemd --user unit's PATH has no ~/.local/bin,
+    which is where the installer puts it — without this the collector silently saw no herdr at all)."""
+    found = which("hc")
+    if found:
+        return found
+    try:
+        return which("hc", path=os.pathsep.join(str(Path.home() / d) for d in HC_HOME_DIRS))
+    except TypeError:                                  # a test's fake `which` that takes only the name
+        return None
 HC_STATE_MAP = {"working": "busy", "blocked": "waiting", "idle": "idle", "done": "idle", "error": "unknown"}
 # an agent ctx already has its own way to see: a registry file (Claude, pi) or its own rcfile (ctx shell). herdr
 # never reports one of those as a session of its own — if no registry entry maps to that terminal, ctx's own
@@ -207,7 +220,8 @@ def hc_terminals(run=subprocess.run) -> list[dict]:
     when the record was fetched. ``hc ls`` carries no pid and no labels, and both are needed to place a session.
     No hc binary, no server, or any other failure reads as no terminals (a host without herdr-core is normal);
     nothing here may raise into the liveness poll."""
-    ls = _hc_json(["hc", "ls", "--json"], run)
+    hc = hc_bin() or "hc"                          # the poll only gets here when hc_bin() found one (main.py)
+    ls = _hc_json([hc, "ls", "--json"], run)
     terms = ls.get("terminals") if isinstance(ls, dict) else None
     if not isinstance(terms, list):
         _hc_gets.clear()                          # no answer at all: the terminals are gone, so are their records
@@ -227,7 +241,7 @@ def hc_terminals(run=subprocess.run) -> list[dict]:
         if hit and hit[0] == key:
             out.append(hit[1])
             continue
-        got = _hc_json(["hc", "get", addr, "--json"], run)
+        got = _hc_json([hc, "get", addr, "--json"], run)
         rec = got if isinstance(got, dict) else dict(t)   # a get that failed still leaves the ls row to go on
         rec.setdefault("address", addr)
         _hc_gets[addr] = (key, rec)
@@ -319,7 +333,7 @@ def label_sessions(items: list[Liveness], records: list[dict], run=subprocess.ru
             continue
         if labels.get(HC_CTX_KEY):
             continue                               # it names another session: that mapping isn't ours to overwrite
-        p = run(["hc", "label", addr, f"{HC_CTX_KEY}={it.key}"], capture_output=True, text=True, timeout=3)
+        p = run([hc_bin() or "hc", "label", addr, f"{HC_CTX_KEY}={it.key}"], capture_output=True, text=True, timeout=3)
         if not getattr(p, "returncode", 1):
             _hc_labelled.add(addr)
 
@@ -409,11 +423,12 @@ class HcLoop:
         ``ready``, when given, is set whenever the stream ends (tests wait on it between their lines)."""
         backoff = 5
         while not self._stop:
-            if self.which("hc") is None:            # no herdr-core on this host: nothing to watch
+            hc = hc_bin(self.which)
+            if hc is None:                          # no herdr-core on this host: nothing to watch
                 return
             p = None
             try:
-                p = self.popen(self.HC_ARGV, stdout=subprocess.PIPE, text=True)
+                p = self.popen([hc, *self.HC_ARGV[1:]], stdout=subprocess.PIPE, text=True)
                 self._proc = p
                 self._read_lines(p, ready)
             except Exception:                       # noqa: BLE001 - the poll's reader may not take the poll down

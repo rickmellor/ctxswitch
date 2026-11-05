@@ -18,10 +18,14 @@ from ctxswitch.hub.store import Store
 
 
 @pytest.fixture(autouse=True)
-def clean_hc_caches():
-    """The get-cache and the label memo live for the process: start every test with both empty."""
+def clean_hc_caches(tmp_path, monkeypatch):
+    """The get-cache and the label memo live for the process: start every test with both empty. And no real hc in
+    sight (an empty HOME, a PATH without it), so the fakes see the bare "hc" the code falls back to; the lookup
+    itself has its own test below."""
     L._hc_gets.clear()
     L._hc_labelled.clear()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
 
 class _Done:
@@ -225,7 +229,7 @@ def _loop(lines, host_id="laptop"):
 
     loop = HcLoop(host_id, popen=popen, which=lambda _: "/usr/bin/hc", sleep=lambda s: None)
     loop.stream()
-    assert started == [HcLoop.HC_ARGV] * 2, "the stream never ended by itself"
+    assert started == [["/usr/bin/hc", "events", "--json"]] * 2, "the stream never ended by itself"   # the hc `which` found
     return loop
 
 
@@ -308,7 +312,7 @@ def test_the_reader_restarts_with_a_backoff_and_stops_when_hc_is_gone():
 
     loop = HcLoop("laptop", popen=popen, which=lambda _: "/usr/bin/hc", sleep=slept.append)
     loop.stream()
-    assert started == [HcLoop.HC_ARGV] * 4 and slept == [5, 10, 20]
+    assert started == [["/usr/bin/hc", "events", "--json"]] * 4 and slept == [5, 10, 20]
 
     gone = HcLoop("laptop", popen=lambda argv, **kw: (_ for _ in ()).throw(AssertionError("must not start")),
                   which=lambda _: None, sleep=lambda s: None)
@@ -343,7 +347,7 @@ def test_the_poll_puts_hc_at_and_the_agents_state_on_the_snapshot(tmp_path, monk
                                               "msg": "answer: Continue?"})
     run, calls = _run(ls_rows=[{"address": "t9", "state": "live", "turn": 1, "status": "blocked"}], gets={"t9": rec})
     proc = _fake_proc(tmp_path, 100, 1)
-    monkeypatch.setattr(M.shutil, "which", lambda c: "/usr/bin/hc" if c == "hc" else None)
+    monkeypatch.setattr(M, "hc_bin", lambda: "/usr/bin/hc")
     monkeypatch.setattr(M, "hc_terminals", lambda: hc_terminals(run=run))
     monkeypatch.setattr(M, "fill_hc_at", lambda items, recs: L.fill_hc_at(items, recs, proc=str(proc)))
     monkeypatch.setattr(M, "label_sessions", lambda items, recs: L.label_sessions(items, recs, run=run))
@@ -372,7 +376,7 @@ def test_a_core_that_is_not_running_changes_nothing(tmp_path, monkeypatch):
     M, col = _collector(tmp_path, monkeypatch, status="busy")
     run, _ = _run(rc=1)                                              # `hc ls` fails: no server on this host
     proc = _fake_proc(tmp_path, 100, 1)
-    monkeypatch.setattr(M.shutil, "which", lambda c: "/usr/bin/hc" if c == "hc" else None)
+    monkeypatch.setattr(M, "hc_bin", lambda: "/usr/bin/hc")
     monkeypatch.setattr(M, "hc_terminals", lambda: hc_terminals(run=run))
     monkeypatch.setattr(M, "fill_hc_at", lambda items, recs: L.fill_hc_at(items, recs, proc=str(proc)))
     monkeypatch.setattr(M, "label_sessions", lambda items, recs: L.label_sessions(items, recs, run=run))
@@ -430,7 +434,7 @@ def test_the_poll_asks_the_core_only_when_something_still_needs_placing(tmp_path
         calls.append(1)
         return [_rec("t9", pid=100)]
 
-    monkeypatch.setattr(M.shutil, "which", lambda c: "/usr/bin/hc" if c == "hc" else None)
+    monkeypatch.setattr(M, "hc_bin", lambda: "/usr/bin/hc")
     monkeypatch.setattr(M, "hc_terminals", recs)
     proc = _fake_proc(tmp_path, 100, 1)
     monkeypatch.setattr(M, "fill_hc_at", lambda items, r: L.fill_hc_at(items, r, proc=str(proc)))
@@ -440,3 +444,22 @@ def test_the_poll_asks_the_core_only_when_something_still_needs_placing(tmp_path
     (tmp_path / "sessions" / "100.json").unlink()
     col.poll_liveness()
     assert calls == [1]                                              # nothing live on this host: nothing to place
+
+
+def test_hc_is_found_in_the_operators_bin_when_the_service_path_leaves_it_out(tmp_path, monkeypatch):
+    """systemd --user's PATH has no ~/.local/bin, where the installer puts hc: the collector saw no herdr at all."""
+    from ctxswitch.collector import liveness as L
+    (tmp_path / ".local" / "bin").mkdir(parents=True)
+    tool = tmp_path / ".local" / "bin" / "hc"; tool.write_text("#!/bin/sh\n"); tool.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path)); monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert L.hc_bin() == str(tool)
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv[0])
+        class P: returncode = 0; stdout = '{"terminals": []}'
+        return P()
+    L.hc_terminals(run=run)
+    assert seen == [str(tool)]                                        # and that is the binary it runs
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
+    assert L.hc_bin() is None                                         # nothing anywhere: main.py skips herdr
