@@ -274,7 +274,7 @@ async def test_metrics_every_zero_runs_no_loop_at_all(tmp_path):
 def test_the_config_names_the_panel_host_and_the_interval(tmp_path):
     cfg = C.load(_cfg(tmp_path, 'metrics_host = "gpu-box"\n[collector]\nmetrics_every = 5.0\n'))
     assert cfg.collector.metrics_every == 5.0 and cfg.metrics_host == "gpu-box"
-    assert C.Config().collector.metrics_every == 2.0 and C.Config().metrics_host == ""
+    assert C.Config().collector.metrics_every == 0.0 and C.Config().metrics_host == ""   # opt-in: off unless configured
 
 
 def _cfg(tmp_path, text):

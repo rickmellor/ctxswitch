@@ -86,7 +86,7 @@ class CollectorConfig:
     pool_file: str = "~/.claude/saint-pool"
     # CPU/GPU samples for the board's metrics panel (collector/metrics.py): every metrics_every seconds one sample
     # goes straight to the hub's POST /v1/metrics (0 disables it — a box whose fans you can hear needs no panel).
-    metrics_every: float = 2.0
+    metrics_every: float = 0.0              # off unless set: only hosts with local GPUs/LLMs need it (2.0 = btop's pace)
 
 
 @dataclass
