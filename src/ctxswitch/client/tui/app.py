@@ -28,6 +28,7 @@ import json
 import os
 import socket
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from rich.text import Text
 from textual import work
@@ -44,6 +45,7 @@ from ctxswitch.client import tmux
 from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
+from ctxswitch.client.tui.metrics_panel import MetricsPanel, fits_height, panel_text, pick_host
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
@@ -53,6 +55,10 @@ MSG_STYLE = {"queued": "yellow", "sent": "yellow", "delivered": "green", "replie
 REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "attach": "bold magenta", "foreign": "red",
                "remote": "blue", "none": "dim"}
 SLOTS = 9                                          # Alt+1…9 open the session with that number
+METRICS_FILE = Path.home() / ".local/state/ctxswitch/metrics-panel"   # "on"/"off": whether g's panel starts shown
+METRICS_EVERY = 2                          # seconds between panel fetches (each host's collector samples just as fast)
+METRICS_HUB_MSG = "no CPU/GPU samples from the hub (collectors on 2026-11-10 or later send them)"
+METRICS_NONE_MSG = "no host has sent CPU/GPU samples yet"
 
 
 def slot_key(n: int) -> str:
@@ -167,6 +173,22 @@ def _here(board) -> str | None:
     return getattr(board, "this_host", None)
 
 
+def _metrics_shown() -> bool:
+    """Whether g's panel starts shown: the last run's choice (METRICS_FILE), off until it's said otherwise."""
+    try:
+        return METRICS_FILE.read_text().strip() == "on"
+    except OSError:
+        return False
+
+
+def _metrics_save(shown: bool) -> None:
+    try:
+        METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        METRICS_FILE.write_text(("on" if shown else "off") + "\n")
+    except OSError:
+        pass
+
+
 def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
     """``"max: ~/repos/x"`` -> ("max", "~/repos/x") when ``max`` is a profile name; else (None, value). A bare
     profile name (no directory) keeps the directory empty, which new_agent turns into ``~``."""
@@ -207,6 +229,9 @@ HELP_KEYS = [
     (("r",), "r", "refresh now (the board also updates live)"),
     (("p",), "p", "pop-ups off / on for this run"),
     (("dollar_sign",), "$", "spend: today's cost, cloud and local, per account, per pool job (Esc, $ or q closes it)"),
+    (("g",), "g", "CPU and GPU: a panel of the host doing the work — its utilization, per core, each card's memory, "
+                  "temperature and power (the choice is remembered for next time)"),
+    (("G",), "G", "the CPU/GPU panel's host: the next one that reports (alphabetical, wrapping; for this run only)"),
     (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
     (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
     (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y"),
@@ -243,6 +268,10 @@ HELP_TIPS = [
      "here is only a view of it. A ⇄ row is live over there: Enter shows it here over ssh (detach and it stays put), "
      "and `k` ends it there, its transcript left resumable. A host ssh can't reach is still on the board and takes "
      "messages; it just can't be opened from here.")),
+    ("CPU and GPU", ("`g` puts a panel between the list and the detail showing what the host doing the work is made of: "
+     "its CPU by core, and each card's utilization, memory, temperature and power; `G` moves the panel to another "
+     "host that reports. Each host's collector samples its silicon every 2 s (`metrics_every`, 0 turns it off) and "
+     "the hub keeps the last sample and the last minute of history per host.")),
     ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
      "pane is ever gone, `ctx tmux` puts it back; if the left pane is (the board alone in its window), the board "
      "puts the most recent session back there, or a shell.")),
@@ -591,6 +620,8 @@ class CtxApp(App):
     #detail { height: 1fr; border-top: solid $surface; padding: 0 1; }
     #filter { display: none; }                 /* in the flow above the footer, so the footer never covers it */
     #filter.visible { display: block; }
+    #metrics { display: none; height: auto; max-height: 50%; padding: 0 1; border-top: solid $surface; }
+    #metrics.visible { display: block; }
     .h { color: $text-muted; }
     #keys { height: auto; background: $panel; padding: 0 1; }
     """
@@ -603,7 +634,9 @@ class CtxApp(App):
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
         Binding("p", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"),
-        Binding("dollar_sign", "spend", "spend"), Binding("question_mark", "help", "help"),
+        Binding("dollar_sign", "spend", "spend"), Binding("g", "metrics", "gpu"),
+        Binding("question_mark", "help", "help"),
+        Binding("G", "metrics_host", show=False),                      # the panel moves to the next reporting host
         Binding("W", "message_work", "msg work", show=False),
         Binding("less_than_sign", "wider", show=False), Binding("greater_than_sign", "narrower", show=False),   # the edge moves the arrow's way
         Binding("escape", "clear_filter", show=False),
@@ -642,11 +675,17 @@ class CtxApp(App):
         self.settling = False
         self.spend: dict | None = None               # /v1/spend since local midnight; None = the hub can't say
         self.start_shown = False                     # the Start screen has opened itself once this run (s is yours)
+        self.metrics_on = _metrics_shown()           # g: the CPU/GPU panel, shown or not as the last run left it
+        self.metrics_host: str | None = None         # G: the host the panel shows, for this run only
+        self.metrics_timer = None                    # the 2 s poll, running only while the panel is shown
+        self.metrics_names: list[str] = []           # the hosts that reported, sorted: what G walks through
+        self.metrics_shown: str | None = None        # the host the panel is on now (what G moves on from)
 
     def compose(self) -> ComposeResult:
         yield Static("", id="summary")
         with Vertical(id="body"):
             yield Board(id="table", cursor_type="row", zebra_stripes=True, show_header=False)
+            yield MetricsPanel("", id="metrics")
             yield VerticalScroll(Static("", id="detail_text"), id="detail")
         inp = Input(placeholder="filter sessions (title, repo, key)…", id="filter")
         inp.can_focus = False                     # only focusable while shown via "/"
@@ -660,6 +699,8 @@ class CtxApp(App):
         self.query_one("#summary", Static).tooltip = SUMMARY_TIP
         self.join_tmux()
         t.focus()
+        if self.metrics_on:
+            self.show_metrics()                             # the last run left the panel up: it comes back up
         self.refresh_data()
         self.set_interval(10, self.refresh_data)
         self.listen_ws()
@@ -1237,6 +1278,58 @@ class CtxApp(App):
 
     def action_refresh(self) -> None:
         self.refresh_data()
+
+    # -- the CPU/GPU panel ----------------------------------------------------------------------------------------
+    def action_metrics(self) -> None:
+        """g: the CPU/GPU panel on or off, starting as the last run left it. Hidden, nothing is fetched at all."""
+        self.metrics_on = not self.metrics_on
+        _metrics_save(self.metrics_on)
+        self.show_metrics()
+
+    def action_metrics_host(self) -> None:
+        """G: the panel moves to the next host that reports, alphabetical and wrapping. For this run only."""
+        names = self.metrics_names
+        if names:
+            cur = self.metrics_host or self.metrics_shown
+            self.metrics_host = names[(names.index(cur) + 1) % len(names)] if cur in names else names[0]
+        if self.metrics_on:
+            self.fetch_metrics()
+
+    def show_metrics(self) -> None:
+        w = self.query_one("#metrics", MetricsPanel)
+        w.add_class("visible") if self.metrics_on else w.remove_class("visible")
+        if self.metrics_timer:
+            self.metrics_timer.stop()
+            self.metrics_timer = None
+        if self.metrics_on:
+            self.metrics_timer = self.set_interval(METRICS_EVERY, self.fetch_metrics)
+            self.fetch_metrics()
+
+    @work(thread=True, exclusive=True, group="metrics")
+    def fetch_metrics(self) -> None:
+        """What the host doing the work is made of, every couple of seconds while the panel is shown. A hub with no
+        /v1/metrics simply gets the panel to say so, and the asking goes on in case it comes up."""
+        try:
+            body = self.client.metrics()
+        except Exception:                               # noqa: BLE001 - an older hub has no such route
+            self.call_from_thread(self.metrics_said, METRICS_HUB_MSG)
+            return
+        hosts = (body or {}).get("hosts") or {}
+        host = self.metrics_host if self.metrics_host in hosts else \
+            pick_host(hosts, self.cfg.metrics_host, self.this_host)
+        self.call_from_thread(self.metrics_show, host, (hosts.get(host) or {}) if host else {}, sorted(hosts))
+
+    def metrics_show(self, host: str | None, entry: dict, names: list[str]) -> None:
+        self.metrics_names, self.metrics_shown = names, host
+        if not host:
+            self.metrics_said(METRICS_NONE_MSG)
+            return
+        w = self.query_one("#metrics", MetricsPanel)
+        more = fits_height(entry, self.size.height)[1]         # never more than half the board's height
+        w.update(panel_text(host, entry, max(20, w.content_size.width - 2), more))
+
+    def metrics_said(self, msg: str) -> None:
+        self.query_one("#metrics", MetricsPanel).update(Text(msg, "dim"))
 
     def action_mark_viewed(self) -> None:
         if self._selected_session():
