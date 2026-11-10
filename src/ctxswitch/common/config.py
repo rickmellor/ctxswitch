@@ -84,6 +84,9 @@ class CollectorConfig:
     # The local Qwen pool's switch (`saint-pool on|off`, one line: the SAINT URL). Reported so a board can tell
     # whether a session that was told "the pool is on" is looking at a switch that has since moved. "" stops the report.
     pool_file: str = "~/.claude/saint-pool"
+    # CPU/GPU samples for the board's metrics panel (collector/metrics.py): every metrics_every seconds one sample
+    # goes straight to the hub's POST /v1/metrics (0 disables it — a box whose fans you can hear needs no panel).
+    metrics_every: float = 2.0
 
 
 @dataclass
@@ -172,6 +175,9 @@ class Config:
     # [ssh] <host_id> = "<ssh destination>": how this machine reaches another host's sessions to resume them.
     # Unlisted hosts use the host id itself (an ~/.ssh/config alias); "" = not reachable from here.
     ssh: dict[str, str] = field(default_factory=dict)
+    # Which host the board's metrics panel shows when you haven't picked one: a host id, or "" for the one with the
+    # most GPUs (the machine you'd want the curves of). Hosts with no GPUs stay last either way.
+    metrics_host: str = ""
 
     @property
     def host_id(self) -> str:
@@ -214,6 +220,7 @@ def load(path: Path | None = None) -> Config:
     cfg.notify_idle = bool(raw.get("notify_idle", cfg.notify_idle))
     cfg.notify_style = str(raw.get("notify_style", cfg.notify_style))
     cfg.ssh = {str(k): str(v) for k, v in (raw.get("ssh") or {}).items()}
+    cfg.metrics_host = str(raw.get("metrics_host", cfg.metrics_host) or "")
     if "claude_profiles" in raw:
         cfg.claude_profiles = [_apply(ClaudeProfile(), p) for p in raw["claude_profiles"]] or cfg.claude_profiles
     for p in cfg.claude_profiles:                       # a profile's transcripts are indexed like the default ones

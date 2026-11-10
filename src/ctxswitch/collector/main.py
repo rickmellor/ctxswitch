@@ -8,6 +8,8 @@ session's own socket (collector/deliver.py), but only a session this collector's
 hub names what is waiting, never where to write. Off with ``[collector] accept_messages = false``.
 Windows-native Claude roots (read from WSL under /mnt/c) are polled every WIN_POLL_S instead: inotify does not fire
 for writes made by Windows processes, and tasklist.exe (their liveness) costs ~1.5 s a call.
+Metrics: every ``metrics_every`` seconds this host's CPU and GPUs are sampled and POSTed to the hub's /v1/metrics
+(collector/metrics.py) — past the outbox, because a sample is worth seconds, not because it must arrive.
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ from ctxswitch.collector.liveness import (fill_tmux_at, read_agy_presence, read_
                                           read_pi_registry, read_shell_registry, runtime_dir, tmux_panes)
 from ctxswitch.common.wsl import windows_pids
 from ctxswitch.collector.state import CollectorState
+from ctxswitch.collector.metrics import Sampler
 from ctxswitch.common.config import Config, data_dir, load
 
 log = logging.getLogger("ctxswitch.collector")
@@ -53,6 +56,8 @@ POOL_POLL_S = 60                           # how often this host's saint-pool sw
 POOL_HEARTBEAT_S = 600                     # ... and how often it is pushed even when it hasn't moved
 POOL_TIMEOUT_S = 5                         # per health request: SAINT has been seen taking 3.3 s
 POOL_TRIES = 2                             # requests before a host's pool is called unreachable
+METRICS_TIMEOUT_S = 2                      # a sample is 2 s stale the moment it's posted; a slow POST isn't worth waiting on
+_metrics_warned: set[str] = set()          # one WARNING per distinct way the metrics POST is failing, not one a sample
 _budget_warned: set[str] = set()           # one WARNING per distinct way the budget command is failing, not one a poll
 
 
@@ -114,6 +119,12 @@ def _budget_once(why: str) -> None:
         log.warning("budget: %s", why)
 
 
+def _metrics_once(why: str) -> None:
+    if why not in _metrics_warned:
+        _metrics_warned.add(why)
+        log.warning("metrics: %s", why)
+
+
 def read_pool(path: str, get=httpx.get) -> dict[str, Any] | None:
     """This host's local-pool switch: whether construction goes to the Qwen box, and whether that box answers.
 
@@ -155,7 +166,9 @@ class Collector:
         self.live: dict = {}                           # key -> Liveness from the last registry read
         base = cfg.hub.url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {cfg.hub.token}"} if cfg.hub.token else {}
-        self.urls = {"ingest": base + "/v1/ingest", "outbox": base + "/v1/outbox", "messages": base + "/v1/messages"}
+        self.urls = {"ingest": base + "/v1/ingest", "outbox": base + "/v1/outbox", "messages": base + "/v1/messages",
+                     "metrics": base + "/v1/metrics"}
+        self.sampler = Sampler()                       # this host's CPU/GPU (collector/metrics.py)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         self.state.enqueue(kind, payload)
@@ -376,6 +389,31 @@ class Collector:
                 log.exception("pool poll")
             await asyncio.sleep(POOL_POLL_S)
 
+    async def _post_metrics(self, client: httpx.AsyncClient, d: dict[str, Any]) -> None:
+        r = await client.post(self.urls["metrics"], json=d, headers=self.headers)
+        r.raise_for_status()
+
+    async def metrics_loop(self, sampler=None, post=None) -> None:
+        """This host's CPU and GPUs, posted straight to the hub every ``metrics_every`` seconds.
+
+        Deliberately not through the outbox: a sample is worth seconds, so a hub that's down loses samples rather
+        than collecting a backlog of stale ones — and one slow sample must never hold up a session event. The read
+        runs in a thread (sysfs, nvidia-smi); a failure is warned once and dropped, the same way the budget poll's is.
+        """
+        every = float(self.cfg.collector.metrics_every or 0)
+        if every <= 0:
+            return
+        read, send = sampler or self.sampler.sample, post or self._post_metrics
+        async with httpx.AsyncClient(timeout=METRICS_TIMEOUT_S) as client:
+            while True:
+                try:
+                    await send(client, await asyncio.to_thread(read, self.host_id))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:                 # noqa: BLE001 - an unreachable hub, a sensor that vanished
+                    _metrics_once(f"{e.__class__.__name__}: {e}")
+                await asyncio.sleep(every)
+
     async def sweep_loop(self) -> None:
         """Re-process everything every 10 min so sessions age into 'ended' without a file change."""
         while True:
@@ -396,7 +434,7 @@ class Collector:
             await self.push_loop(); return
         await asyncio.gather(self.push_loop(), self.watch_loop(), self.liveness_loop(), self.sweep_loop(),
                              self.spool_loop(), self.windows_loop(), self.inbox_loop(), self.budget_loop(),
-                             self.pool_loop())
+                             self.pool_loop(), self.metrics_loop())
 
 
 def main() -> None:

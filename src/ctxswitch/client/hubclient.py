@@ -62,6 +62,14 @@ class HubClient:
             raise ValueError(_error(r))
         return r.json()
 
+    def metrics(self, host: str | None = None) -> dict[str, Any]:
+        """What each host's CPU and GPUs looked like the last time it sampled: the latest sample, its age at the hub
+        and a short history. In the hub's memory only — an older hub has no such route: ValueError."""
+        r = self._c.get("/v1/metrics", params={"host": host} if host else None)
+        if r.status_code != 200:
+            raise ValueError(_error(r))
+        return r.json()
+
     def viewed(self, key: str, at: str) -> None:
         self._c.post(f"/v1/sessions/{key}/viewed", json={"at": at}).raise_for_status()
 

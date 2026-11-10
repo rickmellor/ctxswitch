@@ -38,6 +38,7 @@ max_text_chars = 4000
 # budget_cmd = "bedrock-spend"          # the monthly budget, read with this host's ccwb token; "" disables it (a host without the tool runs no poll)
 # budget_every = 900                    # seconds between polls
 # budget_account = "bedrock"            # which [[claude_profiles]] account this budget belongs to
+# metrics_every = 2.0                   # seconds; 0 = no CPU/GPU samples (they go to the hub, never to the outbox)
 
 # Hub only: the tracker LLM (recaps + ledger), an OpenAI-compatible /chat/completions endpoint with json_schema
 # response_format. The hub uses the seat with the lowest priority; calls run one at a time. Thinking must be off on
@@ -72,6 +73,8 @@ disable_thinking = true
 # [ssh]
 # devbox = "me@devbox.lan"
 # laptop = ""                          # inbound blocked: show the command to run there instead
+
+# metrics_host = ""                   # the board's metrics panel host; "" = the one with the most GPUs
 
 notify = true                         # tmux pop-up on this machine for each new question or dialog
 notify_idle = false                   # ... and when an agent finishes its turn

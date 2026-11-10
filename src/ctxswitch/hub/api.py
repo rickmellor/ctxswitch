@@ -20,6 +20,8 @@
   GET  /v1/attention?host=
   GET  /v1/spend?from=ISO&to=ISO&host=    what the window cost: cloud turns priced per account / model, SAINT's local
                                      energy, one row per pool job, the top sessions (hub/spend.py)
+  POST /v1/metrics                 one host's CPU/GPU sample {host_id, at, cpu, mem, gpus} -> {ok}   in memory only
+  GET  /v1/metrics?host=             the latest sample per host, its age at this hub, the last 60 samples' curves
   GET  /v1/health
   WS   /v1/ws                      server pushes {"change": N} whenever the store changes
 Auth: ``Authorization: Bearer <token>`` when hub.token is set (collectors and clients share it).
@@ -42,6 +44,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
+from ctxswitch.hub.metrics import Metrics
 from ctxswitch.hub.spend import SaintUsage, iso_instant, spend_report, tok_total, utc
 from ctxswitch.hub.store import NOT_DELIVERABLE, REPLYABLE, SEARCH_KINDS, Store
 
@@ -63,6 +66,7 @@ class Hub:
         self.price_as = price_as
         store.prices = self.prices
         self.hooks = HookApplier(store)
+        self.metrics = Metrics()                   # CPU/GPU samples, in memory only (hub/metrics.py)
         self.recap_status: dict[str, Any] | None = None      # set by the Recapper: {seat, last_ok, last_error, error_at}
         self.ledger_status: dict[str, Any] | None = None     # set by the Extractor: {extracted, dropped, backlog, ...}
         self.subscribers: set[asyncio.Queue] = set()
@@ -192,6 +196,24 @@ class Hub:
         if frm >= to:
             return JSONResponse({"error": "from must be before to"}, 400)
         return JSONResponse(spend_report(self.store, frm, to, p.get("host") or None, self.prices, self.saint, self.price_as))
+
+    async def metrics_post(self, req: Request) -> Response:
+        """POST /v1/metrics: one host's sample, as its collector read it. Fire and forget — nothing queued, nothing
+        stored, no change notification: a board's metrics panel refreshes on its own clock, not on the store's."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        try:
+            body = await req.json()
+        except Exception:                    # noqa: BLE001 - not JSON at all
+            return JSONResponse({"error": "body must be a metrics sample"}, 400)
+        if not isinstance(body, dict) or not isinstance(body.get("host_id"), str) or not body["host_id"]:
+            return JSONResponse({"error": "host_id required"}, 400)
+        self.metrics.put(body)
+        return JSONResponse({"ok": True})
+
+    async def metrics_get(self, req: Request) -> Response:
+        """GET /v1/metrics[?host=]: each host's latest sample, its age at this hub, and the last KEEP samples."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        return JSONResponse(self.metrics.get(req.query_params.get("host") or None))
 
     async def brief(self, req: Request) -> Response:
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
@@ -384,6 +406,8 @@ class Hub:
             Route("/v1/outbox", self.outbox),
             Route("/v1/attention", self.attention),
             Route("/v1/spend", self.spend),
+            Route("/v1/metrics", self.metrics_post, methods=["POST"]),
+            Route("/v1/metrics", self.metrics_get, methods=["GET"]),
             Route("/v1/search", self.search),
             Route("/v1/health", self.health),
             WebSocketRoute("/v1/ws", self.ws),
