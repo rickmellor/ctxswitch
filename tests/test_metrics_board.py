@@ -522,3 +522,34 @@ async def test_the_panel_is_pinned_above_the_keys_and_the_detail_still_scrolls(m
         assert detail.max_scroll_y > 0                                          # still a scrolling region
         detail.scroll_end(animate=False); await pilot.pause(0.2)
         assert detail.scroll_y == detail.max_scroll_y and panel.region.y + panel.region.height == keys.region.y
+
+
+# -- the thread strip, segmented by physical core ---------------------------------------------------------------------
+
+from ctxswitch.client.tui.metrics_panel import CORE_SHADE, _core_strip  # noqa: E402
+
+TWELVE_BY_TWO = list(range(12)) * 2                       # the 3945WX: cpu0..11 are cores 0..11, cpu12..23 again
+
+
+def test_a_cores_threads_sit_together_and_every_other_core_is_shaded():
+    threads = [90.0] + [5.0] * 11 + [85.0] + [5.0] * 11   # core 0 is busy on both its threads (cpu0 and cpu12)
+    t, label = _core_strip(threads, TWELVE_BY_TWO)
+    assert t.plain.startswith("▇▇") and len(t.plain) == 24 and label == "12c"
+    shaded = {i for s in t.spans if CORE_SHADE in str(s.style) for i in range(s.start, s.end)}
+    assert shaded == {i for core in range(1, 12, 2) for i in (2 * core, 2 * core + 1)}   # cores 1, 3, …, 11
+
+
+def test_without_topology_the_strip_is_the_old_one_with_no_label():
+    t, label = _core_strip([20.0, 50.0], None)
+    assert t.plain == "▂▅" and label == "" and not any(CORE_SHADE in str(s.style) for s in t.spans)
+    assert _core_strip([20.0, 50.0], [0])[1] == ""                         # a core_of of the wrong length is ignored
+    assert _core_strip([], TWELVE_BY_TWO) is None
+
+
+def test_the_cpu_row_shows_the_segments_and_the_core_count_when_it_fits():
+    entry = _sample()
+    entry["latest"]["cpu"]["core_of"] = TWELVE_BY_TWO
+    wide = panel_text("specul8", entry, 100).plain.splitlines()[1]
+    assert wide.endswith(" 12c") and len(re.findall(r"[▁▂▃▄▅▆▇█]", wide.split("%", 1)[1])) == 24
+    for width in (44, 60, 100):                                             # never wider than the pane
+        assert all(len(ln) <= width for ln in panel_text("specul8", entry, width).plain.splitlines())

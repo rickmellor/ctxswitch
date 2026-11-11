@@ -89,8 +89,28 @@ class CpuSampler:
             cores = [_pct(self._prev.get(k) or [], v) for k, v in cur.items() if k != "cpu"]
         self._prev = cur
         load = [float(x) for x in _text(self.proc / "loadavg").split()[:3]]
-        return {"model": self.model(), "pct": pct, "cores": cores, "temp_c": self.temp_c(),
-                "mhz": self.mhz(), "load": load}
+        out = {"model": self.model(), "pct": pct, "cores": cores, "temp_c": self.temp_c(),
+               "mhz": self.mhz(), "load": load}
+        groups = self.core_groups([k for k in cur if k != "cpu"])
+        if groups is not None:
+            out["core_of"] = groups
+        return out
+
+    def core_groups(self, labels: list[str]) -> list[int] | None:
+        """For each logical CPU in ``labels`` (cpuN, /proc/stat order), the index of the physical core it runs on:
+        0, 1, … in first-seen order of (package, core_id). The ids are not contiguous (a 3945WX says 0,1,2,4,5,6,…)
+        and SMT siblings are not adjacent (cpu0 and cpu12 share a core there), so they are keyed, not counted.
+        None when any CPU's topology can't be read — the panel then shows the threads ungrouped."""
+        seen: dict[tuple[int, int], int] = {}
+        out: list[int] = []
+        for label in labels:
+            topo = self.sys / "devices" / "system" / "cpu" / label / "topology"
+            try:
+                key = (int(_text(topo / "physical_package_id").strip()), int(_text(topo / "core_id").strip()))
+            except ValueError:
+                return None
+            out.append(seen.setdefault(key, len(seen)))
+        return out
 
     def model(self) -> str:
         """The first ``model name`` in /proc/cpuinfo ("" when there is none, as on ARM)."""

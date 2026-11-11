@@ -72,6 +72,29 @@ def _spark(vals: list, n: int) -> Text:
                 style=level_style(vals[-1] if vals else None))
 
 
+CORE_SHADE = "on grey19"                    # behind every other physical core in the thread strip
+
+
+def _core_strip(threads: list, core_of) -> tuple[Text, str] | None:
+    """The thread strip and its core-count label: one character a thread at its own level, grouped by the physical
+    core it runs on (``core_of``, from the collector) with every other core shaded. Without a usable ``core_of``
+    the threads keep /proc/stat order, unshaded and unlabelled. None when there are no threads."""
+    if not threads:
+        return None
+    glyph = lambda v: SPARK[min(7, max(0, int(round(float(v) * 7 / 100))))]
+    if not (isinstance(core_of, list) and len(core_of) == len(threads) and all(isinstance(c, int) for c in core_of)):
+        return Text.assemble(*[(glyph(v), level_style(float(v))) for v in threads]), ""
+    by_core: dict[int, list] = {}
+    for v, c in zip(threads, core_of):
+        by_core.setdefault(c, []).append(v)
+    t = Text()
+    for n, c in enumerate(sorted(by_core)):
+        for v in by_core[c]:
+            style = level_style(float(v))
+            t.append(glyph(v), style=f"{style} {CORE_SHADE}" if n % 2 else style)
+    return t, f"{len(by_core)}c"
+
+
 def _head(parts: list[tuple[str, str]], width: int, warn: tuple[str, str] | None = None) -> Text:
     """The first line, fitted by dropping parts from the right. A stale host keeps saying so: the load, clock and
     temperature go before the warning does, and the warning only goes when there's no room beside the name."""
@@ -141,11 +164,15 @@ def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[in
     head = Text.assemble((label, "bold"), " ", _bar(pct, bar_w), " ",
                          (f"{pct:>3.0f}%" if pct is not None else DASH.rjust(4), level_style(pct)))
     cores = [v for v in (cpus.get("cores") or []) if isinstance(v, (int, float))]
-    # the core strip (btop's view of the box) when it fits: a 64-core box in a 44-column pane loses it
-    if cores and len(head.plain) + 1 + len(cores) <= width:
+    # the thread strip (btop's view of the box) when it fits: a 64-core box in a 44-column pane loses it. It is
+    # a snapshot of every thread NOW, not a history: with the topology, a physical core's threads sit side by side
+    # and every other core is shaded, so a 12-core/24-thread box reads as 12 segments; "12c" says so when it fits.
+    strip = _core_strip(cores, cpus.get("core_of"))
+    if strip is not None and len(head.plain) + 1 + len(strip[0].plain) <= width:
         head.append(" ")
-        for v in cores:                                             # one character a core, each its own level
-            head.append(SPARK[min(7, max(0, int(round(float(v) * 7 / 100))))], style=level_style(float(v)))
+        head.append_text(strip[0])
+        if strip[1] and len(head.plain) + len(strip[1]) + 1 <= width:
+            head.append(" " + strip[1], style="dim")
     lines.append(head[:width])
     # memory on its own row, its bar and percent in the same columns as the CPU's and the cards'
     used, total = mem.get("used"), mem.get("total")

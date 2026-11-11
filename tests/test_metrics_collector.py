@@ -317,3 +317,28 @@ def test_a_product_name_beats_the_pci_table_and_an_unknown_id_stays_generic(tmp_
     garbled = card(tmp_path, 2)
     w(garbled, "device/vendor", "not-hex\n")
     assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["Radeon Pro W7900", "AMD GPU", "AMD GPU"]
+
+
+# -- the physical-core grouping of the thread strip -----------------------------------------------------------------
+
+def test_threads_are_grouped_by_package_and_core_id_in_first_seen_order(tmp_path):
+    # the 3945WX shape: core ids skip numbers, and a core's two threads are cpuN and cpuN+half, not neighbours
+    proc, sys = cpu_tree(tmp_path)
+    w(proc, "stat", stat((1000, 8000), [(500, 500)] * 6))
+    for n, core in enumerate([0, 1, 4, 0, 1, 4]):
+        w(sys, f"devices/system/cpu/cpu{n}/topology/physical_package_id", "0\n")
+        w(sys, f"devices/system/cpu/cpu{n}/topology/core_id", f"{core}\n")
+    assert M.CpuSampler(proc, sys).sample()["core_of"] == [0, 1, 2, 0, 1, 2]
+
+
+def test_two_packages_with_the_same_core_id_are_two_cores(tmp_path):
+    proc, sys = cpu_tree(tmp_path)
+    for n, pkg in enumerate([0, 1]):
+        w(sys, f"devices/system/cpu/cpu{n}/topology/physical_package_id", f"{pkg}\n")
+        w(sys, f"devices/system/cpu/cpu{n}/topology/core_id", "0\n")
+    assert M.CpuSampler(proc, sys).sample()["core_of"] == [0, 1]
+
+
+def test_no_topology_means_no_grouping_rather_than_a_guess(tmp_path):
+    proc, sys = cpu_tree(tmp_path)                               # cpu_tree writes no topology files
+    assert "core_of" not in M.CpuSampler(proc, sys).sample()
