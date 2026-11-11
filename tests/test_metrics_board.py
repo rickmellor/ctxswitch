@@ -526,22 +526,37 @@ async def test_the_panel_is_pinned_above_the_keys_and_the_detail_still_scrolls(m
 
 # -- the thread strip, segmented by physical core ---------------------------------------------------------------------
 
-from ctxswitch.client.tui.metrics_panel import CORE_SHADE, _core_strip  # noqa: E402
+from ctxswitch.client.tui.metrics_panel import _core_strip, core_colour  # noqa: E402
 
 TWELVE_BY_TWO = list(range(12)) * 2                       # the 3945WX: cpu0..11 are cores 0..11, cpu12..23 again
 
 
-def test_a_cores_threads_sit_together_and_every_other_core_is_shaded():
+def test_a_cores_threads_sit_together_and_share_its_hue():
     threads = [90.0] + [5.0] * 11 + [85.0] + [5.0] * 11   # core 0 is busy on both its threads (cpu0 and cpu12)
     t, label = _core_strip(threads, TWELVE_BY_TWO)
     assert t.plain.startswith("▇▇") and len(t.plain) == 24 and label == "12c"
-    shaded = {i for s in t.spans if CORE_SHADE in str(s.style) for i in range(s.start, s.end)}
-    assert shaded == {i for core in range(1, 12, 2) for i in (2 * core, 2 * core + 1)}   # cores 1, 3, …, 11
+    styles = [str(s.style) for s in t.spans]
+    assert styles[0] == core_colour(0, 12, 90.0) and styles[1] == core_colour(0, 12, 85.0)
+    assert styles[2] == styles[3] == core_colour(1, 12, 5.0)            # core 1's two idle threads: one colour
+
+
+def _rgb(style):
+    return tuple(int(x) for x in re.fullmatch(r"rgb\((\d+),(\d+),(\d+)\)", style).groups())
+
+
+def test_hue_runs_blue_to_red_across_the_cores_and_load_raises_saturation():
+    r, g, b = _rgb(core_colour(0, 12, 100.0))
+    assert b > r and b > g                                                # the first core is blue
+    r, g, b = _rgb(core_colour(11, 12, 100.0))
+    assert r > g and r > b                                                # the last core is red
+    spread = lambda c: max(c) - min(c)                                    # a stand-in for saturation
+    assert spread(_rgb(core_colour(3, 12, 100.0))) > spread(_rgb(core_colour(3, 12, 50.0))) > spread(_rgb(core_colour(3, 12, 0.0))) > 0
+    assert core_colour(0, 1, 50.0) == core_colour(0, 1, 50.0)              # one core: no division by zero
 
 
 def test_without_topology_the_strip_is_the_old_one_with_no_label():
     t, label = _core_strip([20.0, 50.0], None)
-    assert t.plain == "▂▅" and label == "" and not any(CORE_SHADE in str(s.style) for s in t.spans)
+    assert t.plain == "▂▅" and label == "" and not any(str(s.style).startswith("rgb(") for s in t.spans)
     assert _core_strip([20.0, 50.0], [0])[1] == ""                         # a core_of of the wrong length is ignored
     assert _core_strip([], TWELVE_BY_TWO) is None
 

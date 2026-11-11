@@ -72,13 +72,30 @@ def _spark(vals: list, n: int) -> Text:
                 style=level_style(vals[-1] if vals else None))
 
 
-CORE_SHADE = "on grey19"                    # behind every other physical core in the thread strip
+# The thread strip's colours: the HUE says which physical core (blue for the first, red for the last, evenly
+# between), the SATURATION says how busy the thread is (a floor keeps an idle core's hue visible, so the segments
+# don't vanish on a quiet box), and the lightness is fixed so every hue stands out from the background the same.
+CORE_HUES = (240.0, 0.0)                      # degrees: first core, last core
+CORE_SAT = (0.25, 1.0)                        # saturation at 0% and at 100% utilization
+CORE_LIGHT = 0.55
+
+
+def core_colour(core: int, cores: int, util: float) -> str:
+    """The rich colour of one thread in the strip: its core's hue, saturated by its utilization (0..100)."""
+    import colorsys
+    first, last = CORE_HUES
+    hue = first if cores <= 1 else first + (last - first) * core / (cores - 1)
+    u = min(100.0, max(0.0, float(util))) / 100.0
+    sat = CORE_SAT[0] + (CORE_SAT[1] - CORE_SAT[0]) * u
+    r, g, b = colorsys.hls_to_rgb(hue / 360.0, CORE_LIGHT, sat)
+    return f"rgb({round(r * 255)},{round(g * 255)},{round(b * 255)})"
 
 
 def _core_strip(threads: list, core_of) -> tuple[Text, str] | None:
-    """The thread strip and its core-count label: one character a thread at its own level, grouped by the physical
-    core it runs on (``core_of``, from the collector) with every other core shaded. Without a usable ``core_of``
-    the threads keep /proc/stat order, unshaded and unlabelled. None when there are no threads."""
+    """The thread strip and its core-count label: one character a thread, its height the thread's utilization,
+    grouped by the physical core it runs on (``core_of``, from the collector) and coloured by :func:`core_colour`,
+    so a core's threads share a hue and the cores read as segments. Without a usable ``core_of`` the threads keep
+    /proc/stat order in the level colours, unlabelled. None when there are no threads."""
     if not threads:
         return None
     glyph = lambda v: SPARK[min(7, max(0, int(round(float(v) * 7 / 100))))]
@@ -90,9 +107,19 @@ def _core_strip(threads: list, core_of) -> tuple[Text, str] | None:
     t = Text()
     for n, c in enumerate(sorted(by_core)):
         for v in by_core[c]:
-            style = level_style(float(v))
-            t.append(glyph(v), style=f"{style} {CORE_SHADE}" if n % 2 else style)
+            t.append(glyph(v), style=core_colour(n, len(by_core), v))
     return t, f"{len(by_core)}c"
+
+
+def preview_core_strip() -> None:
+    """``python -m ctxswitch.client.tui.metrics_panel``: the strip of a 12-core/24-thread box at four loads."""
+    from rich.console import Console
+    con, co = Console(), list(range(12)) * 2
+    for name, util in (("idle", [2.0] * 24), ("light", [8.0, 15.0, 30.0, 5.0] * 6),
+                       ("mixed", [95.0, 10.0, 50.0, 2.0, 70.0, 20.0, 100.0, 5.0, 35.0, 60.0, 15.0, 85.0] * 2),
+                       ("busy", [80.0, 90.0, 100.0] * 8)):
+        strip, label = _core_strip(util, co)
+        con.print(Text.assemble((f"{name:<6}", "bold"), " ", strip, (f" {label}", "dim")))
 
 
 def _head(parts: list[tuple[str, str]], width: int, warn: tuple[str, str] | None = None) -> Text:
@@ -369,3 +396,7 @@ class HostPicker(ModalScreen):
 
 METRICS_NONE_MSG = "no host sends CPU/GPU samples: set [collector] metrics_every = 2 on the hosts to watch"
 METRICS_HUB_MSG = "this hub has no CPU/GPU samples (it predates them)"
+
+
+if __name__ == "__main__":
+    preview_core_strip()
