@@ -103,6 +103,14 @@ class HubClient:
     def cancel(self, msg_id: int) -> bool:
         return self._c.post(f"/v1/messages/{msg_id}/cancel").status_code == 200
 
+    def prompt_check(self, key: str, prompt: str, prompt_id: str | None, cwd: str | None) -> dict[str, Any]:
+        """The hub's fast matcher for a prompt about to be sent (the UserPromptSubmit hook):
+        {"verdict": "ok"} or {"verdict": "other", "id", "target_key", "target_title", "target_where", "why"}."""
+        r = self._c.post("/v1/prompt-check",
+                         json={"key": key, "prompt": prompt, "prompt_id": prompt_id, "cwd": cwd})
+        r.raise_for_status()
+        return r.json()
+
     def ws_url(self) -> str:
         u = self.base.replace("http://", "ws://", 1).replace("https://", "wss://", 1) + "/v1/ws"
         return u + (f"?token={self.token}" if self.token else "")
