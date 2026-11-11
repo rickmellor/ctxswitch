@@ -494,3 +494,11 @@ def test_the_cpu_bar_and_percent_sit_in_the_gpus_columns_on_every_host():
     start = {next(i for i, c in enumerate(ln) if c in "█░") for ln in bars}   # where each bar begins
     assert len(start) == 1 and len({ln.index("%") for ln in bars}) == 1, bars
     assert "RTX 2000 Ada " in lines[3] and "Generation" not in lines[3]
+
+
+def test_a_card_name_keeps_its_letters_and_the_sparkline_gives_way():
+    """At the board's 66-67 usable columns, "RTX 2000 Ada" lost its last letter to a full-length sparkline."""
+    laptop = _sample(gpus=[_gpu(0, name="NVIDIA RTX 2000 Ada Generation Laptop GPU", vendor="nvidia")])
+    for w in (66, 67, 100):                         # at 60 the row is full even with the shortest sparkline
+        lines = panel_text("laptop", laptop, w).plain.splitlines()
+        assert "RTX 2000 Ada " in lines[3] and all(len(ln) <= w for ln in lines), (w, lines)
