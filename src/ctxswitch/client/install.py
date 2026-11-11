@@ -1,8 +1,9 @@
 """ctx install / uninstall / doctor: wire this host's Claude Code, pi and collector to ctxswitch, and check it.
 
-  install    Claude hooks merged into settings.json (ctx-hook, async; other hooks untouched) plus one synchronous
-             SessionStart(resume) hook for the resume briefing, the pi extension symlinked into pi's extensions dir
-             (it finds ctx-hook through <state>/install.json), a config stub, the collector's systemd --user unit (re)started.
+  install    Claude hooks merged into settings.json (ctx-hook, async; other hooks untouched) plus two synchronous
+             ones: SessionStart(resume) for the resume briefing and UserPromptSubmit for the misplaced-prompt check,
+             the pi extension symlinked into pi's extensions dir (it finds ctx-hook through <state>/install.json),
+             a config stub, the collector's systemd --user unit (re)started.
              Idempotent. The first install backs settings.json up; state is kept in <state>/install.json.
   uninstall  settings.json restored byte-for-byte when nothing else changed it since, else our hooks removed
              surgically; the extension link and (with --collector) the unit removed.
@@ -148,9 +149,16 @@ def brief_group(command: str) -> dict[str, Any]:
     return {"matcher": "resume", "hooks": [{"type": "command", "command": f"{exe} brief claude", "timeout": 5}]}
 
 
+def prompt_check_group(command: str) -> dict[str, Any]:
+    """The misplaced-prompt check: synchronous (it blocks the prompt) with a short timeout, so a hung hub can
+    never hold a prompt for long (it fails open on timeout)."""
+    exe = command.rsplit(" ", 1)[0]
+    return {"hooks": [{"type": "command", "command": f"{exe} prompt-check", "timeout": 3}]}
+
+
 def merge_hooks(settings: dict[str, Any], command: str) -> dict[str, Any]:
-    """settings with exactly one ctx-hook group per event in hook.EVENTS (plus the briefing on SessionStart);
-    everything else as it was."""
+    """settings with exactly one spooled ctx-hook group per event in hook.EVENTS, plus the two synchronous ones
+    (the briefing on SessionStart, the prompt check on UserPromptSubmit); everything else as it was."""
     out = json.loads(json.dumps(settings))
     hooks = out.setdefault("hooks", {})
     for ev in hook.EVENTS:
@@ -159,6 +167,8 @@ def merge_hooks(settings: dict[str, Any], command: str) -> dict[str, Any]:
         groups.append({"matcher": "|".join(hook.DIALOG_TOOLS)} | group if ev == "PreToolUse" else group)
         if ev == "SessionStart":
             groups.append(brief_group(command))
+        elif ev == "UserPromptSubmit":
+            groups.append(prompt_check_group(command))
         hooks[ev] = groups
     return out
 
@@ -644,6 +654,8 @@ def _check_claude(p: Path | None = None, label: str = "claude hooks") -> Check:
     missing = [ev for ev, c in cmds.items() if not c]
     if not any(" brief claude" in c for c in cmds.get("SessionStart", [])):
         missing.append("SessionStart (briefing)")
+    if not any(" prompt-check" in c for c in cmds.get("UserPromptSubmit", [])):
+        missing.append("UserPromptSubmit (prompt check)")
     if missing:
         return Check("✗", label, f"missing for {', '.join(missing)}", "ctx install --claude")
     exe = next(iter(cmds.values()))[0].split()[0]

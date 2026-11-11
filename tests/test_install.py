@@ -39,7 +39,8 @@ def test_merge_keeps_other_hooks_and_is_idempotent(home):
     assert s["model"] == "opus" and s["hooks"]["SessionStart"][0] == SAINT
     for ev in hook.EVENTS:
         ours = [g for g in s["hooks"][ev] if ins._ours(g)]
-        assert len(ours) == (2 if ev == "SessionStart" else 1) and ours[0]["hooks"][0]["async"] is True
+        assert len(ours) == (2 if ev in ("SessionStart", "UserPromptSubmit") else 1) \
+            and ours[0]["hooks"][0]["async"] is True                      # +1 where a sync group rides along
     (brief,) = [g for g in s["hooks"]["SessionStart"] if ins._ours(g) and "brief" in g["hooks"][0]["command"]]
     assert brief["matcher"] == "resume" and "async" not in brief["hooks"][0]                      # output is dropped if async
     assert brief["hooks"][0]["command"] == f"{ins.hook_exe()} brief claude"
