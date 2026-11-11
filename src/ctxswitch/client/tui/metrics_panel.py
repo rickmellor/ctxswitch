@@ -54,8 +54,8 @@ def gpu_name(g: dict) -> str:
     """Short as it reads on the board: NVIDIA's prefix and GeForce go, AMD's name stays as the collector sent it."""
     n = str(g.get("name") or "").strip()
     if str(g.get("vendor") or "").lower() == "nvidia":
-        for p in ("NVIDIA Corporation ", "NVIDIA ", "GeForce "):
-            n = n.replace(p, " ").strip()
+        for p in ("NVIDIA Corporation ", "NVIDIA ", "GeForce ", " Generation", " Laptop GPU"):
+            n = n.replace(p, " ").strip()           # "RTX 2000 Ada Generation Laptop GPU" -> "RTX 2000 Ada"
         n = re.sub(r"\s+", " ", n)
     return n or "GPU"
 
@@ -86,7 +86,25 @@ def _head(parts: list[tuple[str, str]], width: int, warn: tuple[str, str] | None
     return t[:width]                                          # a pane narrower than the host's name
 
 
-def panel_text(host: str, entry: dict, width: int, more: int = 0) -> Text:
+def label_cols(gpus: list, width: int) -> tuple[int, int]:
+    """(number width, name width) of the GPU labels — "GPU10", "RTX 4080" — so every bar on a panel starts in one
+    column; the CPU label is padded to the same. Several hosts stacked take the max of theirs (hosts_text)."""
+    bar_w, nspark = _bar_w(width), _nspark(width)
+    room = max(4, width - 34 - bar_w - nspark)
+    idx_w = max((len(f"GPU{g.get('index', i)}") for i, g in enumerate(gpus)), default=0)
+    name_w = max((len(((gpu_name(g)[:14] or "GPU")[:room].strip() or "GPU")) for g in gpus), default=0)
+    return idx_w, name_w
+
+
+def _bar_w(width: int) -> int:
+    return max(6, min(BAR_W, width // 6))        # scaled with the pane: 10 wide at the board's usual 60 columns
+
+
+def _nspark(width: int) -> int:
+    return max(5, min(12, (width - 44) // 2))    # room for the history grows with the pane
+
+
+def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[int, int] | None = None) -> Text:
     """One host's entry ({"latest", "age_s", "history"}) as text no line of which is wider than ``width``.
 
     ``more`` is for a panel too short for every card: the caller says how many it left out (what fits_height
@@ -117,27 +135,30 @@ def panel_text(host: str, entry: dict, width: int, more: int = 0) -> Text:
     warn = (f"stale {int(round(float(age)))}s", "yellow") if isinstance(age, (int, float)) and float(age) > 10 else None
     lines = [_head(parts, width, warn)]
 
-    bar_w = max(6, min(BAR_W, width // 6))     # scaled with the pane: 10 wide at the board's usual 60 columns,
-    head = Text.assemble(("CPU ", "bold"), " ", _bar(pct, bar_w), " ",   # where 24 cores share the CPU line with it
-                         (f"{pct:>4.0f}%" if pct is not None else f"{DASH:>4}", level_style(pct)))
+    bar_w = _bar_w(width)
+    idx_w, name_w = cols or label_cols(gpus, width)     # the CPU's bar and percent sit in the GPUs' columns
+    label = "CPU".ljust(idx_w + 1 + name_w if idx_w else 4)
+    head = Text.assemble((label, "bold"), " ", _bar(pct, bar_w), " ",
+                         (f"{pct:>3.0f}%" if pct is not None else DASH.rjust(4), level_style(pct)))
     cores = [v for v in (cpus.get("cores") or []) if isinstance(v, (int, float))]
-    used, total = mem.get("used"), mem.get("total")
-    ram = (f"  RAM {int(used) / GB:.0f}/{int(total) / GB:.0f}G"
-           if isinstance(used, (int, float)) and isinstance(total, (int, float)) else "")
-    # the core strip when the line still holds it with the memory after it: a 64-core box in a 44-column pane loses it
-    if cores and len(head.plain) + 1 + len(cores) + len(ram) <= width:
+    # the core strip (btop's view of the box) when it fits: a 64-core box in a 44-column pane loses it
+    if cores and len(head.plain) + 1 + len(cores) <= width:
         head.append(" ")
         for v in cores:                                             # one character a core, each its own level
             head.append(SPARK[min(7, max(0, int(round(float(v) * 7 / 100))))], style=level_style(float(v)))
-    if ram:
-        head.append(ram)
     lines.append(head[:width])
+    # memory on its own row, its bar and percent in the same columns as the CPU's and the cards'
+    used, total = mem.get("used"), mem.get("total")
+    have = isinstance(used, (int, float)) and isinstance(total, (int, float)) and total
+    mpct = float(used) / float(total) * 100 if have else None
+    row = Text.assemble(("MEM".ljust(len(label)), "bold"), " ", _bar(mpct, bar_w), " ",
+                        (f"{mpct:>3.0f}%" if mpct is not None else DASH.rjust(4), vram_style(mpct) if have else "dim"))
+    row.append(f" {float(used) / GB:.0f}/{float(total) / GB:.0f}G" if have else f" {DASH}/{DASH}G", style="dim")
+    lines.append(row[:width])
 
     hist_gpus = hist.get("gpus") or {}
-    nspark = max(5, min(12, (width - 44) // 2))             # room for the history grows with the pane
+    nspark = _nspark(width)
     shown = gpus[:max(0, len(gpus) - more)]
-    name_w = max((len(gpu_name(g)[:14] or "GPU") for g in shown), default=0)   # one column, so the bars line up
-    idx_w = max((len(f"GPU{g.get('index', i)}") for i, g in enumerate(shown)), default=0)   # GPU9 beside GPU10
     for i, g in enumerate(shown):
         idx = g.get("index")
         idx = i if not isinstance(idx, int) else idx
@@ -206,6 +227,9 @@ def gpu_count(entry: dict) -> int:
     return len((((entry or {}).get("latest") or {}).get("gpus")) or [])
 
 
+FIXED = 3                                       # lines every shown host keeps: title, CPU, MEM
+
+
 def plan_heights(counts: list[int], height: int) -> tuple[list[int | None], int]:
     """Which of several stacked hosts get which of the lines a panel on a board ``height`` lines tall may take.
 
@@ -214,7 +238,7 @@ def plan_heights(counts: list[int], height: int) -> tuple[list[int | None], int]
     for a host the panel has no room for at all, plus how many hosts that left out.
 
     The panel may take no more than half the board and one of those lines is its border. What every host shown keeps
-    is its two CPU lines — the title line and the CPU line — so the hosts that fit at all are however many of those
+    is its three lines — the title, CPU and memory lines — so the hosts that fit at all are however many of those
     pairs fit, last ones dropped first (``more_hosts``). The card lines left over go out host by host in that same
     sorted order. A host that lost some of its cards ends with a "+N more GPUs" line, which itself costs a line, so
     lines go back from the last host with any until the whole lot, the "+N more" lines included, is inside the
@@ -222,14 +246,14 @@ def plan_heights(counts: list[int], height: int) -> tuple[list[int | None], int]
     """
     counts = [int(c) if isinstance(c, (int, float)) else 0 for c in (counts or [])]
     room = max(0, (height or 0) // 2 - 1)
-    for keep in range(min(len(counts), room // 2), -1, -1):        # hosts whose title and CPU fit
+    for keep in range(min(len(counts), room // FIXED), -1, -1):    # hosts whose title, CPU and MEM fit
         per = [0] * keep
-        used = 2 * keep
+        used = FIXED * keep
         for i in range(keep):                                      # the cards, host by host, sorted
             take = min(counts[i], max(0, room - used))
             per[i], used = take, used + take
         def total() -> int:                                        # every line the panel would hold, "+N more" ones too
-            return (2 * keep + sum(per) + sum(1 for i in range(keep) if per[i] < counts[i])
+            return (FIXED * keep + sum(per) + sum(1 for i in range(keep) if per[i] < counts[i])
                     + (1 if len(counts) > keep else 0))
         while total() > room and any(per):                         # a "+N more GPUs" line costs a line too
             j = max(i for i in range(keep) if per[i])
@@ -253,7 +277,9 @@ def hosts_text(hosts: dict, chosen: list[str], width: int, height: int,
     if not hosts:
         return Text(METRICS_NONE_MSG, "dim")
     names = sorted(chosen) if chosen else [pick_host(hosts, configured, this_host)]
-    counts = [gpu_count(hosts.get(n) or {}) for n in names]     # a host the hub never heard of counts no cards:
+    counts = [gpu_count(hosts.get(n) or {}) for n in names]
+    every = [label_cols(((hosts.get(n) or {}).get("latest") or {}).get("gpus") or [], width) for n in names]
+    cols = (max((c[0] for c in every), default=0), max((c[1] for c in every), default=0))   # one column, all hosts     # a host the hub never heard of counts no cards:
     plan, more_hosts = plan_heights(counts, height)             # its one dim line is cheaper than a block of them
     parts = []
     for name, shown, count in zip(names, plan, counts):
@@ -262,7 +288,7 @@ def hosts_text(hosts: dict, chosen: list[str], width: int, height: int,
         if name not in hosts:                                      # one dim line says the whole host
             parts.append(Text(f"{name} · no samples (is metrics_every set on it?)", "dim")[:width])
             continue
-        parts.append(panel_text(name, hosts[name], width, max(0, count - shown)))
+        parts.append(panel_text(name, hosts[name], width, max(0, count - shown), cols))
     if more_hosts:
         parts.append(Text(f"+{more_hosts} more hosts (widen the board, or G to pick fewer)", "dim")[:width])
     return Text("\n").join(parts)
