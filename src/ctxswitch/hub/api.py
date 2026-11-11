@@ -17,9 +17,14 @@
   GET  /v1/outbox?host=&wait=25&agents=1   collector long-poll: queued messages for that host's live sessions (agents'
                                      messages only with agents=1)
   POST /v1/messages/{id}/status      collector report {host_id, status: sent|failed, error}
-  GET  /v1/attention?host=
+  GET  /v1/attention?host=           open asks, idle sessions, and the prompts that read like another session's work
+                                     (kind "misplaced": keep it or move it on the board)
   GET  /v1/spend?from=ISO&to=ISO&host=    what the window cost: cloud turns priced per account / model, SAINT's local
                                      energy, one row per pool job, the top sessions (hub/spend.py)
+  POST /v1/prompt-check              {key, prompt, prompt_id, cwd} -> {verdict: ok} or {verdict: other, id,
+                                     target_key, target_title, target_where, why}. A hook's fast question before the
+                                     agent sees the prompt: deterministic (hub/misplace.py), no seat, < 100 ms.
+  POST /v1/misplaced/{id}/state      {state: kept|moved|resent} -> {ok}   the operator's word on a flagged prompt
   POST /v1/metrics                 one host's CPU/GPU sample {host_id, at, cpu, mem, gpus} -> {ok}   in memory only
   GET  /v1/metrics?host=             the latest sample per host, its age at this hub, the last 60 samples' curves
   GET  /v1/health
@@ -42,6 +47,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ctxswitch.hub import misplace
 from ctxswitch.hub.brief import brief
 from ctxswitch.hub.hooks import HookApplier
 from ctxswitch.hub.metrics import Metrics
@@ -196,6 +202,49 @@ class Hub:
         if frm >= to:
             return JSONResponse({"error": "from must be before to"}, 400)
         return JSONResponse(spend_report(self.store, frm, to, p.get("host") or None, self.prices, self.saint, self.price_as))
+
+    async def prompt_check(self, req: Request) -> Response:
+        """POST /v1/prompt-check: the hook's fast question before the agent sees the prompt — deterministic, no seat,
+        so it answers in milliseconds. "other" names the live session the prompt reads like and records an open
+        misplaced row; anything else is "ok" and records nothing. A prompt the hook should never ask about (a slash
+        command, a delivery header, a couple of words) is answered "ok" here too, whatever the session looks like."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        try:
+            body = await req.json()
+        except Exception:                    # noqa: BLE001 - not JSON at all
+            return JSONResponse({"error": "body must be {key, prompt}"}, 400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be {key, prompt}"}, 400)
+        key, prompt = str(body.get("key") or ""), str(body.get("prompt") or "")
+        s = self.store.misplace_session(key) if key else None
+        if s is None or misplace.skip(prompt):            # an unknown session: nothing to compare it with
+            return JSONResponse({"verdict": "ok"})
+        if not (s["repo_root"] or s["repo_remote"]) and isinstance(body.get("cwd"), str) and body["cwd"]:
+            s["cwd"] = body["cwd"]            # live but not indexed yet (or no repo of its own): the hook is there
+        out = misplace.check(prompt, s, self.store.misplace_candidates(key))
+        if out["verdict"] != "other":
+            return JSONResponse({"verdict": "ok"})
+        target = out["target"]
+        mid = self.store.add_misplaced({"key": key, "prompt_id": str(body.get("prompt_id") or ""), "prompt": prompt,
+                                        "source": "pre", "verdict": "other", "target_key": out["target_key"],
+                                        "target_title": out["target_title"], "why": out["why"], "confidence": None})
+        self._notify()
+        return JSONResponse({"verdict": "other", "id": mid, "target_key": out["target_key"],
+                             "target_title": out["target_title"], "target_where": misplace.where(target),
+                             "why": out["why"]})
+
+    async def misplaced_state(self, req: Request) -> Response:
+        """POST /v1/misplaced/{id}/state {state: kept|moved|resent}: the operator's word on a flagged prompt.
+        "resent" = the hook let the same prompt through when it was sent again."""
+        if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
+        try:
+            body = await req.json()
+        except Exception:                    # noqa: BLE001 - not JSON at all
+            return JSONResponse({"error": "body must be {state}"}, 400)
+        ok = self.store.set_misplaced_state(int(req.path_params["id"]), str((body or {}).get("state") or ""))
+        if ok:
+            self._notify()
+        return JSONResponse({"ok": ok}, 200 if ok else 409)
 
     async def metrics_post(self, req: Request) -> Response:
         """POST /v1/metrics: one host's sample, as its collector read it. Fire and forget — nothing queued, nothing
@@ -406,6 +455,8 @@ class Hub:
             Route("/v1/outbox", self.outbox),
             Route("/v1/attention", self.attention),
             Route("/v1/spend", self.spend),
+            Route("/v1/prompt-check", self.prompt_check, methods=["POST"]),
+            Route("/v1/misplaced/{id:int}/state", self.misplaced_state, methods=["POST"]),
             Route("/v1/metrics", self.metrics_post, methods=["POST"]),
             Route("/v1/metrics", self.metrics_get, methods=["GET"]),
             Route("/v1/search", self.search),

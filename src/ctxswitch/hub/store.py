@@ -17,6 +17,10 @@ deliver one as yours. One in flight per sender and recipient, and AGENT_PER_HOUR
 keep each other busy.
 
 Workstreams: sessions on the same repo (by remote, so clones on other hosts match) and branch; see workstream_of.
+
+A prompt that reads like another session's work, or like no session's, is recorded in ``misplaced`` — by the hook's
+fast check before the agent sees it (source "pre", hub/misplace.py) or by the tracker's seat call after it landed
+(source "llm") — and stays open until the operator keeps it, moves it or insists on the re-send.
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from ctxswitch.common.schema import LIVE
+from ctxswitch.hub.misplace import PROMPT_CHARS as MISPLACE_PROMPT_CHARS, CANDIDATES as MISPLACE_CANDIDATES
 
 _LIVE_SQL = ",".join(f"'{s}'" for s in LIVE)
 
@@ -71,6 +76,14 @@ CREATE TABLE IF NOT EXISTS tracker (
     key TEXT PRIMARY KEY, through_idx INTEGER NOT NULL DEFAULT -1, purpose TEXT, purpose_turn INTEGER,
     purpose_history TEXT NOT NULL DEFAULT '[]', updated REAL
 );
+CREATE TABLE IF NOT EXISTS misplaced (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, prompt_id TEXT, prompt TEXT, source TEXT NOT NULL,
+    verdict TEXT NOT NULL, target_key TEXT, target_title TEXT, why TEXT, confidence REAL,
+    state TEXT NOT NULL DEFAULT 'open', at TEXT NOT NULL, resolved_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS misplaced_by_id ON misplaced(key, prompt_id) WHERE prompt_id!='';
+CREATE UNIQUE INDEX IF NOT EXISTS misplaced_by_text ON misplaced(key, prompt) WHERE prompt_id='';
+CREATE INDEX IF NOT EXISTS misplaced_state ON misplaced(state, key);
 """
 
 LLM_ASK = "llm:"                                    # asks.ref prefix for plain-text asks the tracker found
@@ -85,6 +98,7 @@ REPLYABLE = ("plain", "text")                       # asks a message can answer;
 SIBLINGS = 6                                        # other sessions shown for a workstream
 SIBLING_DAYS = 14                                   # ... live, or active within this many days
 SEARCH_KINDS = ("decision", "instruction", "claim", "prompt")
+MISPLACE_STATES = ("kept", "moved", "resent")         # what the operator can do with an open misplaced row
 
 TOKEN_TYPES = ("input", "output", "cache_read", "cache_creation")        # every usage dict has all four ints
 
@@ -472,6 +486,75 @@ class Store:
                 out[str(r[0][len("pool:"):])] = d
         return out
 
+    # -- misplaced prompts (hub/misplace.py, and the tracker's LLM check) ---------------------------------------------
+    def add_misplaced(self, row: dict[str, Any]) -> int:
+        """Record one flagged prompt, honouring "one row per (key, prompt_id), else per (key, prompt)": a repeat
+        check of the same prompt changes nothing and returns the row it already has."""
+        key = row.get("key") or ""
+        pid = row.get("prompt_id") or ""
+        prompt = _clip(row.get("prompt"), MISPLACE_PROMPT_CHARS)
+        with self._lock:
+            col, val = ("prompt_id", pid) if pid else ("prompt", prompt)
+            r = self.db.execute(f"SELECT id FROM misplaced WHERE key=? AND {col}=?", (key, val)).fetchone()
+            if r:
+                return int(r[0])
+            cur = self.db.execute(
+                "INSERT INTO misplaced(key,prompt_id,prompt,source,verdict,target_key,target_title,why,confidence,state,at,resolved_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (key, pid, prompt, row.get("source") or "", row.get("verdict") or "other", row.get("target_key") or "",
+                 row.get("target_title") or "", row.get("why") or "", row.get("confidence"), row.get("state") or "open",
+                 row.get("at") or _now_iso(), row.get("resolved_at")))
+            self._bump()
+            return int(cur.lastrowid)
+
+    def set_misplaced_state(self, id: int, state: str) -> bool:
+        """The operator kept it, moved it, or insisted on the re-send. Only an open row changes."""
+        if state not in MISPLACE_STATES:
+            return False
+        with self._lock:
+            self.db.execute("UPDATE misplaced SET state=?, resolved_at=? WHERE id=? AND state='open'", (state, _now_iso(), id))
+            ok = self.db.execute("SELECT changes()").fetchone()[0] > 0
+            if ok:
+                self._bump()
+            return ok
+
+    def misplaced_seen(self, key: str, prompt: str) -> bool:
+        """Any row at all for this prompt in this session — the tracker's turn has no prompt_id, so it matches on
+        the text (its first 200 characters, so a row clipped on the way in still counts)."""
+        return self.db.execute("SELECT 1 FROM misplaced WHERE key=? AND substr(prompt,1,200)=substr(?,1,200) LIMIT 1",
+                               (key, _clip(prompt, MISPLACE_PROMPT_CHARS))).fetchone() is not None
+
+    def misplaced_for(self, key: str, open_only: bool = True) -> list[dict[str, Any]]:
+        """A session's misplaced prompts, newest first: open ones when asked, all of them for a detail row."""
+        q = "SELECT * FROM misplaced WHERE key=?" + (" AND state='open'" if open_only else "") + " ORDER BY id DESC"
+        return [dict(r) for r in self.db.execute(q, (key,))]
+
+    def misplaced_open_counts(self) -> dict[str, int]:
+        """key -> how many of its flagged prompts are still open (a list row's ``misplaced_open``)."""
+        return {r[0]: r[1] for r in self.db.execute("SELECT key, COUNT(*) FROM misplaced WHERE state='open' GROUP BY key")}
+
+    def misplace_session(self, key: str) -> dict[str, Any] | None:
+        """One session as the fast matcher sees it (None when the hub has never heard of it)."""
+        r = self.db.execute("SELECT * FROM sessions WHERE key=?", (key,)).fetchone()
+        return self._misplace_view(dict(r)) if r else None
+
+    def misplace_candidates(self, key: str, limit: int = MISPLACE_CANDIDATES) -> list[dict[str, Any]]:
+        """Sessions a prompt typed into ``key`` might have meant: live on any host, most recent first, at most
+        ``limit``. This session, pool-job workers (nobody types into one) and shells are never candidates."""
+        rows = self.db.execute(
+            f"SELECT * FROM sessions WHERE key!=? AND ended=0 AND live_status IN ({_LIVE_SQL}) "
+            f"AND harness!='shell' AND COALESCE(job,'')='' ORDER BY last_activity DESC", (key,)).fetchall()
+        return [self._misplace_view(dict(r)) for r in rows[:limit]]
+
+    def _misplace_view(self, d: dict[str, Any]) -> dict[str, Any]:
+        """The few fields of a session a fingerprint is built from — kept small so a check stays in milliseconds."""
+        v = {k: d.get(k) or "" for k in ("key", "host_id", "harness", "cwd", "repo_root", "repo_remote", "git_branch",
+                                         "recap", "last_activity", "live_status")}
+        v["title"] = d.get("live_name") or d.get("title") or ""
+        v["purpose"] = self.tracker_state(d["key"]).get("purpose") or ""
+        v["instructions"] = [r["text"] for r in self.ledger(d["key"], active_only=True) if r["kind"] == "instruction"]
+        return v
+
     def tracker_state(self, key: str) -> dict[str, Any]:
         r = self.db.execute("SELECT * FROM tracker WHERE key=?", (key,)).fetchone()
         if r is None:
@@ -669,11 +752,13 @@ class Store:
         usage = {k: v for k, v in self.usage_rollup(self.usage_rows()).items() if k in keys}
         kids = dict(self.db.execute("SELECT parent_key, COUNT(*) FROM sessions WHERE COALESCE(parent_key,'')!='' "
                                     "GROUP BY parent_key"))
+        flagged = self.misplaced_open_counts()
         out = []
         for r in rows:
             d = self._session_row(r)
             d["children"] = kids.get(d["key"], 0)
             d["spend"] = self._spend(d, usage.get(d["key"], _blank_usage()))
+            d["misplaced_open"] = flagged.get(d["key"], 0)     # prompts flagged, not yet kept or moved
             out.append(d)
         return out
 
@@ -727,6 +812,8 @@ class Store:
         d["children_keys"] = self.children(key)
         d["children"] = len(d["children_keys"])
         d["spend"] = self._spend(d, self.turn_usage(key))
+        d["misplaced"] = self.misplaced_for(key)          # open rows, newest first: "this looks like another session's"
+        d["misplaced_open"] = len(d["misplaced"])
         return d
 
     def search(self, query: str, kinds: tuple[str, ...] = SEARCH_KINDS, host: str | None = None,
@@ -813,6 +900,18 @@ class Store:
             q += " AND s.host_id=?"; args.append(host)
         q += " ORDER BY a.asked_at"
         items = [dict(r) | {"item": "ask"} for r in self.db.execute(q, args)]
+        # prompts that read like another session's work, or like no session's: open until the operator keeps or moves them
+        qm = ("SELECT m.*, m.at AS asked_at, s.host_id, s.harness, s.title, s.live_status, s.status_since "
+              "FROM misplaced m JOIN sessions s ON s.key=m.key WHERE m.state='open' AND s.live_status!='ended' AND s.ended=0")
+        margs: list[Any] = []
+        if host:
+            qm += " AND s.host_id=?"; margs.append(host)
+        for r in self.db.execute(qm + " ORDER BY m.at, m.id", margs):
+            d = dict(r) | {"item": "misplaced", "kind": "misplaced", "ref": f"misplaced:{r['id']}"}
+            d["text"] = (f"looks like it's for {d['target_title']}" if d["verdict"] == "other"
+                         else "off this session's purpose")
+            items.append(d)
+        items.sort(key=lambda i: i.get("asked_at") or "")
         # waiting = Claude's registry says a dialog is up; shown even where no hook ask explains it (hooks not installed)
         q2 = "SELECT key,host_id,harness,title,live_status,status_since FROM sessions WHERE live_status IN ('idle','waiting')"
         if host:
@@ -851,6 +950,10 @@ def typed(turn: dict[str, Any]) -> bool:
 
 def _norm(text: str | None) -> str:
     return " ".join((text or "").split())
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _clip(text: str | None, n: int) -> str:

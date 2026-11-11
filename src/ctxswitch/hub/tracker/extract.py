@@ -27,6 +27,7 @@ from typing import Any, Callable
 import httpx
 
 from ctxswitch.common.config import SeatConfig
+from ctxswitch.hub import misplace
 from ctxswitch.hub.store import Store, typed
 
 log = logging.getLogger("ctxswitch.extract")
@@ -36,6 +37,10 @@ TEXT_CHARS = 3000
 MAX_BAD = 3                                         # unparseable replies for one exchange before it is skipped
 ROW_CHARS = 200
 CAPS = {"instruction": 3, "decision": 3, "claim": 2, "ask": 3}  # per exchange; the prompt asks for fewer
+MISPLACE_CHECK = True                               # one more seat call per exchange: does this prompt fit here?
+MISPLACE_MIN_CONF = 0.7                             # ... and how sure it must be to flag the prompt
+MISPLACE_OTHERS = 12                                # other live sessions named to the model
+MISPLACE_REASON = 160                               # ... and how long its one-line reason may be
 
 SYSTEM = (
     "You keep an operator's ledger for one coding-agent session. You are given ONE exchange: the operator's prompt "
@@ -78,6 +83,23 @@ SCHEMA = {
     "required": ["instructions", "retire", "decisions", "claims", "asks", "goal_changed", "purpose"],
 }
 
+MISPLACE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"verdict": {"type": "string", "enum": ["fits", "other", "drift"]}, "target_key": {"type": "string"},
+                   "confidence": {"type": "number"}, "reason": {"type": "string"}},
+    "required": ["verdict", "target_key", "confidence", "reason"],
+}
+
+MISPLACE_SYSTEM = (
+    "You are shown one prompt the operator typed into one coding-agent session, that session's purpose, and the "
+    "other sessions the operator has live. Say whether this prompt belongs in this session. Answer \"fits\" unless "
+    "the prompt plainly concerns the work of one of the other listed sessions (then verdict \"other\" and put that "
+    "session's key in target_key) or plainly leaves this session's purpose for something none of the listed sessions "
+    "covers (then verdict \"drift\" and target_key \"\"). A topic change the operator states on purpose (\"now "
+    "let's…\", \"switch to …\", \"forget that, …\") is \"fits\" — they meant it. Be conservative: when in doubt, "
+    "\"fits\". confidence is your certainty from 0 to 1; reason is one short sentence for the operator."
+)
+
 
 def _norm(s: str | None) -> str:
     s = (s or "").lower()
@@ -117,6 +139,18 @@ def build_prompt(s: dict[str, Any], turn: dict[str, Any], prev: dict[str, Any] |
         lines.append(f"\nAgent's previous reply (context only):\n{_clip(prev['assistant_text'], TEXT_CHARS // 2)}")
     lines.append(f"\nOperator's prompt:\n{_clip(turn.get('user_text'), TEXT_CHARS)}")
     lines.append(f"\nAgent's reply:\n{_clip(turn.get('assistant_text'), TEXT_CHARS) or '(no text reply)'}")
+    return "\n".join(lines)
+
+
+def misplace_prompt(s: dict[str, Any], prompt: str, others: list[dict[str, Any]]) -> str:
+    """What the model needs to judge one prompt: this session, the prompt itself, the other live candidates."""
+    lines = [f"This session: {s.get('title') or '-'} ({misplace.where(s)})",
+             f"Purpose: {s.get('purpose') or '(none yet)'}",
+             f"Recap: {_clip(s.get('recap'), 600) or '(none)'}",
+             f"\nPrompt the operator typed here:\n{_clip(prompt, TEXT_CHARS)}",
+             "\nOther live sessions:" if others else "\nOther live sessions: (none)"]
+    lines += [f"- key={o.get('key')} title={_clip(o.get('title'), 80) or '-'} purpose={_clip(o.get('purpose'), 160) or '-'} "
+              f"{misplace.where(o)}" for o in others[:MISPLACE_OTHERS]]
     return "\n".join(lines)
 
 
@@ -170,10 +204,15 @@ class Extractor:
         return (datetime.now(timezone.utc) - timedelta(days=self.days)).isoformat().replace("+00:00", "Z")
 
     async def call_seat(self, prompt: str) -> dict[str, Any]:
+        return await self.call_json(prompt, SYSTEM, SCHEMA, "ledger")
+
+    async def call_json(self, prompt: str, system: str, schema: dict[str, Any], name: str,
+                        max_tokens: int = 900) -> dict[str, Any]:
+        """One seat call answering a strict json_schema: the ledger extraction, and the misplaced-prompt check."""
         body: dict[str, Any] = {
-            "model": self.seat.model, "temperature": 0.1, "max_tokens": 900,
-            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
-            "response_format": {"type": "json_schema", "json_schema": {"name": "ledger", "strict": True, "schema": SCHEMA}},
+            "model": self.seat.model, "temperature": 0.1, "max_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
         }
         if self.seat.disable_thinking:
             body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -198,8 +237,13 @@ class Extractor:
         s = self.store.session(key, turns=1) or {}
         st = self.store.tracker_state(key)
         active = [r for r in self.store.ledger(key, active_only=True) if r["kind"] == "instruction"]
+        # the slow half of the misplaced-prompt check, after the exchange: did this prompt belong here at all?
+        ask_fit = (MISPLACE_CHECK and not misplace.skip(turn.get("user_text") or "")
+                   and not self.store.misplaced_seen(key, turn.get("user_text") or ""))
         try:
             out = await self.call_seat(build_prompt(s, turn, prev, active, st["purpose"]))
+            if ask_fit:
+                await self.check_fit(key, s, turn.get("user_text") or "")
         except (ValueError, KeyError, TypeError) as e:     # the seat answered, but not with the schema
             n = self._bad[(key, turn["idx"])] = self._bad.get((key, turn["idx"]), 0) + 1
             if n < MAX_BAD:
@@ -220,6 +264,32 @@ class Extractor:
             self.notify()
         self.status["last_ok"] = time.time()
         return True
+
+    async def check_fit(self, key: str, s: dict[str, Any], prompt: str) -> None:
+        """One seat call: does this prompt fit this session? A confident "other" or "drift" becomes an open
+        misplaced row for the board. Any trouble with the seat is logged and skipped — never retried, and never
+        costs the ledger extraction it came after."""
+        others = self.store.misplace_candidates(key, MISPLACE_OTHERS)
+        if not others:
+            return                                # nothing else live: "belongs elsewhere" has no answer, and
+                                                  # every topic change would look like drift — the check would nag
+        try:
+            out = await self.call_json(misplace_prompt(s, prompt, others), MISPLACE_SYSTEM, MISPLACE_SCHEMA, "misplace", 200)
+        except Exception as e:                                # noqa: BLE001 - this check is a bonus, not a duty
+            log.info("misplace check %s: %s", key, str(e)[:160])
+            return
+        verdict = out.get("verdict")
+        conf = out.get("confidence")
+        if verdict not in ("other", "drift") or not isinstance(conf, (int, float)) or conf < MISPLACE_MIN_CONF:
+            return
+        keys = {o["key"] for o in others}
+        target = out.get("target_key") or ""
+        target = target if verdict == "other" and target in keys else ""
+        named = next((o for o in others if o["key"] == target), None)
+        self.store.add_misplaced({"key": key, "prompt_id": "", "prompt": prompt, "source": "llm", "verdict": verdict,
+                                  "target_key": target, "target_title": (named or {}).get("title") or "",
+                                  "why": _clip(out.get("reason"), MISPLACE_REASON), "confidence": float(conf)})
+        self.notify()
 
     async def step(self, calls: int = 1) -> int:
         """Up to ``calls`` seat calls (non-human turns are read past for free)."""
