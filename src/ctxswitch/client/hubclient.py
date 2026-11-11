@@ -97,6 +97,14 @@ class HubClient:
     def note_handoff(self, key: str, to: str, profile: str | None = None) -> None:
         self._c.post(f"/v1/sessions/{key}/handoff", json={"to": to, "profile": profile}).raise_for_status()
 
+    def misplaced_state(self, id: int, state: str) -> bool:
+        """Say what happened to a flagged prompt: "kept" (it stays here), "moved" (the board sent it on) or "resent"
+        (the same prompt went through after the hook blocked it). An older hub has no such route: ValueError."""
+        r = self._c.post(f"/v1/misplaced/{id}/state", json={"state": state})
+        if r.status_code != 200:
+            raise ValueError(_error(r))
+        return bool(r.json().get("ok", True))
+
     def retire(self, key: str, row_id: int) -> bool:
         return self._c.post(f"/v1/sessions/{key}/ledger/{row_id}/retire").status_code == 200
 

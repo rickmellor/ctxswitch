@@ -701,6 +701,12 @@ def end_agent(p: Pane, proc: str = "/proc", kill=os.kill) -> int:
     return len(pids)
 
 
+def interrupt(pane_id: str) -> None:
+    """Escape into a pane: stop what the agent in it is doing (what you would press), leaving anything it changed
+    alone. A board that can't see the pane — outside tmux, on another host — can't do this at all."""
+    _run("send-keys", "-t", pane_id, "Escape", check=False)
+
+
 def kill_all() -> None:
     """End this tmux session: every agent in it gets SIGHUP (transcripts stay; they show as resumable)."""
     me = my_session()
