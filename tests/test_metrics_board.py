@@ -123,10 +123,10 @@ def test_a_sample_at_the_boards_usual_width_says_it_in_four_lines():
     assert lines[0].startswith("specul8 · ") and "1.8 GHz" in lines[0] and "46°C" in lines[0]
     assert "Threadripper PRO 3945WX" in lines[0] and "AMD " not in lines[0] and "12-Core" not in lines[0]
     assert "GPU0 RTX 4080" in lines[2] and "GPU1 AMD GPU" in lines[3]
-    assert "14.6/16.4G" in lines[2] and "30.5/34.2G" in lines[3]
+    assert "13.6/15.3G" in lines[2] and "28.4/31.9G" in lines[3]
     assert "29°C" in lines[2] and "31°C" in lines[3] and "21.0W" in lines[3] and "3.5W" in lines[2]
     assert lines[1].startswith("CPU") and len(re.findall(r"[▁▂▃▄▅▆▇█]", lines[1])) == 24      # one char a core
-    assert lines[2].split(" ")[-3].startswith("14.6/") and lines[2].rstrip().endswith("3.5W")
+    assert lines[2].split(" ")[-3].startswith("13.6/") and lines[2].rstrip().endswith("3.5W")   # 14.6e9 B = 13.6 GiB
 
 
 def test_every_width_the_board_comes_in_stays_inside_it():
@@ -148,7 +148,7 @@ def test_a_narrow_pane_gives_up_the_core_strip_and_a_wide_one_more_history():
 
 def test_a_host_with_no_gpus_says_only_the_two_cpu_lines():
     lines = panel_text("laptop", _sample(gpus=[]), 60).plain.splitlines()
-    assert len(lines) == 2 and lines[1].startswith("CPU") and "RAM 41/62G" in lines[1]
+    assert len(lines) == 2 and lines[1].startswith("CPU") and "RAM 38/58G" in lines[1]
 
 
 def test_a_value_the_collector_cant_read_prints_a_dash_not_a_guess():
@@ -192,7 +192,7 @@ def test_a_busy_card_is_red_a_warm_one_yellow_and_a_quiet_one_green():
 
 
 def test_vram_nearly_full_is_red_and_a_host_that_stopped_reporting_is_stale():
-    full = _sample(gpus=[_gpu(0, used=int(round(32 * GB * 0.98)), total=32 * GB)])
+    full = _sample(gpus=[_gpu(0, used=int(round(32 * 2**30 * 0.98)), total=32 * 2**30)])   # a 32 GiB card, 98% full
     assert _style_of(panel_text("specul8", full, 100), 2, "31.4/32.0G") == "red"
     stale = panel_text("specul8", _sample(age=30.0), 100)
     assert "stale 30s" in stale.plain.splitlines()[0]

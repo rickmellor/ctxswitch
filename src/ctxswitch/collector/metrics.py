@@ -12,6 +12,8 @@ worse than one showing nothing. A host with no GPUs sends ``"gpus": []``.
 from __future__ import annotations
 
 import re
+import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -162,11 +164,10 @@ def amd_gpus(sys: str | Path = "/sys") -> list[dict[str, Any]]:
         util = _num(dev / "gpu_busy_percent")
         if util is None:
             continue
-        temps = [_num(h / "temp1_input") for h in sorted((dev / "hwmon").glob("hwmon[0-9]*"))] if (dev / "hwmon").is_dir() else []
-        temp = next((t for t in temps if t is not None), None)
-        power = _num(dev / "power1_average")
-        if power is None:
-            power = _num(dev / "power1_input")
+        hwmons = sorted((dev / "hwmon").glob("hwmon[0-9]*")) if (dev / "hwmon").is_dir() else []
+        temp = next((t for t in (_num(h / "temp1_input") for h in hwmons) if t is not None), None)
+        # power lives beside the temperature, in the card's hwmon (power1_average on RDNA, power1_input on some)
+        power = next((p for h in hwmons for p in (_num(h / "power1_average"), _num(h / "power1_input")) if p is not None), None)
         name = _text(dev / "product_name").strip()
         out.append({"index": len(out), "vendor": "amd", "name": name or "AMD GPU", "util": util,
                     "mem_used": _int(dev / "mem_info_vram_used"), "mem_total": _int(dev / "mem_info_vram_total"),
@@ -186,10 +187,15 @@ def _mib(s: str) -> int | None:
     return None if v is None else int(v * 1024 * 1024)
 
 
+def nvidia_smi(which=shutil.which, wsl: str = "/usr/lib/wsl/lib/nvidia-smi") -> str:
+    """nvidia-smi: on PATH, else WSL's copy, which a systemd --user unit's PATH leaves out (the laptop's RTX)."""
+    return which("nvidia-smi") or (wsl if os.path.exists(wsl) else "nvidia-smi")
+
+
 def nvidia_gpus(run: Callable[..., Any] = subprocess.run) -> list[dict[str, Any]]:
     """Every NVIDIA card, in ``nvidia-smi``'s own order (its index column is dropped; Sampler re-numbers the whole
     list). No nvidia-smi, a non-zero exit or a timeout means no NVIDIA cards here: [] and the AMD ones take GPU0."""
-    argv = ["nvidia-smi", "--query-gpu=" + ",".join(NVIDIA_QUERY), "--format=csv,noheader,nounits"]
+    argv = [nvidia_smi(), "--query-gpu=" + ",".join(NVIDIA_QUERY), "--format=csv,noheader,nounits"]
     try:
         p = run(argv, capture_output=True, text=True, timeout=NVIDIA_TIMEOUT_S)
     except Exception:                        # noqa: BLE001 - not installed, timed out, killed: this host has no NVIDIA

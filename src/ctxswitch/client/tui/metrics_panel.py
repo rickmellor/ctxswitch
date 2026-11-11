@@ -18,7 +18,7 @@ from textual.widgets import Static
 
 SPARK = "▁▂▃▄▅▆▇█"                       # one character per sample, 0..100 scaled across the eight
 BAR_W = 15                                 # the widest a bar ever gets
-GB = 1_000_000_000
+GB = 1 << 30                                 # GiB, as btop and nvidia-smi count VRAM and RAM
 DASH = "—"
 
 

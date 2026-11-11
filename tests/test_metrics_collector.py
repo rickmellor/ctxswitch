@@ -123,7 +123,7 @@ def card(tmp_path, n, util=AMD["util"], name="", connector=False, **over):
     if util is not False:
         w(d, "device/gpu_busy_percent", str(util))
     for f, val in (("device/mem_info_vram_used", v["vram_used"]), ("device/mem_info_vram_total", v["vram_total"]),
-                   ("device/hwmon/hwmon0/temp1_input", v["temp"]), ("device/power1_average", v["power"])):
+                   ("device/hwmon/hwmon0/temp1_input", v["temp"]), ("device/hwmon/hwmon0/power1_average", v["power"])):
         if val is not None:
             w(d, f, str(val))
     if name:
@@ -154,8 +154,8 @@ def test_a_card_without_busy_percent_is_not_a_gpu_and_a_missing_file_is_null(tmp
 
 def test_a_card_without_power_average_falls_back_to_its_input(tmp_path):
     card(tmp_path, 0)
-    w(tmp_path, "sys/class/drm/card0/device/power1_average", "not a number")
-    w(tmp_path, "sys/class/drm/card0/device/power1_input", "15500000")
+    w(tmp_path, "sys/class/drm/card0/device/hwmon/hwmon0/power1_average", "not a number")
+    w(tmp_path, "sys/class/drm/card0/device/hwmon/hwmon0/power1_input", "15500000")
     assert M.amd_gpus(tmp_path / "sys")[0]["power_w"] == 15.5
 
 
@@ -185,7 +185,7 @@ def test_nvidia_smis_two_rows_become_two_gpus_with_the_right_units():
     assert g[0]["mem_used"] == 14591 * 1024 * 1024 and g[0]["mem_total"] == 16376 * 1024 * 1024
     assert g[1]["mem_used"] == 15624 * 1024 * 1024 and g[1]["power_w"] == 4.14
     argv, kw = run.calls[0]
-    assert argv[0] == "nvidia-smi" and "utilization.gpu" in argv[1] and kw["timeout"] == 3
+    assert argv[0].endswith("nvidia-smi") and "utilization.gpu" in argv[1] and kw["timeout"] == 3
 
 
 def test_a_value_nvidia_smis_cannot_answer_is_null_not_zero():
@@ -281,3 +281,19 @@ def _cfg(tmp_path, text):
     p = tmp_path / "config.toml"
     p.write_text(text)
     return p
+
+
+def test_amd_power_is_read_from_the_card_s_hwmon_not_its_device_dir(tmp_path):
+    """The real layout: power1_average sits beside temp1_input in device/hwmon/hwmonN (a file in device/ is ignored)."""
+    d = tmp_path / "sys/class/drm/card0/device"; (d / "hwmon/hwmon6").mkdir(parents=True)
+    (d / "gpu_busy_percent").write_text("3\n"); (d / "hwmon/hwmon6/temp1_input").write_text("31000\n")
+    (d / "hwmon/hwmon6/power1_average").write_text("21000000\n"); (d / "power1_average").write_text("99000000\n")
+    (g,) = M.amd_gpus(tmp_path / "sys")
+    assert (g["power_w"], g["temp_c"]) == (21.0, 31.0)
+
+
+def test_nvidia_smi_is_found_in_wsl_s_lib_when_path_leaves_it_out(tmp_path):
+    wsl = tmp_path / "nvidia-smi"; wsl.write_text("#!/bin/sh\n"); wsl.chmod(0o755)
+    assert M.nvidia_smi(which=lambda c: None, wsl=str(wsl)) == str(wsl)
+    assert M.nvidia_smi(which=lambda c: "/usr/bin/nvidia-smi", wsl=str(wsl)) == "/usr/bin/nvidia-smi"
+    assert M.nvidia_smi(which=lambda c: None, wsl=str(tmp_path / "absent")) == "nvidia-smi"
