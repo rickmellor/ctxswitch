@@ -122,6 +122,18 @@ def preview_core_strip() -> None:
         con.print(Text.assemble((f"{name:<6}", "bold"), " ", strip, (f" {label}", "dim")))
 
 
+HEAD_BG = "on grey23"                      # behind each host's title line, the full pane width: where a machine starts
+
+
+def header_band(t: Text, width: int) -> Text:
+    """A host's title line as a band: padded to the pane's width and laid on HEAD_BG, under its own colours, so the
+    hosts stacked in one panel read as separate blocks."""
+    t = t.copy()[:width]
+    t.pad_right(max(0, width - len(t.plain)))
+    t.stylize(HEAD_BG)
+    return t
+
+
 def _head(parts: list[tuple[str, str]], width: int, warn: tuple[str, str] | None = None) -> Text:
     """The first line, fitted by dropping parts from the right. A stale host keeps saying so: the load, clock and
     temperature go before the warning does, and the warning only goes when there's no room beside the name."""
@@ -183,7 +195,7 @@ def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[in
     if load:
         parts.append(("load " + " ".join(f"{float(v):.2f}" for v in load), "dim"))
     warn = (f"stale {int(round(float(age)))}s", "yellow") if isinstance(age, (int, float)) and float(age) > 10 else None
-    lines = [_head(parts, width, warn)]
+    lines = [header_band(_head(parts, width, warn), width)]
 
     bar_w = _bar_w(width)
     idx_w, name_w = cols or label_cols(gpus, width)     # the CPU's bar and percent sit in the GPUs' columns
@@ -340,7 +352,7 @@ def hosts_text(hosts: dict, chosen: list[str], width: int, height: int,
         if shown is None:
             continue
         if name not in hosts:                                      # one dim line says the whole host
-            parts.append(Text(f"{name} · no samples (is metrics_every set on it?)", "dim")[:width])
+            parts.append(header_band(Text(f"{name} · no samples (is metrics_every set on it?)", "dim"), width))
             continue
         parts.append(panel_text(name, hosts[name], width, max(0, count - shown), cols))
     if more_hosts:

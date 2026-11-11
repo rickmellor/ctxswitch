@@ -351,7 +351,7 @@ def test_a_chosen_host_that_stopped_reporting_gets_one_dim_line():
     hosts = _three(big=1, mid=1)                              # "gone" is a host the hub's body has no entry for
     t = hosts_text(hosts, ["beta", "gone"], 60, 40)
     lines = t.plain.splitlines()
-    assert lines[-1] == "gone · no samples (is metrics_every set on it?)"
+    assert lines[-1].rstrip() == "gone · no samples (is metrics_every set on it?)"
     assert _style_of(t, len(lines) - 1, "no samples") == "dim"
     assert lines[0].startswith("beta · ")                     # the host that does report keeps its block
 
@@ -441,7 +441,7 @@ async def test_a_chosen_host_the_hub_never_heard_of_shows_its_no_samples_line(mo
         await pilot.pause(2.5)
         lines = _panel(app)
         assert any(ln.startswith("alpha · ") for ln in lines)
-        assert lines[-1] == "gone · no samples (is metrics_every set on it?)"
+        assert lines[-1].rstrip() == "gone · no samples (is metrics_every set on it?)"
 
 
 def test_the_two_ways_there_is_nothing_to_show_say_which_one_it_is():
@@ -568,3 +568,28 @@ def test_the_cpu_row_shows_the_segments_and_the_core_count_when_it_fits():
     assert wide.endswith(" 12c") and len(re.findall(r"[▁▂▃▄▅▆▇█]", wide.split("%", 1)[1])) == 24
     for width in (44, 60, 100):                                             # never wider than the pane
         assert all(len(ln) <= width for ln in panel_text("specul8", entry, width).plain.splitlines())
+
+
+# -- each host's title line is a band across the pane -------------------------------------------------------------
+
+from ctxswitch.client.tui.metrics_panel import HEAD_BG  # noqa: E402
+
+
+def _bg_cols(line: Text) -> set:
+    return {i for s in line.spans if HEAD_BG in str(s.style) for i in range(s.start, s.end)}
+
+
+def test_a_hosts_title_line_is_a_full_width_band_and_its_other_lines_are_not():
+    for width in (44, 60, 100):
+        lines = panel_text("specul8", _sample(), width).split("\n")
+        assert len(lines[0].plain) == width and _bg_cols(lines[0]) == set(range(width))
+        assert all(not _bg_cols(ln) for ln in lines[1:])
+    head = panel_text("specul8", _sample(), 100).split("\n")[0]
+    assert any("bold" in str(s.style) for s in head.spans)                   # the name keeps its own style
+
+
+def test_a_host_with_no_samples_gets_the_band_too():
+    from ctxswitch.client.tui.metrics_panel import header_band
+    band = header_band(Text("scrub · no samples", "dim"), 40)
+    assert len(band.plain) == 40 and _bg_cols(band) == set(range(40))
+    assert len(header_band(Text("x" * 60), 40).plain) == 40                   # never wider than the pane
