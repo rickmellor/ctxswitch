@@ -173,21 +173,28 @@ def mem(proc: str | Path = "/proc") -> dict[str, Any]:
     return {"used": used, "total": total}
 
 
-# Names for cards whose driver leaves sysfs ``product_name`` empty (amdgpu does on the R9700 box), by PCI
-# vendor:device id. Only a fallback: a non-empty product_name always wins. 1002:7551 is Navi 48, which lspci calls
-# "Radeon AI PRO R9700".
-PCI_NAMES: dict[tuple[int, int], str] = {
-    (0x1002, 0x7551): "AI R9700",
+# Names for cards whose driver leaves sysfs ``product_name`` empty (amdgpu does on the R9700 and 9070 XT boxes), by
+# PCI id. Only a fallback: a non-empty product_name always wins. A key is (vendor, device) or, where one device id
+# covers several models, (vendor, device, revision): 1002:7550 is the RX 9070, 9070 XT and 9070 GRE alike, and only
+# the revision tells them apart, so it is named per revision and an unlisted revision stays generic.
+PCI_NAMES: dict[tuple[int, ...], str] = {
+    (0x1002, 0x7551): "AI R9700",              # Navi 48, lspci: Radeon AI PRO R9700 (specul8)
+    (0x1002, 0x7550, 0xC0): "RX 9070 XT",      # Navi 48 rev c0 (scrub)
 }
 
 
 def _pci_name(dev: Path) -> str:
-    """The PCI_NAMES entry for this card's vendor:device, or "" when there is none or the ids can't be read."""
+    """The PCI_NAMES entry for this card: vendor:device:revision first, then vendor:device; "" when neither is listed
+    or the ids can't be read. A card whose revision can't be read is matched on vendor:device only."""
     try:
-        key = (int(_text(dev / "vendor").strip(), 16), int(_text(dev / "device").strip(), 16))
+        vendor, device = int(_text(dev / "vendor").strip(), 16), int(_text(dev / "device").strip(), 16)
     except ValueError:
         return ""
-    return PCI_NAMES.get(key, "")
+    try:
+        rev = int(_text(dev / "revision").strip(), 16)
+    except ValueError:
+        rev = None
+    return (PCI_NAMES.get((vendor, device, rev), "") if rev is not None else "") or PCI_NAMES.get((vendor, device), "")
 
 
 def amd_gpus(sys: str | Path = "/sys") -> list[dict[str, Any]]:

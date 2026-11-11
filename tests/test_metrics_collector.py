@@ -342,3 +342,16 @@ def test_two_packages_with_the_same_core_id_are_two_cores(tmp_path):
 def test_no_topology_means_no_grouping_rather_than_a_guess(tmp_path):
     proc, sys = cpu_tree(tmp_path)                               # cpu_tree writes no topology files
     assert "core_of" not in M.CpuSampler(proc, sys).sample()
+
+
+def test_a_device_id_shared_by_several_models_is_named_by_its_revision(tmp_path):
+    # 1002:7550 is the RX 9070, 9070 XT and 9070 GRE: only rev c0 (scrub's 9070 XT) is listed
+    xt = card(tmp_path, 0)
+    w(xt, "device/vendor", "0x1002\n"); w(xt, "device/device", "0x7550\n"); w(xt, "device/revision", "0xc0\n")
+    other = card(tmp_path, 1)
+    w(other, "device/vendor", "0x1002\n"); w(other, "device/device", "0x7550\n"); w(other, "device/revision", "0xc3\n")
+    norev = card(tmp_path, 2)
+    w(norev, "device/vendor", "0x1002\n"); w(norev, "device/device", "0x7550\n")
+    r9700 = card(tmp_path, 3)                                     # a two-part key matches whatever the revision
+    w(r9700, "device/vendor", "0x1002\n"); w(r9700, "device/device", "0x7551\n"); w(r9700, "device/revision", "0xc0\n")
+    assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["RX 9070 XT", "AMD GPU", "AMD GPU", "AI R9700"]
