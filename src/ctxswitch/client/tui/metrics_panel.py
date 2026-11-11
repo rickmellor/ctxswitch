@@ -292,7 +292,7 @@ class HostPicker(ModalScreen):
             t.append(f"{n} [{'x' if name in self.picked else ' '}] {name}", "bold")
             t.append(f"  {cards} GPU{'s' if cards != 1 else ''}" if cards else "  no GPUs", "dim")
             t.append("   ")
-        t.append("digit toggles · Enter or Esc keeps", "dim")
+        t.append("digit toggles · Enter, Esc or G closes", "dim")
         return t
 
     def compose(self) -> ComposeResult:

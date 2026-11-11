@@ -259,7 +259,7 @@ btop's. Nothing a collector can't read is guessed: it prints `—`.
 
 It is opt-in per host: a host only reports once its collector has `[collector] metrics_every` set (default `0`, which
 samples nothing), and the panel says so when none do. `G` opens a picker that lists every host that reports with its
-GPU count; a digit toggles one, Enter or Esc closes it, and the panel stacks whichever are ticked, sorted — laptop,
+GPU count; a digit toggles one, Enter, Esc or `G` closes it, and the panel stacks whichever are ticked, sorted — laptop,
 scrub and specul8 at once, or just one. The choice is remembered for the next board; a ticked host that stopped
 reporting keeps one line saying it has no samples. Left unpicked, the panel shows the one host `metrics_host` names,
 or the one with the most GPUs, which is the one doing the work. Each collector samples every 2 s and the hub keeps the
@@ -295,7 +295,7 @@ marked `stale 42s`. What a host runs elsewhere doesn't move the panel: it's abou
 | `i` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `$` | spend: today's cost, cloud and local, per account, per pool job (`Esc`, `$` or `q` closes it) |
 | `g` | CPU and GPU: a panel of the hosts doing the work — utilization by core, and each card's memory, temperature and power (remembered for next time). Opt-in per host: one reports once its collector has `[collector] metrics_every` set |
-| `G` | pick the hosts the CPU/GPU panel shows, several at once: a digit toggles one, Enter or Esc closes it, and the set is remembered |
+| `G` | pick the hosts the CPU/GPU panel shows, several at once: a digit toggles one, Enter, Esc or `G` closes it, and the set is remembered |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
 | `k` | end the selected session's agent, after a `y` (the transcript stays: Enter resumes it). One on another host is ended there, in its own tmux |

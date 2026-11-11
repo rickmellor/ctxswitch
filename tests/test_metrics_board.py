@@ -383,6 +383,10 @@ async def test_G_lists_the_hosts_that_report_with_their_cards_and_toggles(monkey
         assert sorted(json.loads((tmp_path / "metrics-panel").read_text())["hosts"]) == ["alpha", "beta", "scrub"]
         await pilot.press("G"); await pilot.pause(0.5)
         assert "1 [x] alpha" in app.screen.query_one(Static).render().plain   # the ticks came back
+        await pilot.press("g"); await pilot.pause(0.5)              # G closes it too, keeping the set
+        assert not isinstance(app.screen, HostPicker) and app.metrics_picked == ["alpha", "beta", "scrub"]
+        assert app.query_one("#metrics").display               # the picker's g is not the board's: nothing toggled
+        await pilot.press("G"); await pilot.pause(0.5)
         await pilot.press("2"); await pilot.pause(0.3)
         await pilot.press("escape"); await pilot.pause(2.5)              # closing keeps the ticks made in it
         assert app.metrics_picked == ["alpha", "scrub"]
