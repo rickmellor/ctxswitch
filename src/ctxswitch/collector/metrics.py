@@ -178,8 +178,8 @@ def mem(proc: str | Path = "/proc") -> dict[str, Any]:
 # covers several models, (vendor, device, revision): 1002:7550 is the RX 9070, 9070 XT and 9070 GRE alike, and only
 # the revision tells them apart, so it is named per revision and an unlisted revision stays generic.
 PCI_NAMES: dict[tuple[int, ...], str] = {
-    (0x1002, 0x7551): "AI R9700",              # Navi 48, lspci: Radeon AI PRO R9700 (specul8)
-    (0x1002, 0x7550, 0xC0): "RX 9070 XT",      # Navi 48 rev c0 (scrub)
+    (0x1002, 0x7551): "AI R9700",              # Navi 48, lspci: Radeon AI PRO R9700 (gpu-host)
+    (0x1002, 0x7550, 0xC0): "RX 9070 XT",      # Navi 48 rev c0 (devbox)
 }
 
 

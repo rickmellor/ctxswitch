@@ -20,7 +20,7 @@ GB = 1_000_000_000
 CORES = [3.0] * 24
 
 
-def _sample(host="specul8", *, util=0.0, gpus=None, cores=None, age=3.0, model="AMD Ryzen Threadripper PRO 3945WX 12-Cores",
+def _sample(host="gpu-host", *, util=0.0, gpus=None, cores=None, age=3.0, model="AMD Ryzen Threadripper PRO 3945WX 12-Cores",
             mhz=1800.0, temp=46.0, mem=(41 * GB, 62 * GB)):
     """One host's entry exactly as GET /v1/metrics puts it under "hosts": latest, age_s, history."""
     gpus = [{"index": 0, "vendor": "nvidia", "name": "NVIDIA GeForce RTX 4080", "util": util, "mem_used": 14_600_000_000,
@@ -52,7 +52,7 @@ class FakeClient:
 
     def __init__(self, rows, body=None):
         self.rows = rows
-        self.body = {"hosts": {"specul8": _sample()}} if body is None else body
+        self.body = {"hosts": {"gpu-host": _sample()}} if body is None else body
         self.metrics_calls: list = []
 
     def sessions(self, host=None, live_only=False):
@@ -65,7 +65,7 @@ class FakeClient:
         return {"items": []}
 
     def hosts(self):
-        return [{"host_id": "laptop"}, {"host_id": "specul8"}]
+        return [{"host_id": "laptop"}, {"host_id": "gpu-host"}]
 
     def spend(self, frm, to, host=None):
         return None
@@ -117,10 +117,10 @@ def _style_of(text: Text, line: int, needle: str) -> str:
 
 # -- panel_text, pure rendering -----------------------------------------------------------------------------------
 def test_a_sample_at_the_boards_usual_width_says_it_in_five_lines():
-    t = panel_text("specul8", _sample(), 60)
+    t = panel_text("gpu-host", _sample(), 60)
     lines = t.plain.splitlines()
     assert len(lines) == 5 and all(len(ln) <= 60 for ln in lines)
-    assert lines[0].startswith("specul8 · ") and "1.8 GHz" in lines[0] and "46°C" in lines[0]
+    assert lines[0].startswith("gpu-host · ") and "1.8 GHz" in lines[0] and "46°C" in lines[0]
     assert "Threadripper PRO 3945WX" in lines[0] and "AMD " not in lines[0] and "12-Core" not in lines[0]
     assert "GPU0 RTX 4080" in lines[3] and "GPU1 AMD GPU" in lines[4]
     assert "13.6/15.3G" in lines[3] and "28.4/31.9G" in lines[4]
@@ -133,16 +133,16 @@ def test_a_sample_at_the_boards_usual_width_says_it_in_five_lines():
 def test_every_width_the_board_comes_in_stays_inside_it():
     for w in (44, 60, 100):
         for entry in (_sample(), _sample(gpus=_ten()), _sample(gpus=[]), _sample(age=42.0)):
-            lines = panel_text("specul8", entry, w).plain.splitlines()
+            lines = panel_text("gpu-host", entry, w).plain.splitlines()
             assert all(len(ln) <= w for ln in lines), (w, lines)
 
 
 def test_a_narrow_pane_gives_up_the_core_strip_and_a_wide_one_more_history():
-    at44 = panel_text("specul8", _sample(), 44).plain.splitlines()
+    at44 = panel_text("gpu-host", _sample(), 44).plain.splitlines()
     assert all(len(ln) <= 44 for ln in at44)
     assert len(re.findall(r"[▁▂▃▄▅▆▇█]", at44[1])) < 24 and "CPU" in at44[1]      # no room for 24 of them
-    at60 = panel_text("specul8", _sample(), 60).plain.splitlines()
-    at100 = panel_text("specul8", _sample(), 100).plain.splitlines()
+    at60 = panel_text("gpu-host", _sample(), 60).plain.splitlines()
+    at100 = panel_text("gpu-host", _sample(), 100).plain.splitlines()
     spark = lambda ln: len(re.search(r"% ([▁▂▃▄▅▆▇█]*)", ln).group(1))              # the run after the percent
     assert spark(at100[3]) > spark(at60[3]) == 8, (at60[3], at100[3])
 
@@ -155,16 +155,16 @@ def test_a_host_with_no_gpus_says_only_its_title_cpu_and_memory():
 def test_a_value_the_collector_cant_read_prints_a_dash_not_a_guess():
     blind = _sample(gpus=[{"index": 0, "vendor": "nvidia", "name": "NVIDIA GeForce RTX 4090", "util": None,
                            "mem_used": None, "mem_total": None, "temp_c": None, "power_w": None}], temp=None, mhz=None)
-    lines = panel_text("specul8", blind, 100).plain.splitlines()
+    lines = panel_text("gpu-host", blind, 100).plain.splitlines()
     assert "—" in lines[3] and "GHz" not in lines[0] and "46°C" not in lines[0]
-    assert "—" in panel_text("specul8", {}, 60).plain                             # nothing at all is not an error
+    assert "—" in panel_text("gpu-host", {}, 60).plain                             # nothing at all is not an error
 
 
 def test_ten_cards_are_ten_lines_and_the_last_one_is_gpu9():
     entry = _sample(gpus=_ten())
     entry["history"]["gpus"] = {str(i): [10.0] * 60 for i in range(10)}
     for w in (44, 60, 100):
-        lines = panel_text("specul8", entry, w).plain.splitlines()
+        lines = panel_text("gpu-host", entry, w).plain.splitlines()
         assert len(lines) == 13, (w, lines)
         assert all(len(ln) <= w for ln in lines), (w, lines)
         assert "GPU9" in lines[-1] and lines[3].startswith("GPU0 ")
@@ -175,7 +175,7 @@ def test_a_panel_half_the_board_high_shows_what_fits_and_says_the_rest():
     entry["history"]["gpus"] = {str(i): [10.0] * 60 for i in range(10)}
     shown, more = fits_height(entry, 12)                     # a 24-row board: half of it
     assert shown + more == 10 and shown < 10
-    lines = panel_text("specul8", entry, 60, more).plain.splitlines()
+    lines = panel_text("gpu-host", entry, 60, more).plain.splitlines()
     assert len(lines) == 3 + shown + 1 and lines[-1].startswith(f"+{more} more GPUs")
     assert all(len(ln) <= 60 for ln in lines)
     assert fits_height(entry, 200) == (10, 0) and fits_height(_sample(gpus=[]), 12) == (0, 0)
@@ -184,7 +184,7 @@ def test_a_panel_half_the_board_high_shows_what_fits_and_says_the_rest():
 # -- colours ------------------------------------------------------------------------------------------------------
 def test_a_busy_card_is_red_a_warm_one_yellow_and_a_quiet_one_green():
     for util, want in ((90.0, "red"), (60.0, "yellow"), (10.0, "green")):
-        t = panel_text("specul8", _sample(gpus=[_gpu(0, util=util, name="AMD GPU")]), 100)
+        t = panel_text("gpu-host", _sample(gpus=[_gpu(0, util=util, name="AMD GPU")]), 100)
         line = t.plain.splitlines()[3]
         assert f"{util:.0f}%" in line and "█" in line.split("GPU0 ")[1], line
         assert _style_of(t, 3, f"{util:.0f}%") == want, (util, line)         # its percent, and the bar beside it
@@ -194,11 +194,11 @@ def test_a_busy_card_is_red_a_warm_one_yellow_and_a_quiet_one_green():
 
 def test_vram_nearly_full_is_red_and_a_host_that_stopped_reporting_is_stale():
     full = _sample(gpus=[_gpu(0, used=int(round(32 * 2**30 * 0.98)), total=32 * 2**30)])   # a 32 GiB card, 98% full
-    assert _style_of(panel_text("specul8", full, 100), 3, "31.4/32.0G") == "red"
-    stale = panel_text("specul8", _sample(age=30.0), 100)
+    assert _style_of(panel_text("gpu-host", full, 100), 3, "31.4/32.0G") == "red"
+    stale = panel_text("gpu-host", _sample(age=30.0), 100)
     assert "stale 30s" in stale.plain.splitlines()[0]
     assert _style_of(stale, 0, "stale 30s") == "yellow"
-    assert "stale" not in panel_text("specul8", _sample(age=3.0), 100).plain
+    assert "stale" not in panel_text("gpu-host", _sample(age=3.0), 100).plain
 
 
 # -- which host the panel shows -----------------------------------------------------------------------------------
@@ -229,7 +229,7 @@ async def test_g_shows_the_panel_and_remembers_it(monkeypatch, tmp_path):
         assert not app.query_one("#metrics").display and app.client.metrics_calls == []   # hidden: no fetches at all
         await pilot.press("g"); await pilot.pause(2.5)
         assert app.query_one("#metrics").display
-        assert "GPU0 RTX 4080" in "\n".join(_panel(app)) and "specul8" in _panel(app)[0]
+        assert "GPU0 RTX 4080" in "\n".join(_panel(app)) and "gpu-host" in _panel(app)[0]
         assert json.loads((tmp_path / "metrics-panel").read_text()) == {"shown": True, "hosts": []}
         assert app.client.metrics_calls                                          # shown: now it asks
         n = len(app.client.metrics_calls)
@@ -290,7 +290,7 @@ async def test_a_hub_nobody_has_reported_to_yet_says_that(monkeypatch, tmp_path)
 async def test_the_panel_never_takes_more_than_half_the_board(monkeypatch, tmp_path):
     entry = _sample(gpus=_ten())
     entry["history"]["gpus"] = {str(i): [10.0] * 60 for i in range(10)}
-    app = _board(monkeypatch, tmp_path, body={"hosts": {"specul8": entry}})
+    app = _board(monkeypatch, tmp_path, body={"hosts": {"gpu-host": entry}})
     async with app.run_test(size=(70, 24)) as pilot:                # ten cards would need 12 lines; half is 12
         await pilot.press("g"); await pilot.pause(2.5)
         w = app.query_one("#metrics")
@@ -305,17 +305,17 @@ def _three(*, big=10, mid=1, small=0):
     """Three hosts as the hub's body holds them: one with ``big`` cards, one with ``mid``, one with none."""
     return {"alpha": _sample("alpha", gpus=[_gpu(i) for i in range(big)]),
             "beta": _sample("beta", gpus=[_gpu(0) for _ in range(mid)]),
-            "scrub": _sample("scrub", gpus=[_gpu(0) for _ in range(small)])}
+            "devbox": _sample("devbox", gpus=[_gpu(0) for _ in range(small)])}
 
 
 def test_the_height_plan_keeps_every_hosts_cpu_lines_and_counts_the_rest():
-    counts = [10, 1, 0]                                       # alpha, beta, scrub, in sorted order
+    counts = [10, 1, 0]                                       # alpha, beta, devbox, in sorted order
     # every shown host keeps 3 lines (title, CPU, MEM); room = half the board less its border
     assert plan_heights(counts, 46) == ([10, 1, 0], 0)        # room 22 for all 20 lines: every card of every host
     assert plan_heights(counts, 40) == ([8, 0, 0], 0)         # room 19: cards go out in sorted host order, and the
     assert plan_heights(counts, 30) == ([3, 0, 0], 0)         # "+N more GPUs" lines cost a line each
     assert plan_heights(counts, 24) == ([0, 0, 0], 0)         # room 11: three hosts' fixed lines and two "+N more"
-    assert plan_heights(counts, 20) == ([0, 0, None], 1)      # room 9: scrub has no room at all
+    assert plan_heights(counts, 20) == ([0, 0, None], 1)      # room 9: devbox has no room at all
     assert plan_heights(counts, 16) == ([2, None, None], 2)   # room 7: alpha alone, and "+2 more hosts"
     assert plan_heights(counts, 8) == ([None, None, None], 3)  # room 3: nothing but "+3 more hosts" fits
     for height in range(0, 60):                              # and at no height does it promise more than half
@@ -364,7 +364,7 @@ def test_hosts_text_left_to_itself_shows_the_one_host_it_would_have_picked():
 
 # -- the G picker -----------------------------------------------------------------------------------------------------------------
 async def test_G_lists_the_hosts_that_report_with_their_cards_and_toggles(monkeypatch, tmp_path):
-    hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta"), "scrub": _sample("scrub", gpus=[])}
+    hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta"), "devbox": _sample("devbox", gpus=[])}
     app = _board(monkeypatch, tmp_path, body={"hosts": hosts})
     app.metrics_on = True
     async with app.run_test(size=(90, 30)) as pilot:
@@ -373,47 +373,47 @@ async def test_G_lists_the_hosts_that_report_with_their_cards_and_toggles(monkey
         assert isinstance(app.screen, HostPicker)
         body = app.screen.query_one(Static).render().plain
         assert "1 [ ] alpha  1 GPU" in body and "2 [ ] beta  2 GPUs" in body
-        assert "3 [ ] scrub  no GPUs" in body
+        assert "3 [ ] devbox  no GPUs" in body
         await pilot.press("2"); await pilot.pause(0.3)        # a digit toggles, and says so in its box
         assert "2 [x] beta" in app.screen.query_one(Static).render().plain
         await pilot.press("3"); await pilot.press("1"); await pilot.pause(0.3)
-        assert "3 [x] scrub" in app.screen.query_one(Static).render().plain
+        assert "3 [x] devbox" in app.screen.query_one(Static).render().plain
         assert "1 [x] alpha" in app.screen.query_one(Static).render().plain
         await pilot.press("enter"); await pilot.pause(2.5)
         assert not isinstance(app.screen, HostPicker)
-        assert app.metrics_picked == ["alpha", "beta", "scrub"]          # what it dismisses is sorted
-        assert sorted(json.loads((tmp_path / "metrics-panel").read_text())["hosts"]) == ["alpha", "beta", "scrub"]
+        assert app.metrics_picked == ["alpha", "beta", "devbox"]          # what it dismisses is sorted
+        assert sorted(json.loads((tmp_path / "metrics-panel").read_text())["hosts"]) == ["alpha", "beta", "devbox"]
         await pilot.press("G"); await pilot.pause(0.5)
         assert "1 [x] alpha" in app.screen.query_one(Static).render().plain   # the ticks came back
         await pilot.press("g"); await pilot.pause(0.5)              # G closes it too, keeping the set
-        assert not isinstance(app.screen, HostPicker) and app.metrics_picked == ["alpha", "beta", "scrub"]
+        assert not isinstance(app.screen, HostPicker) and app.metrics_picked == ["alpha", "beta", "devbox"]
         assert app.query_one("#metrics").display               # the picker's g is not the board's: nothing toggled
         await pilot.press("G"); await pilot.pause(0.5)
         await pilot.press("2"); await pilot.pause(0.3)
         await pilot.press("escape"); await pilot.pause(2.5)              # closing keeps the ticks made in it
-        assert app.metrics_picked == ["alpha", "scrub"]
-        assert json.loads((tmp_path / "metrics-panel").read_text())["hosts"] == ["alpha", "scrub"]
+        assert app.metrics_picked == ["alpha", "devbox"]
+        assert json.loads((tmp_path / "metrics-panel").read_text())["hosts"] == ["alpha", "devbox"]
 
 
 async def test_G_picks_several_hosts_and_the_board_shows_them_all(monkeypatch, tmp_path):
     hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta", gpus=[_gpu(1)]),
-             "scrub": _sample("scrub", gpus=[])}
+             "devbox": _sample("devbox", gpus=[])}
     app = _board(monkeypatch, tmp_path, body={"hosts": hosts})
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.press("g"); await pilot.pause(2.5)
-        assert _panel(app)[0].startswith(("alpha", "beta", "scrub"))     # nothing picked yet: one automatic host
+        assert _panel(app)[0].startswith(("alpha", "beta", "devbox"))     # nothing picked yet: one automatic host
         await pilot.press("G"); await pilot.pause(0.5)
         await pilot.press("1"); await pilot.press("2"); await pilot.pause(0.3)
         await pilot.press("enter"); await pilot.pause(2.5)
         lines = _panel(app)
         assert any(ln.startswith("alpha · ") for ln in lines) and any(ln.startswith("beta · ") for ln in lines)
-        assert not any(ln.startswith("scrub · ") for ln in lines)        # not ticked: not shown
+        assert not any(ln.startswith("devbox · ") for ln in lines)        # not ticked: not shown
         assert json.loads((tmp_path / "metrics-panel").read_text()) == {"shown": True, "hosts": ["alpha", "beta"]}
 
 
 async def test_a_board_started_from_the_file_shows_the_hosts_it_left_behind(monkeypatch, tmp_path):
     hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta", gpus=[_gpu(1)]),
-             "scrub": _sample("scrub", gpus=[])}
+             "devbox": _sample("devbox", gpus=[])}
     app = _board(monkeypatch, tmp_path, body={"hosts": hosts},
                  shown='{"shown": true, "hosts": ["beta", "alpha"]}')
     async with app.run_test(size=(70, 30)) as pilot:
@@ -430,7 +430,7 @@ async def test_the_old_one_word_file_still_opens_the_panel_on_the_automatic_host
     assert tui._metrics_state() == (True, [])
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(2.5)
-        assert app.query_one("#metrics").display and "specul8" in _panel(app)[0]   # the automatic host
+        assert app.query_one("#metrics").display and "gpu-host" in _panel(app)[0]   # the automatic host
         assert (tmp_path / "metrics-panel").read_text().strip() == "on"       # reading an old file changes nothing
 
 
@@ -476,7 +476,7 @@ def test_mixed_card_names_keep_the_bars_in_one_column():
     """RTX 4080 is a character longer than AMD GPU, and GPU10 one longer than GPU9: the bars still line up."""
     gpus = [_gpu(i, name=n, vendor=v) for i, (n, v) in enumerate(
         [("NVIDIA GeForce RTX 4080", "nvidia")] + [("AMD GPU", "amd")] * 10)]
-    lines = panel_text("specul8", _sample(gpus=gpus), 69).plain.splitlines()[3:]
+    lines = panel_text("gpu-host", _sample(gpus=gpus), 69).plain.splitlines()[3:]
     start = [next(i for i, c in enumerate(ln) if c in "█░") for ln in lines]      # where each bar begins
     assert len(lines) == 11 and len(set(start)) == 1, start
 
@@ -487,13 +487,14 @@ def test_the_cpu_bar_and_percent_sit_in_the_gpus_columns_on_every_host():
     laptop = {"latest": _sample(gpus=[_gpu(0, name="NVIDIA RTX 2000 Ada Generation Laptop GPU", vendor="nvidia")])["latest"]}
     box = {"latest": _sample(gpus=[_gpu(0, name="NVIDIA GeForce RTX 4080", vendor="nvidia")] +
                      [_gpu(i, name="AMD GPU") for i in range(1, 11)])["latest"]}
-    lines = hosts_text({"laptop": laptop, "specul8": box}, ["laptop", "specul8"], 69, 80).plain.splitlines()
+    lines = hosts_text({"laptop": laptop, "gpu-host": box}, ["laptop", "gpu-host"], 69, 80).plain.splitlines()
     bars = [ln for ln in lines if ln.startswith(("CPU", "GPU"))]
     bars = [ln for ln in lines if ln.startswith(("CPU", "MEM", "GPU"))]
     assert len(bars) == 2 * 2 + 1 + 11                                     # CPU + MEM per host, then the cards
     start = {next(i for i, c in enumerate(ln) if c in "█░") for ln in bars}   # where each bar begins
     assert len(start) == 1 and len({ln.index("%") for ln in bars}) == 1, bars
-    assert "RTX 2000 Ada " in lines[3] and "Generation" not in lines[3]
+    card = next(ln for ln in lines if "RTX 2000" in ln)                        # hosts are sorted: find it by name
+    assert "RTX 2000 Ada " in card and "Generation" not in card
 
 
 def test_a_card_name_keeps_its_letters_and_the_sparkline_gives_way():
@@ -507,7 +508,7 @@ def test_a_card_name_keeps_its_letters_and_the_sparkline_gives_way():
 async def test_the_panel_is_pinned_above_the_keys_and_the_detail_still_scrolls(monkeypatch, tmp_path):
     """g's panel sits at the bottom, right on top of the key bar; the detail pane above it keeps its own scrolling
     region, ending where the panel starts."""
-    app = _board(monkeypatch, tmp_path, body={"hosts": {"specul8": _sample(gpus=_ten())}})
+    app = _board(monkeypatch, tmp_path, body={"hosts": {"gpu-host": _sample(gpus=_ten())}})
     async with app.run_test(size=(70, 40)) as pilot:
         await pilot.press("g"); await pilot.pause(2.5)
         panel, keys = app.query_one("#metrics"), app.query_one("#keys")
@@ -564,10 +565,10 @@ def test_without_topology_the_strip_is_the_old_one_with_no_label():
 def test_the_cpu_row_shows_the_segments_and_the_core_count_when_it_fits():
     entry = _sample()
     entry["latest"]["cpu"]["core_of"] = TWELVE_BY_TWO
-    wide = panel_text("specul8", entry, 100).plain.splitlines()[1]
+    wide = panel_text("gpu-host", entry, 100).plain.splitlines()[1]
     assert wide.endswith(" 12c") and len(re.findall(r"[▁▂▃▄▅▆▇█]", wide.split("%", 1)[1])) == 24
     for width in (44, 60, 100):                                             # never wider than the pane
-        assert all(len(ln) <= width for ln in panel_text("specul8", entry, width).plain.splitlines())
+        assert all(len(ln) <= width for ln in panel_text("gpu-host", entry, width).plain.splitlines())
 
 
 # -- each host's title line is a band across the pane -------------------------------------------------------------
@@ -581,15 +582,15 @@ def _bg_cols(line: Text) -> set:
 
 def test_a_hosts_title_line_is_a_full_width_band_and_its_other_lines_are_not():
     for width in (44, 60, 100):
-        lines = panel_text("specul8", _sample(), width).split("\n")
+        lines = panel_text("gpu-host", _sample(), width).split("\n")
         assert len(lines[0].plain) == width and _bg_cols(lines[0]) == set(range(width))
         assert all(not _bg_cols(ln) for ln in lines[1:])
-    head = panel_text("specul8", _sample(), 100).split("\n")[0]
+    head = panel_text("gpu-host", _sample(), 100).split("\n")[0]
     assert any("bold" in str(s.style) for s in head.spans)                   # the name keeps its own style
 
 
 def test_a_host_with_no_samples_gets_the_band_too():
     from ctxswitch.client.tui.metrics_panel import header_band
-    band = header_band(Text("scrub · no samples", "dim"), 40)
+    band = header_band(Text("devbox · no samples", "dim"), 40)
     assert len(band.plain) == 40 and _bg_cols(band) == set(range(40))
     assert len(header_band(Text("x" * 60), 40).plain) == 40                   # never wider than the pane

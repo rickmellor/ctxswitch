@@ -260,7 +260,7 @@ btop's. Nothing a collector can't read is guessed: it prints `—`.
 It is opt-in per host: a host only reports once its collector has `[collector] metrics_every` set (default `0`, which
 samples nothing), and the panel says so when none do. `G` opens a picker that lists every host that reports with its
 GPU count; a digit toggles one, Enter, Esc or `G` closes it, and the panel stacks whichever are ticked, sorted — laptop,
-scrub and specul8 at once, or just one. The choice is remembered for the next board; a ticked host that stopped
+devbox and gpu-host at once, or just one. The choice is remembered for the next board; a ticked host that stopped
 reporting keeps one line saying it has no samples. Left unpicked, the panel shows the one host `metrics_host` names,
 or the one with the most GPUs, which is the one doing the work. Each collector samples every 2 s and the hub keeps the
 last sample plus a minute of history per host, in memory and never in the database; a sample older than 10 s is
