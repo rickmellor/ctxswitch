@@ -468,3 +468,11 @@ async def test_G_with_the_panel_hidden_still_lists_the_hosts(monkeypatch, tmp_pa
         assert len(app.client.metrics_calls) == n                         # hidden is hidden: no asking on its own
         await pilot.press("g"); await pilot.pause(2.5)                    # and now it shows just that one
         assert [ln.split(" ·")[0] for ln in _panel(app) if " · " in ln] == ["alpha"]
+
+
+def test_mixed_card_names_keep_the_bars_in_one_column():
+    """RTX 4080 is a character longer than AMD GPU, and GPU10 one longer than GPU9: the bars still line up."""
+    gpus = [_gpu(i, name=n, vendor=v) for i, (n, v) in enumerate(
+        [("NVIDIA GeForce RTX 4080", "nvidia")] + [("AMD GPU", "amd")] * 10)]
+    lines = panel_text("specul8", _sample(gpus=gpus), 69).plain.splitlines()[2:]
+    assert len(lines) == 11 and len({ln.index("░") for ln in lines}) == 1, [ln.index("░") for ln in lines]

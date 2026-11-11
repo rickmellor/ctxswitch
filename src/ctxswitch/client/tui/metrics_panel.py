@@ -135,23 +135,28 @@ def panel_text(host: str, entry: dict, width: int, more: int = 0) -> Text:
 
     hist_gpus = hist.get("gpus") or {}
     nspark = max(5, min(12, (width - 44) // 2))             # room for the history grows with the pane
-    for i, g in enumerate(gpus[:max(0, len(gpus) - more)]):
+    shown = gpus[:max(0, len(gpus) - more)]
+    name_w = max((len(gpu_name(g)[:14] or "GPU") for g in shown), default=0)   # one column, so the bars line up
+    idx_w = max((len(f"GPU{g.get('index', i)}") for i, g in enumerate(shown)), default=0)   # GPU9 beside GPU10
+    for i, g in enumerate(shown):
         idx = g.get("index")
         idx = i if not isinstance(idx, int) else idx
-        lines.append(_gpu_line(idx, g, hist_gpus.get(str(idx)) or [], bar_w, nspark, width))
+        lines.append(_gpu_line(idx, g, hist_gpus.get(str(idx)) or [], bar_w, nspark, width, name_w, idx_w))
     if more:
         lines.append(Text(f"+{more} more GPUs (widen or close the detail)", "dim")[:width])
     return Text("\n").join(lines)
 
 
-def _gpu_line(idx: int, g: dict, hist: list, bar_w: int, nspark: int, width: int) -> Text:
+def _gpu_line(idx: int, g: dict, hist: list, bar_w: int, nspark: int, width: int, name_w: int = 0,
+              idx_w: int = 0) -> Text:
     """One card: its name, a util bar and percent, its history, then VRAM, temperature and power. A pane too narrow
     for the lot gives ground from the right — a shorter sparkline first, then power, temperature, VRAM — so a line
     is never wider than the pane and never cuts a name in half."""
     util = g.get("util")
     util = float(util) if isinstance(util, (int, float)) else None
-    name = (gpu_name(g)[:14] or "GPU")[:max(4, width - 34 - bar_w - nspark)].strip() or "GPU"
-    lead = Text.assemble((f"GPU{idx}", "bold"), " ", (name, ""), " ", _bar(util, bar_w), " ",
+    room = max(4, width - 34 - bar_w - nspark)
+    name = ((gpu_name(g)[:14] or "GPU")[:room].strip() or "GPU").ljust(min(name_w, room))
+    lead = Text.assemble((f"GPU{idx}".ljust(idx_w), "bold"), " ", (name, ""), " ", _bar(util, bar_w), " ",
                          (f"{util:>3.0f}%" if util is not None else DASH.rjust(4), level_style(util)))
     gu, gt = g.get("mem_used"), g.get("mem_total")
     have_vram = isinstance(gu, (int, float)) and isinstance(gt, (int, float)) and gt
