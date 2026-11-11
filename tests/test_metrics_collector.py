@@ -297,3 +297,23 @@ def test_nvidia_smi_is_found_in_wsl_s_lib_when_path_leaves_it_out(tmp_path):
     assert M.nvidia_smi(which=lambda c: None, wsl=str(wsl)) == str(wsl)
     assert M.nvidia_smi(which=lambda c: "/usr/bin/nvidia-smi", wsl=str(wsl)) == "/usr/bin/nvidia-smi"
     assert M.nvidia_smi(which=lambda c: None, wsl=str(tmp_path / "absent")) == "nvidia-smi"
+
+
+# The R9700 box: amdgpu leaves product_name empty, so the name comes from the PCI id (1002:7551, Navi 48).
+def test_an_r9700_with_no_product_name_is_named_by_its_pci_id(tmp_path):
+    d = card(tmp_path, 0)
+    w(d, "device/vendor", "0x1002\n")
+    w(d, "device/device", "0x7551\n")
+    assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["AI R9700"]
+
+
+def test_a_product_name_beats_the_pci_table_and_an_unknown_id_stays_generic(tmp_path):
+    named = card(tmp_path, 0, name="Radeon Pro W7900")
+    w(named, "device/vendor", "0x1002\n")
+    w(named, "device/device", "0x7551\n")
+    other = card(tmp_path, 1)
+    w(other, "device/vendor", "0x1002\n")
+    w(other, "device/device", "0x744c\n")                              # not in the table
+    garbled = card(tmp_path, 2)
+    w(garbled, "device/vendor", "not-hex\n")
+    assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["Radeon Pro W7900", "AMD GPU", "AMD GPU"]

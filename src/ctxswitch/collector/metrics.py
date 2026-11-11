@@ -153,6 +153,23 @@ def mem(proc: str | Path = "/proc") -> dict[str, Any]:
     return {"used": used, "total": total}
 
 
+# Names for cards whose driver leaves sysfs ``product_name`` empty (amdgpu does on the R9700 box), by PCI
+# vendor:device id. Only a fallback: a non-empty product_name always wins. 1002:7551 is Navi 48, which lspci calls
+# "Radeon AI PRO R9700".
+PCI_NAMES: dict[tuple[int, int], str] = {
+    (0x1002, 0x7551): "AI R9700",
+}
+
+
+def _pci_name(dev: Path) -> str:
+    """The PCI_NAMES entry for this card's vendor:device, or "" when there is none or the ids can't be read."""
+    try:
+        key = (int(_text(dev / "vendor").strip(), 16), int(_text(dev / "device").strip(), 16))
+    except ValueError:
+        return ""
+    return PCI_NAMES.get(key, "")
+
+
 def amd_gpus(sys: str | Path = "/sys") -> list[dict[str, Any]]:
     """Every amdgpu card under /sys/class/drm, by DRM card number. A connector (card0-DP-1) is a display output, not
     a card, and a card with no ``gpu_busy_percent`` isn't amdgpu — both are skipped rather than listed as a GPU."""
@@ -168,7 +185,7 @@ def amd_gpus(sys: str | Path = "/sys") -> list[dict[str, Any]]:
         temp = next((t for t in (_num(h / "temp1_input") for h in hwmons) if t is not None), None)
         # power lives beside the temperature, in the card's hwmon (power1_average on RDNA, power1_input on some)
         power = next((p for h in hwmons for p in (_num(h / "power1_average"), _num(h / "power1_input")) if p is not None), None)
-        name = _text(dev / "product_name").strip()
+        name = _text(dev / "product_name").strip() or _pci_name(dev)
         out.append({"index": len(out), "vendor": "amd", "name": name or "AMD GPU", "util": util,
                     "mem_used": _int(dev / "mem_info_vram_used"), "mem_total": _int(dev / "mem_info_vram_total"),
                     "temp_c": round(temp / 1000, 2) if temp is not None else None,
