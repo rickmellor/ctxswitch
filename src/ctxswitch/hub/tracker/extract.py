@@ -237,8 +237,10 @@ class Extractor:
         s = self.store.session(key, turns=1) or {}
         st = self.store.tracker_state(key)
         active = [r for r in self.store.ledger(key, active_only=True) if r["kind"] == "instruction"]
-        # the slow half of the misplaced-prompt check, after the exchange: did this prompt belong here at all?
-        ask_fit = (MISPLACE_CHECK and not misplace.skip(turn.get("user_text") or "")
+        # the slow half of the misplaced-prompt check, after the exchange: did this prompt belong here at all? A turn
+        # the hub matched to a message (via "ctx") arrived through ctxswitch, not by typing, so it is asked about by
+        # whoever sent it, not here.
+        ask_fit = (MISPLACE_CHECK and turn.get("via") != "ctx" and not misplace.skip(turn.get("user_text") or "")
                    and not self.store.misplaced_seen(key, turn.get("user_text") or ""))
         try:
             out = await self.call_seat(build_prompt(s, turn, prev, active, st["purpose"]))

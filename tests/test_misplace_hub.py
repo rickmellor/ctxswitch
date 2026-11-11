@@ -275,6 +275,7 @@ def test_an_ended_session_stops_asking_the_operator(tmp_path):
 
 KEY = "gpu-host/claude/c1"
 OTHER = "devbox/claude/z9"
+MSG = "zephyr dmp west build the a53 target now"
 LEDGER = {"instructions": [], "retire": [], "decisions": [], "claims": [], "asks": [], "goal_changed": False, "purpose": ""}
 FIT = {"verdict": "fits", "target_key": "", "confidence": 0.9, "reason": "its own work"}
 
@@ -354,6 +355,19 @@ async def test_the_tracker_asks_about_nothing_the_hook_already_answered(tmp_path
         store, ex = _tracker(tmp_path, seat, turn, name=f"s{n}.db")
         await ex.step(calls=3)
         assert seat.n() == 0 and store.misplaced_for(KEY) == []
+
+
+async def test_a_message_ctx_delivered_is_not_a_prompt_the_operator_typed(tmp_path):
+    """A turn the hub matched to a message is ctx's delivery, not the operator typing into this window: whoever
+    sent it knows where it was meant for, so this check stays out of it."""
+    seat = Seat({"verdict": "other", "target_key": OTHER, "confidence": 0.95, "reason": "zephyr's work"})
+    store, ex = _tracker(tmp_path, seat, _turn(user="ship it"))
+    mid = store.add_message(KEY, MSG)
+    store.set_message_status(mid, "gpu-host", "sent")              # the collector put it on the socket
+    store.upsert_turns(KEY, [_turn(1, MSG, "On it.")], None)       # ... and it arrives as this turn's prompt
+    turn = store.session(KEY)["turns"][1]
+    assert turn["via"] == "ctx" and turn["user_origin"] == "human"   # the hub rewrote it as yours, but ctx brought it
+    assert await ex.step(calls=3) == 2 and seat.n() == 0 and store.misplaced_for(KEY) == []   # "ship it" is too short
 
 
 async def test_a_pre_check_row_already_means_no_second_opinion(tmp_path):
