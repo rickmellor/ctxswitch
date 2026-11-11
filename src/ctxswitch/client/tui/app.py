@@ -45,7 +45,8 @@ from ctxswitch.client import tmux
 from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
-from ctxswitch.client.tui.metrics_panel import MetricsPanel, fits_height, panel_text, pick_host
+from ctxswitch.client.tui.metrics_panel import (METRICS_HUB_MSG, METRICS_NONE_MSG, HostPicker, MetricsPanel,
+                                                gpu_count, hosts_text)
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
@@ -55,10 +56,8 @@ MSG_STYLE = {"queued": "yellow", "sent": "yellow", "delivered": "green", "replie
 REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "attach": "bold magenta", "foreign": "red",
                "remote": "blue", "none": "dim"}
 SLOTS = 9                                          # Alt+1…9 open the session with that number
-METRICS_FILE = Path.home() / ".local/state/ctxswitch/metrics-panel"   # "on"/"off": whether g's panel starts shown
+METRICS_FILE = Path.home() / ".local/state/ctxswitch/metrics-panel"   # whether g's panel starts shown, and which hosts
 METRICS_EVERY = 2                          # seconds between panel fetches (each host's collector samples just as fast)
-METRICS_HUB_MSG = "no CPU/GPU samples from the hub (collectors on 2026-11-10 or later send them)"
-METRICS_NONE_MSG = "no host has sent CPU/GPU samples yet"
 
 
 def slot_key(n: int) -> str:
@@ -173,18 +172,29 @@ def _here(board) -> str | None:
     return getattr(board, "this_host", None)
 
 
-def _metrics_shown() -> bool:
-    """Whether g's panel starts shown: the last run's choice (METRICS_FILE), off until it's said otherwise."""
+def _metrics_state() -> tuple[bool, list[str]]:
+    """What the last run left in METRICS_FILE: whether g's panel starts shown, and which hosts it shows. Off and
+    showing the automatic host until the file says otherwise — and a file this code never wrote (an older board's
+    bare "on"/"off") still says whether it starts shown, with no hosts picked."""
     try:
-        return METRICS_FILE.read_text().strip() == "on"
+        raw = METRICS_FILE.read_text().strip()
     except OSError:
-        return False
+        return False, []
+    if raw[:1] != "{":
+        return raw == "on", []
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return False, []
+    hosts = [str(h) for h in (body.get("hosts") or []) if str(h)]
+    return bool(body.get("shown")), sorted(dict.fromkeys(hosts))
 
 
-def _metrics_save(shown: bool) -> None:
+def _metrics_save(shown: bool, hosts: list[str]) -> None:
+    """The panel's two choices, as JSON: whether it starts shown and which hosts it shows next time."""
     try:
         METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        METRICS_FILE.write_text(("on" if shown else "off") + "\n")
+        METRICS_FILE.write_text(json.dumps({"shown": bool(shown), "hosts": sorted(hosts or [])}) + "\n")
     except OSError:
         pass
 
@@ -229,9 +239,9 @@ HELP_KEYS = [
     (("r",), "r", "refresh now (the board also updates live)"),
     (("p",), "p", "pop-ups off / on for this run"),
     (("dollar_sign",), "$", "spend: today's cost, cloud and local, per account, per pool job (Esc, $ or q closes it)"),
-    (("g",), "g", "CPU and GPU: a panel of the host doing the work — its utilization, per core, each card's memory, "
-                  "temperature and power (the choice is remembered for next time)"),
-    (("G",), "G", "the CPU/GPU panel's host: the next one that reports (alphabetical, wrapping; for this run only)"),
+    (("g",), "g", "CPU and GPU: a panel of the hosts doing the work (opt-in: a host reports once its collector has "
+                  "metrics_every set) — utilization per core, each card's memory, temperature and power; remembered"),
+    (("G",), "G", "pick the hosts the CPU/GPU panel shows, several at once (remembered)"),
     (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
     (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
     (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y"),
@@ -268,10 +278,13 @@ HELP_TIPS = [
      "here is only a view of it. A ⇄ row is live over there: Enter shows it here over ssh (detach and it stays put), "
      "and `k` ends it there, its transcript left resumable. A host ssh can't reach is still on the board and takes "
      "messages; it just can't be opened from here.")),
-    ("CPU and GPU", ("`g` puts a panel between the list and the detail showing what the host doing the work is made of: "
-     "its CPU by core, and each card's utilization, memory, temperature and power; `G` moves the panel to another "
-     "host that reports. Each host's collector samples its silicon every 2 s (`metrics_every`, 0 turns it off) and "
-     "the hub keeps the last sample and the last minute of history per host.")),
+    ("CPU and GPU", ("`g` puts a panel between the list and the detail showing what the hosts doing the work are made "
+     "of: their CPU by core, and each card's utilization, memory, temperature and power. It's opt-in per host — a "
+     "host only reports once its collector has `metrics_every` set (default 0, sampling nothing), and the panel says "
+     "so when nobody does. `G` picks which hosts the panel stacks, several at once, remembered for next time; "
+     "picked, a host that stopped reporting still gets one line saying it has no samples. Left unpicked it shows the "
+     "one host `metrics_host` names, or else the one with the most GPUs, which is the one doing the work. Each "
+     "collector samples every 2 s and the hub keeps the last sample and the last minute of history per host.")),
     ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
      "pane is ever gone, `ctx tmux` puts it back; if the left pane is (the board alone in its window), the board "
      "puts the most recent session back there, or a shell.")),
@@ -636,7 +649,7 @@ class CtxApp(App):
         Binding("p", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"),
         Binding("dollar_sign", "spend", "spend"), Binding("g", "metrics", "gpu"),
         Binding("question_mark", "help", "help"),
-        Binding("G", "metrics_host", show=False),                      # the panel moves to the next reporting host
+        Binding("G", "metrics_host", show=False),                      # G: pick the hosts the CPU/GPU panel stacks
         Binding("W", "message_work", "msg work", show=False),
         Binding("less_than_sign", "wider", show=False), Binding("greater_than_sign", "narrower", show=False),   # the edge moves the arrow's way
         Binding("escape", "clear_filter", show=False),
@@ -675,11 +688,11 @@ class CtxApp(App):
         self.settling = False
         self.spend: dict | None = None               # /v1/spend since local midnight; None = the hub can't say
         self.start_shown = False                     # the Start screen has opened itself once this run (s is yours)
-        self.metrics_on = _metrics_shown()           # g: the CPU/GPU panel, shown or not as the last run left it
-        self.metrics_host: str | None = None         # G: the host the panel shows, for this run only
+        self.metrics_on, self.metrics_picked = _metrics_state()   # g: shown or not, and which hosts, as the last run left them
         self.metrics_timer = None                    # the 2 s poll, running only while the panel is shown
-        self.metrics_names: list[str] = []           # the hosts that reported, sorted: what G walks through
-        self.metrics_shown: str | None = None        # the host the panel is on now (what G moves on from)
+        self.metrics_names: list[str] = []           # the hosts that reported, sorted: what G lists to pick from
+        self.metrics_counts: dict[str, int] = {}     # host -> cards in its last sample: what G counts after its name
+        self.metrics_picking = False                 # G pressed before the hub had answered: open the picker on it
 
     def compose(self) -> ComposeResult:
         yield Static("", id="summary")
@@ -1281,17 +1294,30 @@ class CtxApp(App):
 
     # -- the CPU/GPU panel ----------------------------------------------------------------------------------------
     def action_metrics(self) -> None:
-        """g: the CPU/GPU panel on or off, starting as the last run left it. Hidden, nothing is fetched at all."""
+        """g: the CPU/GPU panel on or off, starting as the last run left it, on the hosts it was told to show.
+        Hidden, nothing is fetched at all."""
         self.metrics_on = not self.metrics_on
-        _metrics_save(self.metrics_on)
+        _metrics_save(self.metrics_on, self.metrics_picked)
         self.show_metrics()
 
     def action_metrics_host(self) -> None:
-        """G: the panel moves to the next host that reports, alphabetical and wrapping. For this run only."""
-        names = self.metrics_names
-        if names:
-            cur = self.metrics_host or self.metrics_shown
-            self.metrics_host = names[(names.index(cur) + 1) % len(names)] if cur in names else names[0]
+        """G: pick which hosts the CPU/GPU panel shows, several at once — remembered for the next run. Closing the
+        picker without touching it changes nothing, so the panel keeps ticking either way. A board that hasn't asked
+        the hub yet (its panel hidden) asks first, and the picker opens on the answer."""
+        self.metrics_picking = True
+        if self.metrics_names:
+            self._open_picker()
+        else:
+            self.fetch_metrics()
+
+    def _open_picker(self) -> None:
+        self.metrics_picking = False
+        self.push_screen(HostPicker(self.metrics_names, self.metrics_counts, self.metrics_picked),
+                        self._hosts_picked)
+
+    def _hosts_picked(self, hosts: list[str] | None) -> None:
+        self.metrics_picked = sorted(hosts or [])
+        _metrics_save(self.metrics_on, self.metrics_picked)
         if self.metrics_on:
             self.fetch_metrics()
 
@@ -1307,7 +1333,7 @@ class CtxApp(App):
 
     @work(thread=True, exclusive=True, group="metrics")
     def fetch_metrics(self) -> None:
-        """What the host doing the work is made of, every couple of seconds while the panel is shown. A hub with no
+        """What the hosts doing the work are made of, every couple of seconds while the panel is shown. A hub with no
         /v1/metrics simply gets the panel to say so, and the asking goes on in case it comes up."""
         try:
             body = self.client.metrics()
@@ -1315,20 +1341,25 @@ class CtxApp(App):
             self.call_from_thread(self.metrics_said, METRICS_HUB_MSG)
             return
         hosts = (body or {}).get("hosts") or {}
-        host = self.metrics_host if self.metrics_host in hosts else \
-            pick_host(hosts, self.cfg.metrics_host, self.this_host)
-        self.call_from_thread(self.metrics_show, host, (hosts.get(host) or {}) if host else {}, sorted(hosts))
+        self.call_from_thread(self.metrics_show, hosts, sorted(hosts))
 
-    def metrics_show(self, host: str | None, entry: dict, names: list[str]) -> None:
-        self.metrics_names, self.metrics_shown = names, host
-        if not host:
+    def metrics_show(self, hosts: dict, names: list[str]) -> None:
+        """The panel for the hosts picked (every one that reports when none were), never more than half the board."""
+        self.metrics_names, self.metrics_counts = names, {h: gpu_count(e) for h, e in hosts.items()}
+        if self.metrics_picking:                               # G was pressed before the hub had answered
+            self._open_picker()
+        if not hosts:
             self.metrics_said(METRICS_NONE_MSG)
             return
         w = self.query_one("#metrics", MetricsPanel)
-        more = fits_height(entry, self.size.height)[1]         # never more than half the board's height
-        w.update(panel_text(host, entry, max(20, w.content_size.width - 2), more))
+        w.update(hosts_text(hosts, self.metrics_picked, max(20, w.content_size.width - 2), self.size.height,
+                            self.cfg.metrics_host, self.this_host))
 
     def metrics_said(self, msg: str) -> None:
+        """One dim line where the panel would be, and if G is waiting on it, an empty picker to say the same."""
+        if self.metrics_picking:
+            self.metrics_picking = False
+            self.push_screen(HostPicker([], {}, self.metrics_picked), self._hosts_picked)
         self.query_one("#metrics", MetricsPanel).update(Text(msg, "dim"))
 
     def action_mark_viewed(self) -> None:

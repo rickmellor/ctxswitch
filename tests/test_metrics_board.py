@@ -5,12 +5,15 @@ client with the contract's ``metrics()``: nothing touches a real hub. A hub with
 its words and nothing else."""
 from __future__ import annotations
 
+import json
 import re
 
 from rich.text import Text
+from textual.widgets import Static
 
 from ctxswitch.client.tui import app as tui
-from ctxswitch.client.tui.metrics_panel import fits_height, panel_text, pick_host
+from ctxswitch.client.tui.metrics_panel import (METRICS_HUB_MSG, METRICS_NONE_MSG, HostPicker, fits_height,
+                                                hosts_text, panel_text, pick_host, plan_heights)
 from ctxswitch.common.config import Config
 
 GB = 1_000_000_000
@@ -226,14 +229,14 @@ async def test_g_shows_the_panel_and_remembers_it(monkeypatch, tmp_path):
         await pilot.press("g"); await pilot.pause(2.5)
         assert app.query_one("#metrics").display
         assert "GPU0 RTX 4080" in "\n".join(_panel(app)) and "specul8" in _panel(app)[0]
-        assert (tmp_path / "metrics-panel").read_text().strip() == "on"
+        assert json.loads((tmp_path / "metrics-panel").read_text()) == {"shown": True, "hosts": []}
         assert app.client.metrics_calls                                          # shown: now it asks
         n = len(app.client.metrics_calls)
         await pilot.pause(4.5)
         assert len(app.client.metrics_calls) > n                                 and n > 0        # every 2 s
         await pilot.press("g"); await pilot.pause(0.5)
         assert not app.query_one("#metrics").display
-        assert (tmp_path / "metrics-panel").read_text().strip() == "off"
+        assert json.loads((tmp_path / "metrics-panel").read_text()) == {"shown": False, "hosts": []}
         n = len(app.client.metrics_calls)
         await pilot.pause(4.5)
         assert len(app.client.metrics_calls) == n                                # hidden again: no more asking
@@ -246,19 +249,20 @@ async def test_a_board_that_left_the_panel_on_shows_it_as_soon_as_it_mounts(monk
         assert app.query_one("#metrics").display and "GPU0 RTX 4080" in "\n".join(_panel(app))
 
 
-async def test_G_moves_the_panel_to_the_next_host_that_reports(monkeypatch, tmp_path):
+async def test_G_opens_the_picker_over_the_board(monkeypatch, tmp_path):
     hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta", gpus=[_gpu(0)])}
     app = _board(monkeypatch, tmp_path, body={"hosts": hosts})
     app.metrics_on = True
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(2.5)
-        assert _panel(app)[0].startswith(("alpha", "beta"))
+        assert _panel(app)[0].startswith(("alpha", "beta"))                  # nothing picked: the automatic one
         first = _panel(app)[0].split(" ·")[0]
-        await pilot.press("G"); await pilot.pause(2.5)
-        assert _panel(app)[0].split(" ·")[0] != first                       # the other one, and only that one
+        await pilot.press("G"); await pilot.pause(0.5)
+        assert isinstance(app.screen, HostPicker)
+        await pilot.press("escape"); await pilot.pause(2.5)                  # closing changes nothing
+        assert not isinstance(app.screen, HostPicker)
+        assert _panel(app)[0].split(" ·")[0] == first                        # still the automatic host
         assert app.client.metrics_calls[-1] is None                          # it asks for the lot, then picks
-        await pilot.press("G"); await pilot.pause(2.5)
-        assert _panel(app)[0].split(" ·")[0] == first                        # wrapping back round
 
 
 async def test_a_hub_with_no_metrics_route_says_so_and_keeps_trying(monkeypatch, tmp_path):
@@ -267,7 +271,7 @@ async def test_a_hub_with_no_metrics_route_says_so_and_keeps_trying(monkeypatch,
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(2.5)
         text = "\n".join(_panel(app))
-        assert "no CPU/GPU samples from the hub" in text and "2026-11-10" in text
+        assert text == METRICS_HUB_MSG                                        # it predates them, and says so
         assert app.query_one("#table").row_count == 1                        # the rest of the board is untouched
         n = len(app.client.metrics_calls)
         await pilot.pause(4.5)
@@ -279,7 +283,7 @@ async def test_a_hub_nobody_has_reported_to_yet_says_that(monkeypatch, tmp_path)
     app.metrics_on = True
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(2.5)
-        assert "no host has sent CPU/GPU samples yet" in "\n".join(_panel(app))
+        assert "\n".join(_panel(app)) == METRICS_NONE_MSG                    # opt-in: nothing is sampling
 
 
 async def test_the_panel_never_takes_more_than_half_the_board(monkeypatch, tmp_path):
@@ -293,3 +297,170 @@ async def test_the_panel_never_takes_more_than_half_the_board(monkeypatch, tmp_p
         assert w.region.height <= 24 // 2, w.region
         assert lines[-1].startswith("+") and "more GPUs" in lines[-1] and len(lines) <= 24 // 2
         assert lines[2].startswith("GPU0 ") and any(ln.startswith("GPU7 ") for ln in lines)
+
+
+# -- several hosts at once ----------------------------------------------------------------------------------------
+def _three(*, big=10, mid=1, small=0):
+    """Three hosts as the hub's body holds them: one with ``big`` cards, one with ``mid``, one with none."""
+    return {"alpha": _sample("alpha", gpus=[_gpu(i) for i in range(big)]),
+            "beta": _sample("beta", gpus=[_gpu(0) for _ in range(mid)]),
+            "scrub": _sample("scrub", gpus=[_gpu(0) for _ in range(small)])}
+
+
+def test_the_height_plan_keeps_every_hosts_cpu_lines_and_counts_the_rest():
+    counts = [10, 1, 0]                                       # alpha, beta, scrub, in sorted order
+    assert plan_heights(counts, 40) == ([10, 1, 0], 0)        # room for all 17 lines: every card of every host
+    assert plan_heights(counts, 30) == ([6, 0, 0], 0)         # 14 lines: the cards go out in sorted host order
+    assert plan_heights(counts, 24) == ([3, 0, 0], 0)         # 11 lines, and alpha is the one that lost some
+    assert plan_heights(counts, 20) == ([1, 0, 0], 0)
+    assert plan_heights(counts, 16) == ([0, 0, None], 1)      # no card lines left: scrub has no room at all
+    assert plan_heights(counts, 14) == ([2, None, None], 2)   # only beta's title and CPU would be left over
+    assert plan_heights(counts, 8) == ([None, None, None], 3)  # nothing but "+3 more hosts" fits
+    for height in range(0, 60):                              # and at no height does it promise more than half
+        per, more = plan_heights(counts, height)
+        lines = sum(0 if p is None else 2 + p + (1 if p < c else 0) for p, c in zip(per, counts)) + bool(more)
+        assert lines <= max(0, height // 2 - 1) or height < 4, (height, per, more, lines)
+        if None in per:                                      # what gets dropped is the last hosts, never one between
+            i = per.index(None)
+            assert all(p is None for p in per[i:]) and more == len(counts) - i
+
+
+def test_the_height_plan_counts_the_more_lines_it_owes():
+    """A "+N more GPUs" line is a line: the plan that hands out every card can still be one over the half."""
+    for counts in ([3, 3, 3], [0, 0, 0], [8, 8], [1] * 5, [0, 10, 0]):
+        for height in range(0, 60):
+            per, more = plan_heights(counts, height)
+            lines = sum(0 if p is None else 2 + p + (1 if p < c else 0) for p, c in zip(per, counts)) + bool(more)
+            assert lines <= max(0, height // 2 - 1) or height < 4, (counts, height, per, more, lines)
+    assert plan_heights([3, 3, 3], 24) == ([3, 0, 0], 0)      # 11 lines exactly; beta's cards come after alpha's
+    assert plan_heights([0, 0, 0], 12) == ([0, 0, None], 1)   # three hosts of two lines each, then "+1 more hosts"
+
+
+def test_hosts_text_stacks_the_chosen_hosts_sorted():
+    hosts = _three(big=1, mid=1)
+    t = hosts_text(hosts, ["beta", "alpha"], 60, 40).plain.splitlines()
+    assert t[0].startswith("alpha · ") and t[1].startswith("CPU") and "GPU0" in t[2]
+    assert t[3].startswith("beta · ") and t[4].startswith("CPU") and "GPU0" in t[5]
+    assert sum(1 for ln in t if ln.startswith("alpha ·")) == 1 and len(t) == 6
+    assert hosts_text(hosts, ["beta"], 60, 40).plain.splitlines()[0].startswith("beta ·")   # one host on its own
+
+
+def test_a_chosen_host_that_stopped_reporting_gets_one_dim_line():
+    hosts = _three(big=1, mid=1)                              # "gone" is a host the hub's body has no entry for
+    t = hosts_text(hosts, ["beta", "gone"], 60, 40)
+    lines = t.plain.splitlines()
+    assert lines[-1] == "gone · no samples (is metrics_every set on it?)"
+    assert _style_of(t, len(lines) - 1, "no samples") == "dim"
+    assert lines[0].startswith("beta · ")                     # the host that does report keeps its block
+
+
+def test_hosts_text_left_to_itself_shows_the_one_host_it_would_have_picked():
+    hosts = _three(big=3, mid=1)                              # an empty choice = the old automatic pick
+    lines = hosts_text(hosts, [], 60, 40).plain.splitlines()
+    assert len([ln for ln in lines if " · " in ln]) == 1 and lines[0].startswith("alpha · ")
+
+
+# -- the G picker -----------------------------------------------------------------------------------------------------------------
+async def test_G_lists_the_hosts_that_report_with_their_cards_and_toggles(monkeypatch, tmp_path):
+    hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta"), "scrub": _sample("scrub", gpus=[])}
+    app = _board(monkeypatch, tmp_path, body={"hosts": hosts})
+    app.metrics_on = True
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause(2.5)
+        await pilot.press("G"); await pilot.pause(0.5)
+        assert isinstance(app.screen, HostPicker)
+        body = app.screen.query_one(Static).render().plain
+        assert "1 [ ] alpha  1 GPU" in body and "2 [ ] beta  2 GPUs" in body
+        assert "3 [ ] scrub  no GPUs" in body
+        await pilot.press("2"); await pilot.pause(0.3)        # a digit toggles, and says so in its box
+        assert "2 [x] beta" in app.screen.query_one(Static).render().plain
+        await pilot.press("3"); await pilot.press("1"); await pilot.pause(0.3)
+        assert "3 [x] scrub" in app.screen.query_one(Static).render().plain
+        assert "1 [x] alpha" in app.screen.query_one(Static).render().plain
+        await pilot.press("enter"); await pilot.pause(2.5)
+        assert not isinstance(app.screen, HostPicker)
+        assert app.metrics_picked == ["alpha", "beta", "scrub"]          # what it dismisses is sorted
+        assert sorted(json.loads((tmp_path / "metrics-panel").read_text())["hosts"]) == ["alpha", "beta", "scrub"]
+        await pilot.press("G"); await pilot.pause(0.5)
+        assert "1 [x] alpha" in app.screen.query_one(Static).render().plain   # the ticks came back
+        await pilot.press("2"); await pilot.pause(0.3)
+        await pilot.press("escape"); await pilot.pause(2.5)              # closing keeps the ticks made in it
+        assert app.metrics_picked == ["alpha", "scrub"]
+        assert json.loads((tmp_path / "metrics-panel").read_text())["hosts"] == ["alpha", "scrub"]
+
+
+async def test_G_picks_several_hosts_and_the_board_shows_them_all(monkeypatch, tmp_path):
+    hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta", gpus=[_gpu(1)]),
+             "scrub": _sample("scrub", gpus=[])}
+    app = _board(monkeypatch, tmp_path, body={"hosts": hosts})
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.press("g"); await pilot.pause(2.5)
+        assert _panel(app)[0].startswith(("alpha", "beta", "scrub"))     # nothing picked yet: one automatic host
+        await pilot.press("G"); await pilot.pause(0.5)
+        await pilot.press("1"); await pilot.press("2"); await pilot.pause(0.3)
+        await pilot.press("enter"); await pilot.pause(2.5)
+        lines = _panel(app)
+        assert any(ln.startswith("alpha · ") for ln in lines) and any(ln.startswith("beta · ") for ln in lines)
+        assert not any(ln.startswith("scrub · ") for ln in lines)        # not ticked: not shown
+        assert json.loads((tmp_path / "metrics-panel").read_text()) == {"shown": True, "hosts": ["alpha", "beta"]}
+
+
+async def test_a_board_started_from_the_file_shows_the_hosts_it_left_behind(monkeypatch, tmp_path):
+    hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta", gpus=[_gpu(1)]),
+             "scrub": _sample("scrub", gpus=[])}
+    app = _board(monkeypatch, tmp_path, body={"hosts": hosts},
+                 shown='{"shown": true, "hosts": ["beta", "alpha"]}')
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(2.5)
+        assert app.query_one("#metrics").display and app.metrics_picked == ["alpha", "beta"]
+        lines = _panel(app)
+        assert any(ln.startswith("alpha · ") for ln in lines) and any(ln.startswith("beta · ") for ln in lines)
+        await pilot.press("g"); await pilot.pause(0.5)                   # off, and the hosts are kept
+        assert json.loads((tmp_path / "metrics-panel").read_text()) == {"shown": False, "hosts": ["alpha", "beta"]}
+
+
+async def test_the_old_one_word_file_still_opens_the_panel_on_the_automatic_host(monkeypatch, tmp_path):
+    app = _board(monkeypatch, tmp_path, shown="on")                      # a file an older board wrote
+    assert tui._metrics_state() == (True, [])
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(2.5)
+        assert app.query_one("#metrics").display and "specul8" in _panel(app)[0]   # the automatic host
+        assert (tmp_path / "metrics-panel").read_text().strip() == "on"       # reading an old file changes nothing
+
+
+async def test_a_chosen_host_the_hub_never_heard_of_shows_its_no_samples_line(monkeypatch, tmp_path):
+    app = _board(monkeypatch, tmp_path, body={"hosts": {"alpha": _sample("alpha", gpus=[_gpu(0)])}},
+                 shown='{"shown": true, "hosts": ["alpha", "gone"]}')
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(2.5)
+        lines = _panel(app)
+        assert any(ln.startswith("alpha · ") for ln in lines)
+        assert lines[-1] == "gone · no samples (is metrics_every set on it?)"
+
+
+def test_the_two_ways_there_is_nothing_to_show_say_which_one_it_is():
+    assert METRICS_NONE_MSG == "no host sends CPU/GPU samples: set [collector] metrics_every = 2 on the hosts to watch"
+    assert METRICS_HUB_MSG == "this hub has no CPU/GPU samples (it predates them)"
+    assert tui.METRICS_NONE_MSG == METRICS_NONE_MSG and tui.METRICS_HUB_MSG == METRICS_HUB_MSG
+    assert "metrics_every" in dict(tui.HELP_TIPS)["CPU and GPU"] and "`G`" in dict(tui.HELP_TIPS)["CPU and GPU"]
+
+
+async def test_G_with_the_panel_hidden_still_lists_the_hosts(monkeypatch, tmp_path):
+    """A board nobody has shown yet has never asked the hub: G asks first and opens on the answer."""
+    hosts = {"alpha": _sample("alpha", gpus=[_gpu(0)]), "beta": _sample("beta")}
+    app = _board(monkeypatch, tmp_path, body={"hosts": hosts})
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert not app.query_one("#metrics").display and app.client.metrics_calls == []
+        await pilot.press("G"); await pilot.pause(2.5)
+        assert isinstance(app.screen, HostPicker)
+        assert "1 [ ] alpha  1 GPU" in app.screen.query_one(Static).render().plain
+        assert "2 [ ] beta  2 GPUs" in app.screen.query_one(Static).render().plain
+        assert not app.query_one("#metrics").display                      # picking changes the set, not the showing
+        await pilot.press("1"); await pilot.press("enter"); await pilot.pause(0.5)
+        assert app.metrics_picked == ["alpha"] and not app.query_one("#metrics").display
+        n = len(app.client.metrics_calls)                                 # the one ask G needed to list with
+        await pilot.pause(4.5)
+        assert len(app.client.metrics_calls) == n                         # hidden is hidden: no asking on its own
+        await pilot.press("g"); await pilot.pause(2.5)                    # and now it shows just that one
+        assert [ln.split(" ·")[0] for ln in _panel(app) if " · " in ln] == ["alpha"]

@@ -251,15 +251,20 @@ window, the last one on the left.
 
 <p align="center"><img src="docs/img/start.svg" alt="the s start screen: one key per profile, and the recent sessions to resume" width="50%"></p>
 
-**CPU and GPU** (`g`) puts a panel between the list and the detail: what the host doing the work is made of and how
-hard it's working. One line for the machine (model, clock, temperature, load average), one for its CPU (a bar, the
-percent, then one character per core and the memory), then one line per card — utilization, its last minute of
-history, VRAM, temperature, power — NVIDIA's first and the rest by card number, so `GPU0`…`GPU9` read like btop's.
-Nothing a collector can't read is guessed: it prints `—`. Each host's collector samples its silicon every 2 s
-(`metrics_every`, `0` turns it off) and the hub keeps the last sample plus a minute of history per host, in memory
-and never in the database; a sample older than 10 s is marked `stale 42s`. By default the panel shows the host with
-the most GPUs, which is the one doing the work; `metrics_host` names one, and `G` walks through the hosts that
-report. What a host runs elsewhere doesn't move the panel: it's about silicon, not sessions.
+**CPU and GPU** (`g`) puts a panel between the list and the detail: what the hosts doing the work are made of and
+how hard they're working. Per host: one line for the machine (model, clock, temperature, load average), one for its
+CPU (a bar, the percent, then one character per core and the memory), then one line per card — utilization, its last
+minute of history, VRAM, temperature, power — NVIDIA's first and the rest by card number, so `GPU0`…`GPU9` read like
+btop's. Nothing a collector can't read is guessed: it prints `—`.
+
+It is opt-in per host: a host only reports once its collector has `[collector] metrics_every` set (default `0`, which
+samples nothing), and the panel says so when none do. `G` opens a picker that lists every host that reports with its
+GPU count; a digit toggles one, Enter or Esc closes it, and the panel stacks whichever are ticked, sorted — laptop,
+scrub and specul8 at once, or just one. The choice is remembered for the next board; a ticked host that stopped
+reporting keeps one line saying it has no samples. Left unpicked, the panel shows the one host `metrics_host` names,
+or the one with the most GPUs, which is the one doing the work. Each collector samples every 2 s and the hub keeps the
+last sample plus a minute of history per host, in memory and never in the database; a sample older than 10 s is
+marked `stale 42s`. What a host runs elsewhere doesn't move the panel: it's about silicon, not sessions.
 
 ## 4. Keys
 `?` shows all of this on the board itself:
@@ -289,7 +294,8 @@ report. What a host runs elsewhere doesn't move the panel: it's about silicon, n
 | `x` | exchange: send the selected session elsewhere, from a picker. Another Claude account: a move (same transcript). Another agent: a handoff (see Exchanging a session). A running one in ctx's tmux is ended first, after a y |
 | `i` | retire one of YOUR INSTRUCTIONS that no longer holds: type its number |
 | `$` | spend: today's cost, cloud and local, per account, per pool job (`Esc`, `$` or `q` closes it) |
-| `g` | CPU and GPU: a panel of the host doing the work — utilization by core, and each card's memory, temperature and power (remembered for next time). `G` moves it to the next host that reports |
+| `g` | CPU and GPU: a panel of the hosts doing the work — utilization by core, and each card's memory, temperature and power (remembered for next time). Opt-in per host: one reports once its collector has `[collector] metrics_every` set |
+| `G` | pick the hosts the CPU/GPU panel shows, several at once: a digit toggles one, Enter or Esc closes it, and the set is remembered |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
 | `k` | end the selected session's agent, after a `y` (the transcript stays: Enter resumes it). One on another host is ended there, in its own tmux |
@@ -572,9 +578,10 @@ option. The ones you'll touch:
 | `[collector] claude_win_roots` | WSL only: Windows-native Claude transcripts under `/mnt/c/Users/<you>/.claude/projects` (read-only). `ctx install` fills it in when that directory exists; set `[]` to opt out |
 | `[collector] accept_messages` | deliver messages into this host's sessions (default true) |
 | `[collector] backfill_days` | how far back to index on first run (default 30) |
+| `[collector] metrics_every` | seconds between CPU/GPU samples this host posts to the hub (default `0` = sample nothing: `g`'s panel is opt-in per host; `2` is what the panel expects) |
 | `[ssh]` | client only: `<host_id> = "<ssh destination>"` for resuming another host's sessions. Unlisted hosts use the host id itself (an `~/.ssh/config` alias); `""` = not reachable from here (e.g. a laptop that blocks inbound) |
 | `notify`, `notify_idle` | client: tmux pop-ups for new questions and dialogs (default on; `n` toggles it), and for an agent finishing its turn (default off) |
-| `metrics_host` | client: the host `g`'s CPU/GPU panel shows (default `""` = the host with the most GPUs; `G` picks another for the run) |
+| `metrics_host` | client: the host `g`'s CPU/GPU panel shows when `G` hasn't picked any (default `""` = the host with the most GPUs) |
 | `notify_style` | client: `"popup"` (default), a box over the panes until you press a key; `"status"`, one line in the status bar for 8 s |
 | `[hub] recap`, `ledger`, `recap_days` | hub only: the tracker on/off, the ledger on/off, and how recent a session must be (defaults true, true, 7) |
 | `[hub] usage_url` | hub only: SAINT's `/usage/v1` endpoint for the local half of `ctx spend` (default: the lowest-priority seat's box, its usage API; `""` turns local numbers off) |
