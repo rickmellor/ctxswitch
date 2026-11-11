@@ -698,11 +698,13 @@ class CtxApp(App):
         yield Static("", id="summary")
         with Vertical(id="body"):
             yield Board(id="table", cursor_type="row", zebra_stripes=True, show_header=False)
-            yield MetricsPanel("", id="metrics")
             yield VerticalScroll(Static("", id="detail_text"), id="detail")
         inp = Input(placeholder="filter sessions (title, repo, key)…", id="filter")
         inp.can_focus = False                     # only focusable while shown via "/"
         yield inp
+        # g's CPU/GPU panel, pinned to the bottom right above the keys: the body above keeps 1fr, so the detail
+        # pane stays a scrolling region that simply ends where the panel starts
+        yield MetricsPanel("", id="metrics")
         yield KeyBar(id="keys")
 
     def on_mount(self) -> None:

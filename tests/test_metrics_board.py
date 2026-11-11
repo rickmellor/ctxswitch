@@ -502,3 +502,23 @@ def test_a_card_name_keeps_its_letters_and_the_sparkline_gives_way():
     for w in (66, 67, 100):                         # at 60 the row is full even with the shortest sparkline
         lines = panel_text("laptop", laptop, w).plain.splitlines()
         assert "RTX 2000 Ada " in lines[3] and all(len(ln) <= w for ln in lines), (w, lines)
+
+
+async def test_the_panel_is_pinned_above_the_keys_and_the_detail_still_scrolls(monkeypatch, tmp_path):
+    """g's panel sits at the bottom, right on top of the key bar; the detail pane above it keeps its own scrolling
+    region, ending where the panel starts."""
+    app = _board(monkeypatch, tmp_path, body={"hosts": {"specul8": _sample(gpus=_ten())}})
+    async with app.run_test(size=(70, 40)) as pilot:
+        await pilot.press("g"); await pilot.pause(2.5)
+        panel, keys = app.query_one("#metrics"), app.query_one("#keys")
+        detail, table = app.query_one("#detail"), app.query_one("#table")
+        assert panel.region.height > 3
+        assert panel.region.y + panel.region.height == keys.region.y            # flush on top of the key bar
+        assert table.region.y < detail.region.y < panel.region.y                # list, then detail, then the panel
+        assert detail.region.y + detail.region.height <= panel.region.y         # no overlap: the detail ends above it
+        assert detail.region.height > 0
+        app.query_one("#detail_text").update("\n".join(f"line {i}" for i in range(200)))   # long enough to scroll
+        await pilot.pause(0.3)
+        assert detail.max_scroll_y > 0                                          # still a scrolling region
+        detail.scroll_end(animate=False); await pilot.pause(0.2)
+        assert detail.scroll_y == detail.max_scroll_y and panel.region.y + panel.region.height == keys.region.y
