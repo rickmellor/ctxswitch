@@ -220,6 +220,8 @@ that can't be reached by ssh is still on the board and still takes messages, it 
   Kinds: `question`, `plan`, `permission` (Claude wants to run a tool), `elicitation` (an MCP server wants
   input), `prompt` (a pi dialog), `plain` (its reply ended in a question), `text` (the tracker read a question
   in its reply). Underneath: `a = answer it here`, or why you have to answer in the session;
+- **MISPLACED?**: a prompt here that looks like it belongs to another session, with where it looks like it belongs
+  and why, whether the agent saw it, and what `t` and `o` do with it (see Misplaced prompts);
 - **SPEND**: what its own turns cost (see Spend), and under it **POOL JOBS**, the jobs it launched with their
   estimates;
 - the state and age, number of exchanges, and when you last looked (`seen 2h`); what Enter will do with it, the
@@ -266,6 +268,20 @@ or the one with the most GPUs, which is the one doing the work. Each collector s
 last sample plus a minute of history per host, in memory and never in the database; a sample older than 10 s is
 marked `stale 42s`. What a host runs elsewhere doesn't move the panel: it's about silicon, not sessions.
 
+### Misplaced prompts (`⇄`)
+A prompt typed into the wrong session's window is caught **before the agent sees it**: the Claude Code hook asks the
+hub's deterministic matcher (no model, under 100 ms) which live session it fits, and blocks it with the reason, the
+session it looks like it belongs to and your prompt quoted back — so a block costs no turns and no tokens. Send the
+same prompt again within a minute and it goes through: that's how you keep one it flagged. Subtler ones are found
+**after they land**: the tracker asks whether the prompt fits the session it went into, and flags a confident
+"belongs elsewhere" or "off this session's purpose" on the board. Either way the row carries `⇄` (bold yellow, after
+its `◐` and `+N`; the board's other `⇄`, in the first column, is a session live in a tmux on another host), and the
+detail's **MISPLACED?** section says where it looks like it belongs, why, and whether the agent may have started on
+it. `t` moves the newest one: it sends Escape to the session that got it and tells it to disregard that prompt and
+undo nothing, then sends the prompt itself to the session it belongs to (a drift instead opens the directory prompt
+and starts a new session of the same harness with the prompt as its first). `o` keeps it there. Nothing is recorded
+for slash commands, ctxswitch's own delivery headers or prompts of fewer than four words.
+
 ## 4. Keys
 `?` shows all of this on the board itself:
 
@@ -283,6 +299,8 @@ marked `stale 42s`. What a host runs elsewhere doesn't move the panel: it's abou
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
 | `a` | answer the question it's waiting on: type the answer, Enter sends (see Answering a question) |
+| `t` | a prompt marked `⇄`: move it where it looks like it belongs, after a `y` — Escape into the session that got it, a "disregard my last prompt" message, then the prompt itself to the session it names. A drift (`other` with no session, or one that left the board) instead asks for a directory and starts a new session of the same harness with it |
+| `o` | keep the `⇄` prompt where it is: the agent was meant to get it (nothing is sent, the flag is settled) |
 | `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
 | `<` `>` | make the board wider / narrower (its left edge moves the arrow's way), 5 columns a press; remembered (in ~/.local/state/ctxswitch/board-width) for the next `ctx tmux` |
 | `h` | host filter: this host → all → each other host |

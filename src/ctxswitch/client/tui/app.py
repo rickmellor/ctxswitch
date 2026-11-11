@@ -14,7 +14,8 @@ Built as a narrow sidebar (a tmux pane of ~45–60 columns next to the agent ses
 Keys: ? opens the full list (Help). h host filter · e toggle ended · v mark viewed · enter show/resume · c/p new claude/pi session (asks for a
 directory, default = selected session's) · s the start screen (a key per profile, and the ended sessions to resume;
 opens by itself on a cold board) · m message the selected session · M send it the tmux paste buffer (after
-a y/n) · a answer its open question (a quick-reply message) · w group by workstream · r refresh · / filter · q quit
+a y/n) · a answer its open question (a quick-reply message) · t send a prompt that looks misplaced where it looks
+like it belongs · o keep such a prompt here · w group by workstream · r refresh · / filter · q quit
 Opening a session (enter) marks it viewed; the detail shows what changed since you last looked. New questions pop
 up on the tmux status line (client/notify.py; config notify / notify_idle).
 Inside tmux, enter swaps the session's pane into pane 0 of this window (see client/tmux.py); `ctx tmux` builds
@@ -87,6 +88,64 @@ SUMMARY_TIP = ("The host filter (h), how many sessions are live, and how many ar
                " your move. A pool job it launched is nested under it (↳), with its local cost estimate.")
 
 
+MISPLACE_STYLE = "bold yellow"                         # the ⇄ on a row, and the detail's MISPLACED? heading
+MISPLACE_HELP = ("a prompt here may be in the wrong session: the detail says where it looks like it belongs "
+                 "(t moves it, o keeps it)")
+MISPLACE_TIP = ("A prompt typed into the wrong session's window is caught before the agent sees it: ctxswitch's hook "
+                "asks the hub which live session it fits, and blocks it with the reason and where it looks like it "
+                "belongs — ↑ Enter re-sends it there, which keeps it here. Subtler ones — a prompt that fits no session, "
+                "or one that drifts off what this session is for — are flagged after they land, with ⇄ on the row. The "
+                "detail says where it looks like it belongs; t moves it there (or starts a session for it, when it's a "
+                "drift) and o keeps it here.")
+
+
+def misplaced_mark(s: dict) -> str:
+    """The ⇄ after a row's marks: it has prompts the hub flagged as belonging to another session. Only the list's
+    count is fetched for a session whose detail isn't open, so a detail that did come back decides."""
+    return fmt.MISPLACE_GLYPH if (fmt.misopens(s) or int(s.get("misplaced_open") or 0)) else ""
+
+
+def mis_target_key(row: dict, sessions: list[dict]) -> str:
+    """The session a flagged prompt looks like it belongs to, when that session is still on the board ("" for a
+    drift, or for a target that has left the list)."""
+    t = row.get("target_key") or ""
+    return t if row.get("verdict") == "other" and any(s["key"] == t for s in sessions) else ""
+
+
+def mis_target_title(row: dict, sessions: list[dict]) -> str:
+    """That session's name in a sentence: what the hub recorded, else the board's title for it, else its key."""
+    t = row.get("target_title") or ""
+    if not t:
+        t = fmt.display_title(next((x for x in sessions if x["key"] == row.get("target_key")), {})) or row.get("target_key") or ""
+    return fmt.one_line(t, 40)
+
+
+def popup_line(i: dict) -> str:
+    """One attention item as a pop-up line: notify's wording for what it knows how to say, and for a misplaced prompt
+    ``⇄ <session title>: <what it says>`` — the mark its row carries, then the session the prompt went into."""
+    if i.get("kind") != "misplaced":
+        return popup_text([i])                          # "ctx · <host · title: what>"
+    return f"ctx · {fmt.MISPLACE_GLYPH} {fmt.one_line(i.get('title') or i.get('key'), 30)}: {fmt.one_line(i.get('text'), 90)}"
+
+
+def popup_status(items: list[dict]) -> str:
+    """The status line for the first item to pop up, the rest counted."""
+    return popup_line(items[0]) + (f"  (+{len(items) - 1} more)" if len(items) > 1 else "")
+
+
+def popup_items(items: list[dict]) -> list[dict]:
+    """The same items as the box should print them: a misplaced prompt has no ask or dialog behind it, so it goes as
+    one carrying its own text, marked with the ⇄ its row has (notify's own line names the session it went into)."""
+    return [{**i, "item": "ask", "text": f"{fmt.MISPLACE_GLYPH} {i.get('text') or ''}"}
+            if i.get("kind") == "misplaced" else i for i in items]
+
+
+def mis_disregard(row: dict) -> str:
+    """What the session that got the prompt is told when it moves: drop it, and touch nothing it already did."""
+    return ("Disregard my last prompt (\"" + fmt.one_line(row.get("prompt"), 80) +
+            "\"): it was meant for another session. Stop any work on it and don't undo anything unless I ask.")
+
+
 def waiting_on(s: dict) -> str | None:
     """What a waiting session waits on, for the line under its row: its open question, or the dialog it has up.
     None unless it's waiting (an ended one's stale question isn't waiting on you)."""
@@ -139,7 +198,8 @@ def legend_sections() -> list[tuple[str, list[tuple[str, str, str]]]]:
                                "unreachable when it was told")),
           ("⌂", fmt.POOL_OFF_STYLE, "local pool off in this session (no mark: it was never told, as with pi or a pool job)"),
           ("⌂", "bold yellow", ("stale (with its account in yellow): the session's pool state no longer matches its host's switch — run /local-pool "
-                                 "in it, or resume it"))]),
+                                 "in it, or resume it")),
+          (fmt.MISPLACE_GLYPH, MISPLACE_STYLE, MISPLACE_HELP)]),
         ("WAITING ON YOU", [("└", "yellow", ("under a waiting row: what it's waiting on — the question it asked, or the "
                                              "dialog it has up")),
                             ("2 waiting", "bold yellow", "the header: how many sessions wait on you (and how many are live)")]),
@@ -225,6 +285,8 @@ HELP_KEYS = [
     (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
     (("k",), "k", "end the selected session's agent, after a y (it stays resumable: Enter brings it back)"),
     (("a",), "a", "answer the question it's waiting on (plain-text questions; dialogs are answered in the session)"),
+    (("t",), "t", "a prompt marked ⇄: move it to the session it looks like it belongs to (a drift: to a new session), after a y"),
+    (("o",), "o", "keep the ⇄ prompt where it is (the agent was meant to get it)"),
     (("x",), "x", "exchange: send the selected session elsewhere, picked from a list. To another Claude account: it moves "
                   "(same transcript, resumed with that profile's model). To another agent (pi, Antigravity, Claude): a handoff, "
                   "a document of what it's for, your instructions, decisions and the conversation, which the new agent reads "
@@ -265,6 +327,7 @@ HELP_TIPS = [
      "state shows under MESSAGES (… → ✓ ↩ ✗). `ctx send --cancel <id>` withdraws a queued one.")),
     ("Answering", ("a answers a question the agent asked in its reply. A dialog (permission, plan, AskUserQuestion, pi "
      "prompt) waits on a keypress in its own terminal: Enter opens it.")),
+    ("Wrong window?", MISPLACE_TIP),
     ("Agents", ("Agents can read this board and message each other through the ctxswitch MCP tools. Their messages "
      "say which session and host sent them, and never count as yours.")),
     ("Shell sessions", ("n → shell opens a bash that records each command, its exit code and the last lines it "
@@ -333,6 +396,8 @@ def row_tip(s: dict, reach: str, on_left: bool, ssh: dict, now: datetime) -> str
         lines.append(f"{tmux.REACH_GLYPH[reach]} {tmux.reach_help(s, reach, ssh)}")
     if s.get("unseen"):
         lines.append(f"+{s['unseen']} exchange{'s' if s['unseen'] != 1 else ''} since you last looked")
+    if misplaced_mark(s):
+        lines.append(f"{fmt.MISPLACE_GLYPH} a prompt here may belong to another session: the detail says where (t, o)")
     lines.append(f"{HARNESS_NAME.get(s.get('harness', ''), s.get('harness', ''))} on {s.get('host_id', '?')} · {fmt.repo_label(s)}")
     if s.get("continues"):
         lines.append(f"continues {s['continues']} (handoff)")
@@ -643,6 +708,7 @@ class CtxApp(App):
         Binding("enter", "resume", "open", show=True), Binding("n", "new_session", "new"),
         Binding("s", "start", "start"),
         Binding("m", "message", "msg"), Binding("a", "reply", "answer"), Binding("M", "message_buffer", show=False),
+        Binding("t", "misplace_move", "move it", show=False), Binding("o", "misplace_keep", "keep it", show=False),
         Binding("k", "end_session", "end"), Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
@@ -676,6 +742,7 @@ class CtxApp(App):
         self.input_mode = "filter"                   # what the bottom Input is for: "filter" | "new:<harness>" | "msg:<key>" | …
         self.pending_reply: tuple[str, str] | None = None   # (session key, ask ref) the reply input answers
         self.pending_rules: tuple[str, list[int]] | None = None   # (session key, row ids by number) x retires one of
+        self.pending_prompt: tuple[dict, dict] | None = None      # t: (the session a drifted prompt landed in, the row)
         self.slots: list[str] = []                   # session keys by their row number, for Alt+N
         self.pins: dict[str, int] = {}               # session key -> its place in the list, fixed when it joined
         self.next_pin = 0
@@ -824,10 +891,10 @@ class CtxApp(App):
 
     def popup_now(self) -> None:
         self.settling = False
-        new = self.notifier.fresh(self.attention, skip=self.on_screen)
+        new = self.notifier.fresh(popup_items(self.attention), skip=self.on_screen)
         if not new or not self.popups:                  # off: what turns up meanwhile is on the board, not popped later
             return
-        msg, ids = popup_text(new), [item_id(i) for i in new]
+        msg, ids = popup_status(new), [item_id(i) for i in new]
         if tmux.in_tmux() and self.cfg.notify_style == "popup" and (self.box is None or self.box.poll() is not None):
             try:
                 self.box = tmux_box(new)
@@ -1004,16 +1071,22 @@ class CtxApp(App):
                 style = (style + " dim").strip()          # can't be opened from here
             ask_mark = f" ◐{fmt.age(asks[0].get('asked_at'), now)}" if asks and not kid else ""
             seen_mark = f" +{s['unseen']}" if s.get("unseen") and not kid else ""   # exchanges since you last looked
+            # a prompt here that looks like it belongs elsewhere: the detail's rows when it has them, else the list's count
+            glyph = "" if kid else self._mis_mark(s)              # a prompt here that looks like it's for elsewhere
+            mis_mark = f" {glyph}" if glyph else ""
             badge, badge_style = ("", "") if kid else fmt.pool_mark(s, self.host_pools)   # a job's own badge would
             mark = f"{badge} " if badge else ""                                     # say nothing: it inherits the switch
             # the title keeps 8 columns and the row never overflows (a scrollbar would hide the last row): the repo
-            # gives way first, then the host, then the +N, then the ◐ age (the age column and the └ line say it too)
+            # gives way first, then the host, then the +N, then the ⇄, then the ◐ age (the age column and the └ line
+            # say it too)
             fixed = width - len(label.plain) - 1 - 8 - len(mark)   # after the glyph, the space after `where` and the title's 8
-            if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0 and where != harness:
+            if fixed - len(where) - len(ask_mark) - len(seen_mark) - len(mis_mark) < 0 and where != harness:
                 where = harness
-            if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
+            if fixed - len(where) - len(ask_mark) - len(seen_mark) - len(mis_mark) < 0:
                 seen_mark = ""
-            if fixed - len(where) - len(ask_mark) - len(seen_mark) < 0:
+            if fixed - len(where) - len(ask_mark) - len(seen_mark) - len(mis_mark) < 0:
+                mis_mark = ""
+            if fixed - len(where) - len(ask_mark) - len(seen_mark) - len(mis_mark) < 0:
                 ask_mark = ""
             # stale: the account (harness·host) turns yellow with its ⌂, so it reads at a glance with no extra column
             label.append(f"{where} ", style="yellow" if badge and fmt.pool_stale(s, self.host_pools) else "dim")
@@ -1025,13 +1098,15 @@ class CtxApp(App):
                 label.append(fmt.cost_mark(s), style="dim")
             else:
                 repo_w = min(18 if width >= 40 else 10 if width >= 28 else 0,
-                             width - len(label.plain) - len(ask_mark) - len(seen_mark) - 8 - 1)
+                             width - len(label.plain) - len(ask_mark) - len(seen_mark) - len(mis_mark) - 8 - 1)
                 if repo_w >= 4:
                     label.append(fmt.one_line(fmt.repo_label(s), repo_w) + " ",
                                  style="dim" if st in ("ended", "unknown") else "")
-                rest = width - len(label.plain) - len(ask_mark) - len(seen_mark)
+                rest = width - len(label.plain) - len(ask_mark) - len(seen_mark) - len(mis_mark)
                 label.append(fmt.one_line(fmt.display_title(s) or "(no prompt yet)", max(8, rest)), style=style)
                 label.append(ask_mark, style="bold yellow"); label.append(seen_mark, style="bold cyan")
+                if mis_mark:
+                    label.append(mis_mark, style=MISPLACE_STYLE)
             on = None if kid else waiting_on(s)
             if on:                                       # what it's waiting on, under its own row
                 label.append("\n└ " + fmt.one_line(on, max(8, width - 2)), style="yellow")
@@ -1117,6 +1192,9 @@ class CtxApp(App):
         if s.get("key") != self.selected:               # a slow load for a row you've moved off
             return
         self.detail = s
+        row = self._selected_session() or {}
+        if misplaced_mark(s) != misplaced_mark(row):    # its rows resolved (or appeared) since the list refreshed:
+            self.render_table()                         # the row's ⇄ has to catch up with what the card says
         now = datetime.now(timezone.utc)
         st = fmt.session_state(s)
         t = Text()
@@ -1140,6 +1218,18 @@ class CtxApp(App):
             ask, why = fmt.reply_target(s)
             t.append("  a = answer it here\n" if ask else f"  {why}\n", style="dim")
             t.append("\n")
+        misrows = fmt.misopens(s)
+        if misrows:
+            t.append("MISPLACED?\n", style=MISPLACE_STYLE)
+            for r in misrows:
+                t.append(f"{fmt.MISPLACE_GLYPH} {fmt.age(r.get('at'), now)}  ", style=MISPLACE_STYLE)
+                t.append(f"\"{fmt.one_line(r.get('prompt'), 120)}\"\n")
+                t.append(f"   {fmt.mis_why(r)}\n")
+                t.append(f"   {'blocked before the agent saw it' if r.get('source') == 'pre' else 'the agent may have started on it'}\n",
+                         style="dim")
+                where = ("t move it there" if mis_target_key(r, self.sessions) else
+                         "t start a new session with it")
+                t.append(f"   {where} · o keep it here\n\n", style="dim")
         kids = kids if kids is not None else self._kids(s)   # load_detail fetched them with the session
         line = fmt.spend_line(s, kids or None)
         if line or kids:
@@ -1505,14 +1595,16 @@ class CtxApp(App):
         self.refresh_data()
 
     @work(exclusive=True, group="tmux", thread=True)
-    def start_agent(self, harness: str, cwd: str, profile: str | None = None) -> None:
+    def start_agent(self, harness: str, cwd: str, profile: str | None = None, first: str = "") -> None:
+        """Start one in a window of ctx's tmux. ``first``: a first prompt to start it with (t, on a drifted one)."""
+        extra = {"extra": [first]} if first else {}     # only passed when there is one: a start without it is today's
         try:
             if harness == "claude":
                 typed, cwd = split_profile(cwd, [p.name for p in self.cfg.claude_profiles])
                 profile = typed or profile
-                msg = tmux.new_agent(harness, cwd, profile=profile, profiles=self.cfg.claude_profiles)
+                msg = tmux.new_agent(harness, cwd, profile=profile, profiles=self.cfg.claude_profiles, **extra)
             else:
-                msg = tmux.new_agent(harness, cwd)
+                msg = tmux.new_agent(harness, cwd, **extra)
         except Exception as e:                          # noqa: BLE001
             msg = f"tmux: {e}"
         popup_log(f"new {harness}{f'[{profile}]' if profile else ''} in {cwd}: {msg}")
@@ -1573,6 +1665,95 @@ class CtxApp(App):
             self.notify(why, severity="warning", timeout=6); return
         self.pending_reply = (s["key"], ask["ref"])
         self._show_input("reply", f"answer \"{fmt.one_line(ask['text'], 50)}\", enter to send")
+
+    def _mis_mark(self, s: dict) -> str:
+        """A row's ⇄: the detail's rows decide when that detail is up (what it resolved since the list refreshed
+        leaves nothing marked), otherwise the list's count does."""
+        return misplaced_mark(self.detail if (self.detail or {}).get("key") == s["key"] else s)
+
+    def _misplaced_row(self) -> dict | None:
+        """The detail's newest open misplaced-prompt row of the selected session, from the row's own key: the detail
+        fetch may still be out, and the board only carries a count for it."""
+        s = self._selected_session()
+        rows = fmt.misopens(self.detail if self.detail and self.detail.get("key") == self.selected else s or {})
+        if not rows and s:                              # the list's rows carry the rows themselves, or just the count
+            rows = [r for r in (s.get("misplaced") or []) if isinstance(r, dict) and r.get("state", "open") == "open"]
+        if not rows and s and int(s.get("misplaced_open") or 0) and self.detail:
+            self.load_detail()                          # the count says yes, the rows haven't arrived yet
+        return rows[0] if rows else None
+
+    def action_misplace_keep(self) -> None:
+        """o: a prompt the hub thinks belongs elsewhere was meant for this session: say so, and leave it alone."""
+        row = self._misplaced_row()
+        if not row:
+            self.notify("nothing marked ⇄ on the selected session", severity="warning", timeout=5); return
+        self.misplace_state(row, "kept")
+
+    def action_misplace_move(self) -> None:
+        """t: send the ⇄ prompt where it looks like it belongs — to the session it names, after a y, or to a new one
+        when the hub only knows this session has drifted off its purpose."""
+        s = self._selected_session()
+        row = self._misplaced_row()
+        if not (s and row):
+            self.notify("nothing marked ⇄ on the selected session", severity="warning", timeout=5); return
+        target = mis_target_key(row, self.sessions)
+        if target:
+            self.confirm(f"move this prompt to {mis_target_title(row, self.sessions)}?",
+                         lambda: self.move_prompt(s, row, target))
+            return
+        # a drift, or the session it names has left the board: it needs somewhere new to go, so the same prompt n ends with
+        self.pending_prompt = (s, row)
+        self._misplace_dir(s, row)
+
+    @work(group="misplace", thread=True)
+    def move_prompt(self, s: dict, row: dict, target: str) -> None:
+        """A prompt that landed in ``s`` goes to ``target``: stop this session if it already started on it, tell it to
+        disregard that prompt, then send the prompt itself over there."""
+        try:
+            skipped = ""
+            if row.get("source") == "llm":              # the agent has the prompt: stop it, then tell it to drop it
+                skipped = self.interrupt_session(s) or ""
+                self.client.send(s["key"], mis_disregard(row), self.this_host)
+            self.client.send(target, row.get("prompt") or "", self.this_host)
+            self.client.misplaced_state(row["id"], "moved")
+            msg = f"moved to {mis_target_title(row, self.sessions)}" + skipped
+        except Exception as e:                          # noqa: BLE001 - a hub without the route, or a session gone
+            msg = f"not moved: {e}"
+        popup_log(f"move misplaced {row.get('id')} {s['key']} -> {target}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=6)
+        self.call_from_thread(self.load_detail)
+
+    def interrupt_session(self, s: dict) -> str | None:
+        """Escape into a session's pane, from a worker thread: "" when it went in, the reason it couldn't otherwise
+        (a session outside ctx's tmux, or on another host, has no pane this board can send a key to)."""
+        if not tmux.in_tmux():
+            return " · interrupt skipped: this board isn't in tmux"
+        try:
+            p = tmux.agent_pane(s["key"])
+        except Exception:                               # noqa: BLE001 - tmux is optional
+            return " · interrupt skipped: tmux didn't answer"
+        if p is None:
+            return " · interrupt skipped: it isn't in a pane of ctx's tmux"
+        tmux.interrupt(p.id)
+        return ""
+
+    @work(group="misplace", thread=True)
+    def misplace_state(self, row: dict, state: str) -> None:
+        try:
+            self.client.misplaced_state(row["id"], state)
+            msg = {"kept": "kept here", "moved": "moved", "resent": "resent"}[state]
+        except Exception as e:                          # noqa: BLE001 - an older hub has no such route
+            msg = f"not recorded: {e}"
+        self.call_from_thread(self.notify, msg, timeout=5)
+        self.call_from_thread(self.load_detail)
+
+    def _misplace_dir(self, s: dict, row: dict) -> None:
+        """A drifted prompt goes to a session of its own: the directory prompt n ends with, pre-filled with where
+        this one runs and carrying the prompt to start it with."""
+        what = {"agy": "antigravity"}.get(s.get("harness") or "claude", s.get("harness") or "claude")
+        self._show_input(f"newm:{s.get('harness') or 'claude'}:{(s.get('meta') or {}).get('profile') or ''}",
+                         f"directory for the new {what} session with this prompt, enter to start",
+                         s.get("cwd") or self._selected_cwd())
 
     def action_message_work(self) -> None:
         """W, or m on a workstream header: a message for whichever session is (or next is) live on that work."""
@@ -1717,7 +1898,7 @@ class CtxApp(App):
         if self.input_mode == "filter":
             self.text_filter = ""; self.query_one("#filter", Input).value = ""; self.render_table()
         else:                                           # Esc out of a message/answer/confirm: nothing is sent
-            self.input_mode, self.pending_reply = "filter", None
+            self.input_mode, self.pending_reply, self.pending_prompt = "filter", None, None
             self.query_one("#filter", Input).value = ""
         self._hide_input()
 
@@ -1822,10 +2003,32 @@ class CtxApp(App):
             self.start_remote_agent(host, harness, value)
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
             return
+        if mode.startswith("newm:"):
+            # t on a drifted prompt: start one with it, then stop the session that got it by mistake
+            _, harness, profile = (mode[4:].split(":", 2) + [""])[:3]
+            self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+            s, row = self.pending_prompt or (None, {})
+            self.pending_prompt = None
+            if s:
+                self.start_with_prompt(harness, value, profile or None, s, row)
+            return
         if mode.startswith("new:"):
             _, harness, profile = (mode.split(":", 2) + [""])[:3]
             self.start_agent(harness, value, profile or None)
             self.input_mode = "filter"; self.query_one("#filter", Input).value = ""
+
+    @work(group="misplace", thread=True)
+    def start_with_prompt(self, harness: str, cwd: str, profile: str | None, s: dict, row: dict) -> None:
+        """A prompt that drifted off this session's purpose starts a session of its own; if this one's agent already
+        had it, that agent is stopped and told to disregard the prompt."""
+        if row.get("source") == "llm":
+            self.interrupt_session(s)
+            try:
+                self.client.send(s["key"], mis_disregard(row), self.this_host)
+            except Exception:                           # noqa: BLE001 - the new session is what matters here
+                pass
+        self.start_agent(harness, cwd, profile, row.get("prompt") or "")
+        self.misplace_state(row, "moved")
 
 
 def run(cfg: Config, host: str | None = None) -> None:

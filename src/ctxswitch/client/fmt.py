@@ -465,6 +465,27 @@ def message_note(s: dict, m: dict) -> str:
     return st
 
 
+MISPLACE_GLYPH = "⇄"                                   # a prompt here that looks like it belongs to another session
+
+
+def misopens(s: dict) -> list[dict]:
+    """The misplaced-prompt rows the hub flagged on this session, open ones only and newest first — a hub without the
+    feature, or one that only sends the list's count, has none to show."""
+    rows = [r for r in s.get("misplaced") or [] if isinstance(r, dict) and r.get("state", "open") == "open"]
+    return sorted(rows, key=lambda r: r.get("at") or "", reverse=True)
+
+
+def mis_target(r: dict) -> str:
+    """Where a flagged prompt looks like it belongs: the session it names, or this one's purpose for a drift."""
+    return (f"looks like it's for {r.get('target_title') or 'another session'}" if r.get("verdict") == "other"
+            else "off this session's purpose")
+
+
+def mis_why(r: dict) -> str:
+    """The line under a flagged prompt: where it looks like it belongs, and why the hub thinks so."""
+    return f"{mis_target(r)} — {r.get('why')}" if r.get("why") else mis_target(r)
+
+
 REPLYABLE = ("plain", "text")                       # hub/store.py: the asks a message can answer
 
 
