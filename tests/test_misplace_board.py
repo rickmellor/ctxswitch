@@ -426,3 +426,89 @@ def _wrap_send(app, log):
 
 def app_tmux_panes(module):
     return module.tmux
+
+
+# -- the wrong-window pop-up (2026-11-12: the operator wants a misplaced prompt to grab their attention) -------------
+import subprocess as _sp
+from ctxswitch.client import notify as N
+
+
+def _mis_item(key=A, rid=7, title="webapp@main work"):
+    return {"key": key, "kind": "misplaced", "ref": f"misplaced:{rid}", "text": "looks like it's for auth-service@main work",
+            "asked_at": _ago(1), "host_id": key.split("/")[0], "harness": "claude", "title": title, "live_status": "busy"}
+
+
+def test_a_misplaced_prompt_pops_up_on_the_session_you_are_looking_at():
+    """Everything else on screen is skipped (you can see it); a wrong-window prompt is always on screen."""
+    n = N.Notifier()
+    ask = {"key": A, "item": "ask", "ref": "1:plain", "text": "which one?", "asked_at": _ago(1)}
+    mis = {**_mis_item(), "item": "ask"}
+    assert n.fresh([ask, mis], skip={A}) == [mis]
+
+
+def test_the_wrong_window_box_says_what_went_where_and_offers_t_and_o():
+    other = N.misplaced_box_lines("webapp@main work", _row())
+    assert other[0] == "This prompt went into: webapp@main work"
+    assert '"rename the retry helper in the auth service"' in other[1]
+    assert "It looks like it's for: auth-service@main work" in other and "The agent hasn't seen it (it was blocked)." in other
+    assert other[-1].startswith("t move it there · o keep it here")
+    drift = N.misplaced_box_lines("notes", _row(verdict="drift", target="", target_title="", source="llm"))
+    assert "It looks like it's off this session's purpose." in drift and "The agent may already be working on it." in drift
+    assert drift[-1].startswith("t start a new session with it")
+    assert all(len(x) <= N.BOX_W - 4 for x in other + drift)
+
+
+def test_the_wrong_window_box_s_keys_are_t_o_and_anything_else():
+    for key, rc in (("t", N.MIS_RC_MOVE), ("T", N.MIS_RC_MOVE), ("o", N.MIS_RC_KEEP), ("x", 3), ("\n", 3)):
+        p = _sp.run(["bash", "-c", N.MIS_BOX_CMD.removeprefix("exec bash -c ").strip("'")], input=key, text=True,
+                    capture_output=True, env={"CTX_POPUP": "hi", "PATH": "/usr/bin:/bin"})
+        assert p.returncode == rc, (key, p.returncode, p.stderr)
+    seen = []
+    N.tmux_misplaced_box("webapp@main work", _row(), popen=lambda argv, **kw: seen.append(argv) or object())
+    argv = seen[0]
+    assert argv[:2] == ["tmux", "display-popup"] and " ctx: wrong window? " in argv and N.MIS_BOX_STYLE in argv
+
+
+class _Box:
+    def __init__(self, rc): self.rc = rc
+    def wait(self): return self.rc
+    def poll(self): return self.rc
+
+
+async def _popped(monkeypatch, rc, row):
+    app = _board(monkeypatch, [_sess(A, misplaced_open=1), _sess(B, title="auth-service@main work")],
+                 detail={A: {**_sess(A), "misplaced": [row]}})
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    opened = []
+    monkeypatch.setattr(tui, "tmux_misplaced_box", lambda title, r: opened.append((title, r["id"])) or _Box(rc))
+    moved = []
+    monkeypatch.setattr(tui.CtxApp, "move_prompt", lambda self, s, r, target: moved.append((s["key"], r["id"], target)))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        app.attention = [_mis_item(rid=row["id"])]
+        app.on_screen = {A}                                       # the session it went into is the one on screen
+        app.popup_now(); await pilot.pause(1)
+        app.filter_value = app.query_one("#filter").value          # read before the app closes
+        return app, opened, moved
+
+
+async def test_t_in_the_box_moves_the_prompt_with_no_second_question(monkeypatch):
+    app, opened, moved = await _popped(monkeypatch, N.MIS_RC_MOVE, _row())
+    assert opened == [("webapp@main work", 7)] and moved == [(A, 7, B)]
+
+
+async def test_o_in_the_box_keeps_it_and_any_other_key_leaves_it(monkeypatch):
+    app, _, moved = await _popped(monkeypatch, N.MIS_RC_KEEP, _row())
+    assert app.client.states == [(7, "kept")] and moved == []
+    app, _, moved = await _popped(monkeypatch, 3, _row())
+    assert app.client.states == [] and moved == []
+
+
+async def test_t_in_the_box_on_a_drift_asks_for_the_new_session_s_directory(monkeypatch):
+    app, _, moved = await _popped(monkeypatch, N.MIS_RC_MOVE, _row(verdict="drift", target="", target_title="", source="llm"))
+    assert moved == [] and app.input_mode.startswith("newm:") and app.filter_value == "/r/webapp"
+
+
+def test_the_status_line_for_a_misplaced_prompt_has_one_glyph():
+    line = tui.popup_line(tui.popup_items([_mis_item()])[0])
+    assert line.count(fmt.MISPLACE_GLYPH) == 1, line

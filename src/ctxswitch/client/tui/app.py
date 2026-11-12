@@ -43,7 +43,7 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
-from ctxswitch.client.notify import BOX_ITEMS, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_popup
+from ctxswitch.client.notify import BOX_ITEMS, MIS_RC_KEEP, MIS_RC_MOVE, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_misplaced_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
 from ctxswitch.client.tui.metrics_panel import (METRICS_HUB_MSG, METRICS_NONE_MSG, HostPicker, MetricsPanel,
@@ -125,7 +125,8 @@ def popup_line(i: dict) -> str:
     ``⇄ <session title>: <what it says>`` — the mark its row carries, then the session the prompt went into."""
     if i.get("kind") != "misplaced":
         return popup_text([i])                          # "ctx · <host · title: what>"
-    return f"ctx · {fmt.MISPLACE_GLYPH} {fmt.one_line(i.get('title') or i.get('key'), 30)}: {fmt.one_line(i.get('text'), 90)}"
+    text = str(i.get("text") or "").removeprefix(fmt.MISPLACE_GLYPH).strip()   # popup_items marks it; say it once
+    return f"ctx · {fmt.MISPLACE_GLYPH} {fmt.one_line(i.get('title') or i.get('key'), 30)}: {fmt.one_line(text, 90)}"
 
 
 def popup_status(items: list[dict]) -> str:
@@ -895,6 +896,12 @@ class CtxApp(App):
         if not new or not self.popups:                  # off: what turns up meanwhile is on the board, not popped later
             return
         msg, ids = popup_status(new), [item_id(i) for i in new]
+        mis = [i for i in new if i.get("kind") == "misplaced"]
+        if mis and tmux.in_tmux() and self.cfg.notify_style == "popup" and (self.box is None or self.box.poll() is not None):
+            # a wrong-window prompt gets its own box, with t and o; anything else that turned up pops next time
+            self.notifier.seen -= {item_id(i) for i in new if i.get("kind") != "misplaced"}
+            self.misplaced_popup(mis[0])
+            return
         if tmux.in_tmux() and self.cfg.notify_style == "popup" and (self.box is None or self.box.poll() is not None):
             try:
                 self.box = tmux_box(new)
@@ -910,6 +917,44 @@ class CtxApp(App):
         rc = box.wait()
         err = (box.stderr.read() if box.stderr else "").strip()
         self.call_from_thread(self.box_closed, rc, keys, msg, err)
+
+    @work(group="box", thread=True)
+    def misplaced_popup(self, item: dict) -> None:
+        """The wrong-window box for one flagged prompt: its row from the hub (the prompt, the why), then the box, then
+        whatever key closed it. A row the hub can't find any more is left to the board's ⇄."""
+        key, rid = item.get("key"), str(item.get("ref") or "").partition(":")[2]
+        try:
+            s = self.client.session(key, turns=0) or {}
+        except Exception as e:                          # noqa: BLE001 - the board's ⇄ still says it
+            popup_log(f"misplaced box: no row for {key}: {e}"); return
+        row = next((r for r in fmt.misopens(s) if str(r.get("id")) == rid), None)
+        if row is None:
+            return
+        title = s.get("title") or item.get("title") or key
+        try:
+            box = tmux_misplaced_box(title, row)
+        except OSError as e:
+            popup_log(f"misplaced box failed: {e}"); return
+        self.box = box
+        popup_log(f"misplaced box {key} row {rid}: {fmt.one_line(row.get('prompt'), 60)}")
+        rc = box.wait()
+        popup_log(f"misplaced box closed rc={rc} {key} row {rid}")
+        if rc in (MIS_RC_MOVE, MIS_RC_KEEP):
+            self.call_from_thread(self.misplaced_chosen, key, row, rc == MIS_RC_MOVE)
+
+    def misplaced_chosen(self, key: str, row: dict, move: bool) -> None:
+        """t or o in the wrong-window box: the same as on the board, with no second y (the key was the answer)."""
+        s = next((x for x in self.sessions if x["key"] == key), None)
+        if s is None:
+            self.notify(f"{key} isn't on the board any more", timeout=6); return
+        if not move:
+            self.misplace_state(row, "kept"); return
+        target = mis_target_key(row, self.sessions)
+        if target:
+            self.move_prompt(s, row, target); return
+        self.select_key(key)                            # a drift: it needs a directory, asked on the board
+        self.pending_prompt = (s, row)
+        self._misplace_dir(s, row)
 
     def box_closed(self, rc: int, keys: list[str], msg: str, err: str = "") -> None:
         popup_log(f"box closed rc={rc} {keys} {err}".rstrip())      # 10+n Enter/digit, 3 another key, 0 EOF, 1 no client

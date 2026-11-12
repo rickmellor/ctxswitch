@@ -58,12 +58,14 @@ class Notifier:
         popped = {i["key"] for k, i in ids.items() if k in self.seen}
         best: dict[str, dict] = {}
         for k, i in ids.items():
-            if (k not in self.seen and (i.get("item") != "idle" or self.idle) and i.get("key") not in skip
+            # a misplaced prompt pops up on the session you're looking at too: that's where it was typed
+            if (k not in self.seen and (i.get("item") != "idle" or self.idle)
+                    and (i.get("key") not in skip or i.get("kind") == "misplaced")
                     and (i["key"] not in popped or _rank(i) == 0) and (i["key"] not in best or _rank(i) < _rank(best[i["key"]]))):
                 best[i["key"]] = i
         # forget what left, so the same session can pop up again; what was skipped on screen stays unseen, so it
         # pops up once you move off it with the question still open
-        self.seen = {k for k, i in ids.items() if k in self.seen or i.get("key") not in skip}
+        self.seen = {k for k, i in ids.items() if k in self.seen or i.get("key") not in skip or i.get("kind") == "misplaced"}
         return list(best.values())
 
 
@@ -99,6 +101,42 @@ def tmux_box(new: list[dict], popen=subprocess.Popen):
     title = f" ctx: {len(new)} waiting on you " if len(new) > 1 else " ctx: waiting on you "
     return popen(["tmux", "display-popup", "-E", "-w", str(w), "-h", str(h), "-T", title, "-s", BOX_STYLE, "-S", BOX_STYLE,
                   "-e", "CTX_POPUP=" + "\n".join(lines), BOX_CMD],
+                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+# The wrong-window box: its own look and its own keys, so it can't be mistaken for "a session is waiting on you".
+MIS_RC_MOVE, MIS_RC_KEEP = 20, 21                       # its exit codes for t and o; any other key is 3 (later)
+MIS_BOX_STYLE = "fg=yellow,bold"
+MIS_BOX_CMD = ("""exec bash -c 'printf "%s" "$CTX_POPUP"; IFS= read -rsn1 k || exit 0; """
+               """case "$k" in t|T) exit 20;; o|O) exit 21;; esac; exit 3'""")
+
+
+def misplaced_box_lines(title: str, row: dict) -> list[str]:
+    """What the wrong-window box says: which session the prompt went into, the prompt itself, where it looks like it
+    belongs (or that it drifts off the session's purpose), whether the agent already has it, and the keys."""
+    other = row.get("verdict") == "other" and row.get("target_title")
+    out = [f"This prompt went into: {fmt.one_line(title, 60)}",
+           f"  \"{fmt.one_line(row.get('prompt'), 96)}\"",
+           ""]
+    if other:
+        out.append(f"It looks like it's for: {fmt.one_line(row.get('target_title'), 60)}")
+    else:
+        out.append("It looks like it's off this session's purpose.")
+    if row.get("why"):
+        out.append(f"  {fmt.one_line(row.get('why'), 100)}")
+    out.append("The agent hasn't seen it (it was blocked)." if row.get("source") == "pre"
+               else "The agent may already be working on it.")
+    out += ["", ("t move it there" if other else "t start a new session with it") +
+            " · o keep it here · any other key: later (the ⇄ stays on the board)"]
+    return [fmt.one_line(x, BOX_W - 4) for x in out]
+
+
+def tmux_misplaced_box(title: str, row: dict, popen=subprocess.Popen):
+    """The wrong-window box over every pane, until t, o or another key; rc MIS_RC_MOVE / MIS_RC_KEEP / 3."""
+    lines = misplaced_box_lines(title, row)
+    w, h = max(map(len, lines)) + 4, len(lines) + 2
+    return popen(["tmux", "display-popup", "-E", "-w", str(w), "-h", str(h), "-T", " ctx: wrong window? ",
+                  "-s", MIS_BOX_STYLE, "-S", MIS_BOX_STYLE, "-e", "CTX_POPUP=" + "\n".join(lines), MIS_BOX_CMD],
                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 
 
