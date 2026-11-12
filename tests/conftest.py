@@ -21,6 +21,7 @@ def _no_real_tmux_or_popup_log(tmp_path, monkeypatch):
     monkeypatch.setattr(notify, "LOG", tmp_path / "popup.log")
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("CTXSWITCH_NO_SOUND", "1")             # and never plays a sound on their speakers
 
 
 @pytest.fixture

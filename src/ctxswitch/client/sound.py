@@ -86,7 +86,7 @@ def player(path: Path, wsl: bool | None = None, which=shutil.which, exists=os.pa
 
 def play(name: str = "eep", popen=subprocess.Popen) -> bool:
     """Play a sound in the background; True when something was started. Never raises, never waits."""
-    if not name:
+    if not name or os.environ.get("CTXSWITCH_NO_SOUND"):        # muted (the test suite sets it)
         return False
     try:
         argv = player(sound_file(name))

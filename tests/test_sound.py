@@ -40,6 +40,7 @@ def test_elsewhere_the_first_player_found_and_none_is_silence():
 
 
 def test_play_never_waits_and_never_raises(monkeypatch, tmp_path):
+    monkeypatch.delenv("CTXSWITCH_NO_SOUND", raising=False)
     monkeypatch.setattr(sound, "SOUNDS", tmp_path)
     started = []
     monkeypatch.setattr(sound, "player", lambda path, **kw: ["play", str(path)])
@@ -47,3 +48,11 @@ def test_play_never_waits_and_never_raises(monkeypatch, tmp_path):
     assert started and started[0][1]["start_new_session"] is True and started[0][1]["stdout"] is not None
     assert sound.play("", popen=lambda *a, **k: 1 / 0) is False                       # "" = silent
     assert sound.play("eep", popen=lambda *a, **k: 1 / 0) is False                    # a broken player: no error
+
+
+
+def test_ctxswitch_no_sound_mutes_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(sound, "SOUNDS", tmp_path)
+    monkeypatch.setattr(sound, "player", lambda path, **kw: ["play", str(path)])
+    monkeypatch.setenv("CTXSWITCH_NO_SOUND", "1")
+    assert sound.play("eep", popen=lambda *a, **k: 1 / 0) is False                    # nothing even tried
