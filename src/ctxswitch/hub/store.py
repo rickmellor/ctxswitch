@@ -33,6 +33,7 @@ from typing import Any
 
 from ctxswitch.common.schema import LIVE
 from ctxswitch.hub.misplace import PROMPT_CHARS as MISPLACE_PROMPT_CHARS, CANDIDATES as MISPLACE_CANDIDATES
+MISPLACE_PROMPTS = 10                    # recent operator prompts per session in a misplaced-prompt fingerprint
 
 _LIVE_SQL = ",".join(f"'{s}'" for s in LIVE)
 
@@ -553,7 +554,22 @@ class Store:
         v["title"] = d.get("live_name") or d.get("title") or ""
         v["purpose"] = self.tracker_state(d["key"]).get("purpose") or ""
         v["instructions"] = [r["text"] for r in self.ledger(d["key"], active_only=True) if r["kind"] == "instruction"]
+        v["prompts"] = self._recent_prompts(d["key"])
         return v
+
+    def _recent_prompts(self, key: str, n: int = MISPLACE_PROMPTS) -> list[str]:
+        """The operator's last ``n`` typed prompts to a session (not task notices, peers or ctx deliveries)."""
+        out: list[str] = []
+        for (data,) in self.db.execute("SELECT data FROM turns WHERE key=? ORDER BY idx DESC LIMIT ?", (key, n * 3)):
+            try:
+                t = json.loads(data)
+            except (TypeError, ValueError):
+                continue
+            if t.get("user_origin") == "human" and t.get("via") != "ctx" and isinstance(t.get("user_text"), str):
+                out.append(t["user_text"][:2000])
+            if len(out) >= n:
+                break
+        return out
 
     def tracker_state(self, key: str) -> dict[str, Any]:
         r = self.db.execute("SELECT * FROM tracker WHERE key=?", (key,)).fetchone()

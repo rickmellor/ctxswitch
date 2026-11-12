@@ -122,7 +122,7 @@ def _misplace_skip(prompt: str) -> bool:
     """What is never checked: slash commands, ctxswitch's own deliveries (operator messages and peer messages are
     injected, not typed; the two heads are collector/deliver.py's HEADER and agent_header's first line, repeated here
     because this runs on every prompt and stays stdlib-light), and prompts too short to say anything about."""
-    return (prompt.startswith("/") or len(prompt.split()) < 4 or
+    return (prompt.startswith("/") or prompt.lstrip().startswith("<") or len(prompt.split()) < 4 or
             prompt.startswith("Message from the operator (sent with ctxswitch)") or
             prompt.startswith("Message from another agent session, not from the operator"))
 

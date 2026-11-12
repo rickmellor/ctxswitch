@@ -73,6 +73,7 @@ def skip(prompt: str) -> bool:
     delivered rather than typed, or too few words to say which work it is about."""
     text = (prompt or "").strip()
     return (not text or text.startswith("/") or text.startswith(HEADERS)
+            or text.startswith("<")            # <bash-stdout>, <command-name>, <task-notification>: not typed words
             or len(text.split()) < MIN_WORDS)
 
 
@@ -134,18 +135,22 @@ def fingerprint(s: dict[str, Any]) -> set[str]:
     minus the words that name no work."""
     out = _name_terms(repo_name(s)) | _name_terms(s.get("git_branch"))
     out |= _name_terms(" ".join(_path_parts(s.get("cwd"))))
-    for k in ("title", "purpose", "recap"):
-        out |= set(_terms(s.get(k)))
-    for text in s.get("instructions") or []:
-        out |= set(_terms(text if isinstance(text, str) else str(text)))
+    out |= _name_terms(s.get("title"))              # a title is often a slug: "zephyr-dmp-sdk-plan" is zephyr, dmp, sdk
+    for k in ("purpose", "recap"):
+        out |= _name_terms(s.get(k))
+    # what the operator has been typing to it: the most telling words a session has, above all for one run from the
+    # home folder (no repo or branch to go by)
+    for text in [*(s.get("instructions") or []), *(s.get("prompts") or [])]:
+        out |= _name_terms(text if isinstance(text, str) else str(text))
     return out
 
 
 def check(prompt: str, this: dict[str, Any], others: list[dict[str, Any]]) -> dict[str, Any]:
     """{"verdict": "ok"}, or "other" naming the session the prompt reads like it belongs to."""
-    terms = _terms(prompt)
-    if len(terms) < MIN_TERMS:
+    words = _terms(prompt)
+    if len(words) < MIN_TERMS:
         return {"verdict": "ok"}
+    terms = sorted(_name_terms(prompt), key=lambda t: (prompt.lower().find(t), t))   # "zephyr-dmp" counts as zephyr, dmp
     fps = [fingerprint(this)] + [fingerprint(s) for s in others]
     have = {t: sum(t in f for f in fps) for t in terms}
 

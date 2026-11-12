@@ -302,3 +302,8 @@ def test_doctor_wants_the_prompt_check_group(home):
     p.write_text(json.dumps(s))
     c = ins._check_claude(p)
     assert c.status == "✗" and "prompt check" in c.detail
+
+
+def test_the_hook_never_asks_about_command_output_or_wrappers():
+    for p in ("<bash-stdout> seats 3 free and more words </bash-stdout>", "  <task-notification> done, all ok </task-notification>"):
+        assert hook._misplace_skip(p), p

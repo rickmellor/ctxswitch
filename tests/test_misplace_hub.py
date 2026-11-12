@@ -74,7 +74,7 @@ def test_a_prompt_about_another_sessions_repo_is_flagged():
     zap = _sess("devbox/claude/z9", title="Zephyr DMP SDK plan", repo="zephyr-dmp-sdk", last=NOW)
     out = misplace.check(ZEPHYR, ctx, [zap])
     assert out["verdict"] == "other" and out["target_key"] == "devbox/claude/z9"
-    assert out["target_title"] == "Zephyr DMP SDK plan" and out["why"] == "mentions zephyr, dmp-sdk"
+    assert out["target_title"] == "Zephyr DMP SDK plan" and out["why"].startswith("mentions zephyr") and "dmp-sdk" in out["why"]
     assert misplace.where(zap) == "devbox · zephyr-dmp-sdk@main"
     assert misplace.check(ZEPHYR, zap, [ctx])["verdict"] == "ok"               # typed into the right window
 
@@ -165,7 +165,7 @@ def test_prompt_check_flags_the_prompt_once_and_says_where_the_work_lives(tmp_pa
     r = _check(c, "gpu-host/claude/c1", ZEPHYR).json()
     assert r["verdict"] == "other" and r["target_key"] == "devbox/claude/z9"
     assert r["target_title"] == "Zephyr DMP SDK plan" and r["target_where"] == "devbox · zephyr-dmp-sdk@main"
-    assert r["why"] == "mentions zephyr, dmp-sdk"
+    assert r["why"].startswith("mentions zephyr") and "dmp-sdk" in r["why"]
     rows = store.misplaced_for("gpu-host/claude/c1")
     assert [(x["source"], x["verdict"], x["state"], x["target_key"]) for x in rows] == [("pre", "other", "open", "devbox/claude/z9")]
     assert rows[0]["prompt"] == ZEPHYR and rows[0]["at"].endswith("Z") and rows[0]["resolved_at"] is None
@@ -400,3 +400,32 @@ async def test_the_llm_check_can_be_switched_off(tmp_path, monkeypatch):
     seat = Seat({"verdict": "other", "target_key": OTHER, "confidence": 0.9, "reason": "off it goes"})
     store, ex = _tracker(tmp_path, seat)
     assert await ex.step(calls=3) == 1 and seat.n() == 0 and store.misplaced_for(KEY) == []
+
+
+# -- tuned on real sessions (2026-11-11): two sessions run from the home folder, so no repo or branch to go by ----------
+def _home(key, title, prompts, recap=""):
+    return {"key": key, "host_id": "laptop", "harness": "claude", "cwd": "/home/me", "repo_root": "", "repo_remote": "",
+            "git_branch": "", "title": title, "purpose": "", "recap": recap, "instructions": [], "prompts": prompts,
+            "last_activity": "2026-11-11T10:00:00Z", "live_status": "idle"}
+
+
+def test_a_slug_title_and_a_hyphenated_prompt_word_match_by_their_parts():
+    this = _home("laptop/claude/a", "ctx switch", ["add the board's cpu panel"])
+    other = _home("laptop/claude/b", "zephyr-dmp-sdk-plan", ["finish the esp32 staging run"])
+    r = misplace.check("why does the zephyr-dmp build pick the wrong sdk overlay for staging", this, [other])
+    assert r["verdict"] == "other" and r["target_key"] == "laptop/claude/b", r
+    assert "zephyr" in r["why"]
+
+
+def test_what_the_operator_typed_to_a_session_is_part_of_its_fingerprint():
+    other = _home("laptop/claude/b", "plan", ["run the conformance sweep on native_sim", "push the jitp onboarding fix"])
+    assert {"conformance", "native_sim", "jitp", "onboarding"} <= misplace.fingerprint(other)
+    this = _home("laptop/claude/a", "ctx switch", ["align the gpu panel bars"])
+    r = misplace.check("the conformance sweep on native_sim fails the jitp onboarding test", this, [other])
+    assert r["verdict"] == "other" and r["target_key"] == "laptop/claude/b"
+
+
+def test_command_output_and_wrappers_are_never_checked():
+    for p in ("<bash-stdout>  seats 3 free  </bash-stdout>", "<command-name>/model</command-name> pick opus please",
+              "<task-notification> job finished with status ok </task-notification>"):
+        assert misplace.skip(p), p
