@@ -268,19 +268,21 @@ or the one with the most GPUs, which is the one doing the work. Each collector s
 last sample plus a minute of history per host, in memory and never in the database; a sample older than 10 s is
 marked `stale 42s`. What a host runs elsewhere doesn't move the panel: it's about silicon, not sessions.
 
-### Misplaced prompts (`⇄`)
+### Misplaced prompts (`↯`)
 A prompt typed into the wrong session's window is caught **before the agent sees it**: the Claude Code hook asks the
 hub's deterministic matcher (no model, under 100 ms) which live session it fits, and blocks it with the reason, the
 session it looks like it belongs to and your prompt quoted back — so a block costs no turns and no tokens. Send the
 same prompt again within a minute and it goes through: that's how you keep one it flagged. Subtler ones are found
 **after they land**: the tracker asks whether the prompt fits the session it went into, and flags a confident
-"belongs elsewhere" or "off this session's purpose" on the board. Either way the row carries `⇄` (bold yellow, after
-its `◐` and `+N`; the board's other `⇄`, in the first column, is a session live in a tmux on another host), and the
+"belongs elsewhere" or "off this session's purpose" on the board. Either way the row carries `↯` (bold yellow, after
+its `◐` and `+N`), and the
 detail's **MISPLACED?** section says where it looks like it belongs, why, and whether the agent may have started on
 it. `t` moves the newest one: it sends Escape to the session that got it and tells it to disregard that prompt and
 undo nothing, then sends the prompt itself to the session it belongs to (a drift instead opens the directory prompt
 and starts a new session of the same harness with the prompt as its first). `o` keeps it there. Nothing is recorded
 for slash commands, ctxswitch's own delivery headers or prompts of fewer than four words.
+
+When one is flagged, a yellow **`ctx: wrong window?`** box pops up over every pane — on the session you're looking at too, since that's where a wrong-window prompt always is — with the prompt, where it looks like it belongs (or that it drifts) and whether the agent already has it: `t` moves it there with no second question, `o` keeps it, any other key leaves the `↯` for later. It comes with a short synthesized "eep!" (played through Windows when the board runs in WSL, else `afplay`/`paplay`/`aplay`); `misplace_sound = ""` in the config silences it.
 
 ## 4. Keys
 `?` shows all of this on the board itself:
@@ -299,8 +301,8 @@ for slash commands, ctxswitch's own delivery headers or prompts of fewer than fo
 | `W` | message the selected session's workstream: whichever session is, or next is, live on it (see Messages) |
 | `M` | send it the tmux paste buffer (what you last copied in copy mode), after a y |
 | `a` | answer the question it's waiting on: type the answer, Enter sends (see Answering a question) |
-| `t` | a prompt marked `⇄`: move it where it looks like it belongs, after a `y` — Escape into the session that got it, a "disregard my last prompt" message, then the prompt itself to the session it names. A drift (`other` with no session, or one that left the board) instead asks for a directory and starts a new session of the same harness with it |
-| `o` | keep the `⇄` prompt where it is: the agent was meant to get it (nothing is sent, the flag is settled) |
+| `t` | a prompt marked `↯`: move it where it looks like it belongs, after a `y` — Escape into the session that got it, a "disregard my last prompt" message, then the prompt itself to the session it names. A drift (`other` with no session, or one that left the board) instead asks for a directory and starts a new session of the same harness with it |
+| `o` | keep the `↯` prompt where it is: the agent was meant to get it (nothing is sent, the flag is settled) |
 | `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
 | `<` `>` | make the board wider / narrower (its left edge moves the arrow's way), 5 columns a press; remembered (in ~/.local/state/ctxswitch/board-width) for the next `ctx tmux` |
 | `h` | host filter: this host → all → each other host |

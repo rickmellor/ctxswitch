@@ -1,4 +1,4 @@
-"""The misplaced-prompt detector, board side: ⇄ on a row that has one, a MISPLACED? section in the detail saying
+"""The misplaced-prompt detector, board side: ↯ on a row that has one, a MISPLACED? section in the detail saying
 where the prompt looks like it belongs, and the two keys that settle it — t sends it there, o keeps it here.
 
 The hub's ``misplaced`` table, its /v1/prompt-check matcher and the hook are on other branches, so everything here
@@ -122,7 +122,7 @@ def _key_press(widget, key: str) -> None:
     widget.post_message(Key(key, character=None))
 
 
-# -- the row's ⇄ --------------------------------------------------------------------------------------------------
+# -- the row's ↯ --------------------------------------------------------------------------------------------------
 async def test_a_session_with_an_open_flag_gets_the_mark_and_a_session_without_one_does_not(monkeypatch):
     a = _sess(A, misplaced_open=1)
     b = _sess(B, misplaced_open=0)
@@ -130,8 +130,8 @@ async def test_a_session_with_an_open_flag_gets_the_mark_and_a_session_without_o
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
         rows = _rows_of(app.query_one("#table"))
-        assert rows[0][2] == A and rows[0][1].endswith("⇄") and rows[0][1].count("⇄") == 1
-        assert rows[1][2] == B and "⇄" not in rows[1][1]
+        assert rows[0][2] == A and rows[0][1].endswith("↯") and rows[0][1].count("↯") == 1
+        assert rows[1][2] == B and "↯" not in rows[1][1]
 
 
 async def test_the_mark_comes_from_the_detail_rows_when_the_list_only_has_a_count(monkeypatch):
@@ -140,7 +140,7 @@ async def test_the_mark_comes_from_the_detail_rows_when_the_list_only_has_a_coun
     app = _board(monkeypatch, [_sess(A, misplaced_open=1)], detail={A: {**_sess(A), "misplaced": [row]}})
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
-        assert "⇄" not in _rows_of(app.query_one("#table"))[0][1]
+        assert "↯" not in _rows_of(app.query_one("#table"))[0][1]
 
 
 async def test_a_pool_job_row_never_shows_the_mark(monkeypatch):
@@ -152,8 +152,8 @@ async def test_a_pool_job_row_never_shows_the_mark(monkeypatch):
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
         rows = _rows_of(app.query_one("#table"))
-        assert rows[0][2] == A and "⇄" not in rows[0][1]
-        assert rows[1][2] == "gpu-host/claude/kk" and "⇄" not in rows[1][1] and "\n" not in rows[1][1]
+        assert rows[0][2] == A and "↯" not in rows[0][1]
+        assert rows[1][2] == "gpu-host/claude/kk" and "↯" not in rows[1][1] and "\n" not in rows[1][1]
 
 
 # -- the detail's MISPLACED? section ------------------------------------------------------------------------------
@@ -168,11 +168,11 @@ async def test_the_detail_says_where_each_prompt_looks_like_it_belongs(monkeypat
         await pilot.pause(1)
         t = app.query_one("#detail_text").render().plain
         want = ['MISPLACED?',
-                '⇄ 3m  "rename the retry helper in the auth service"',
+                '↯ 3m  "rename the retry helper in the auth service"',
                 "   looks like it's for auth-service@main work — only that session's repo has a retry helper",
                 "   blocked before the agent saw it",
                 "   t move it there · o keep it here",
-                '⇄ 9m  "also add a png to the release notes"',
+                '↯ 9m  "also add a png to the release notes"',
                 "   off this session's purpose — nothing here touches release notes",
                 "   the agent may have started on it",
                 "   t start a new session with it · o keep it here"]
@@ -346,25 +346,25 @@ def test_t_and_o_are_bound_and_documented():
     assert bound["t"] == "misplace_move" and bound["o"] == "misplace_keep"
     keys = {keys for keys, _, _ in tui.HELP_KEYS}
     assert ("t",) in keys and ("o",) in keys
-    assert any("⇄" in words and "move" in words for _, shown, words in tui.HELP_KEYS if shown == "t")
+    assert any("↯" in words and "move" in words for _, shown, words in tui.HELP_KEYS if shown == "t")
     assert any("keep" in words for _, shown, words in tui.HELP_KEYS if shown == "o")
     assert any("Wrong window?" == title for title, _ in tui.HELP_TIPS)
 
 
 def test_the_legend_explains_the_mark():
-    rows = [g for _, rows in tui.legend_sections() for g in rows if g[0] == "⇄"]
+    rows = [g for _, rows in tui.legend_sections() for g in rows if g[0] == "↯"]
     assert any(style == "bold yellow" and "t moves it" in words and "o keeps it" in words for _, style, words in rows)
-    assert any(ln.strip().startswith("⇄") for ln in tui.legend().plain.splitlines())
+    assert any(ln.strip().startswith("↯") for ln in tui.legend().plain.splitlines())
 
 
 def test_an_attention_item_of_that_kind_reads_as_a_marked_session(monkeypatch):
     item = {"key": A, "kind": "misplaced", "ref": "misplaced:7", "text": "looks like it's for auth-service@main work",
             "asked_at": _ago(3), "host_id": "gpu-host", "harness": "claude", "title": "webapp@main work",
             "live_status": "idle"}
-    assert tui.popup_line(item) == "ctx · ⇄ webapp@main work: looks like it's for auth-service@main work"
+    assert tui.popup_line(item) == "ctx · ↯ webapp@main work: looks like it's for auth-service@main work"
     assert tui.popup_status([item, {"key": B, "item": "waiting", "title": "t", "host_id": "devbox"}]).endswith("(+1 more)")
     line = tui.popup_line({"key": B, "item": "waiting", "title": "t", "host_id": "devbox", "status_since": _ago(1)})
-    assert line.startswith("ctx · devbox · t:") and "⇄" not in line
+    assert line.startswith("ctx · devbox · t:") and "↯" not in line
 
 
 def test_the_box_lines_for_one_carry_the_mark_and_its_session():
@@ -372,7 +372,7 @@ def test_the_box_lines_for_one_carry_the_mark_and_its_session():
             "asked_at": _ago(3), "host_id": "gpu-host", "title": "webapp@main work", "live_status": "idle"}
     from ctxswitch.client import notify
     line = notify.box_lines(tui.popup_items([item]))[0]
-    assert "⇄ off this session's purpose" in line and "webapp@main work" in line
+    assert "↯ off this session's purpose" in line and "webapp@main work" in line
 
 
 def test_the_client_puts_a_state_on_the_hub_s_route():

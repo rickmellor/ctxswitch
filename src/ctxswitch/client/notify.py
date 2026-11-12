@@ -127,7 +127,7 @@ def misplaced_box_lines(title: str, row: dict) -> list[str]:
     out.append("The agent hasn't seen it (it was blocked)." if row.get("source") == "pre"
                else "The agent may already be working on it.")
     out += ["", ("t move it there" if other else "t start a new session with it") +
-            " · o keep it here · any other key: later (the ⇄ stays on the board)"]
+            " · o keep it here · any other key: later (the ↯ stays on the board)"]
     return [fmt.one_line(x, BOX_W - 4) for x in out]
 
 

@@ -89,19 +89,19 @@ SUMMARY_TIP = ("The host filter (h), how many sessions are live, and how many ar
                " your move. A pool job it launched is nested under it (↳), with its local cost estimate.")
 
 
-MISPLACE_STYLE = "bold yellow"                         # the ⇄ on a row, and the detail's MISPLACED? heading
+MISPLACE_STYLE = "bold yellow"                         # the ↯ on a row, and the detail's MISPLACED? heading
 MISPLACE_HELP = ("a prompt here may be in the wrong session: the detail says where it looks like it belongs "
                  "(t moves it, o keeps it)")
 MISPLACE_TIP = ("A prompt typed into the wrong session's window is caught before the agent sees it: ctxswitch's hook "
                 "asks the hub which live session it fits, and blocks it with the reason and where it looks like it "
                 "belongs — ↑ Enter re-sends it there, which keeps it here. Subtler ones — a prompt that fits no session, "
-                "or one that drifts off what this session is for — are flagged after they land, with ⇄ on the row. The "
+                "or one that drifts off what this session is for — are flagged after they land, with ↯ on the row. The "
                 "detail says where it looks like it belongs; t moves it there (or starts a session for it, when it's a "
                 "drift) and o keeps it here.")
 
 
 def misplaced_mark(s: dict) -> str:
-    """The ⇄ after a row's marks: it has prompts the hub flagged as belonging to another session. Only the list's
+    """The ↯ after a row's marks: it has prompts the hub flagged as belonging to another session. Only the list's
     count is fetched for a session whose detail isn't open, so a detail that did come back decides."""
     return fmt.MISPLACE_GLYPH if (fmt.misopens(s) or int(s.get("misplaced_open") or 0)) else ""
 
@@ -123,7 +123,7 @@ def mis_target_title(row: dict, sessions: list[dict]) -> str:
 
 def popup_line(i: dict) -> str:
     """One attention item as a pop-up line: notify's wording for what it knows how to say, and for a misplaced prompt
-    ``⇄ <session title>: <what it says>`` — the mark its row carries, then the session the prompt went into."""
+    ``↯ <session title>: <what it says>`` — the mark its row carries, then the session the prompt went into."""
     if i.get("kind") != "misplaced":
         return popup_text([i])                          # "ctx · <host · title: what>"
     text = str(i.get("text") or "").removeprefix(fmt.MISPLACE_GLYPH).strip()   # popup_items marks it; say it once
@@ -137,7 +137,7 @@ def popup_status(items: list[dict]) -> str:
 
 def popup_items(items: list[dict]) -> list[dict]:
     """The same items as the box should print them: a misplaced prompt has no ask or dialog behind it, so it goes as
-    one carrying its own text, marked with the ⇄ its row has (notify's own line names the session it went into)."""
+    one carrying its own text, marked with the ↯ its row has (notify's own line names the session it went into)."""
     return [{**i, "item": "ask", "text": f"{fmt.MISPLACE_GLYPH} {i.get('text') or ''}"}
             if i.get("kind") == "misplaced" else i for i in items]
 
@@ -287,8 +287,8 @@ HELP_KEYS = [
     (("M",), "M", "send it the tmux paste buffer (what you last copied in copy mode), after a y"),
     (("k",), "k", "end the selected session's agent, after a y (it stays resumable: Enter brings it back)"),
     (("a",), "a", "answer the question it's waiting on (plain-text questions; dialogs are answered in the session)"),
-    (("t",), "t", "a prompt marked ⇄: move it to the session it looks like it belongs to (a drift: to a new session), after a y"),
-    (("o",), "o", "keep the ⇄ prompt where it is (the agent was meant to get it)"),
+    (("t",), "t", "a prompt marked ↯: move it to the session it looks like it belongs to (a drift: to a new session), after a y"),
+    (("o",), "o", "keep the ↯ prompt where it is (the agent was meant to get it)"),
     (("x",), "x", "exchange: send the selected session elsewhere, picked from a list. To another Claude account: it moves "
                   "(same transcript, resumed with that profile's model). To another agent (pi, Antigravity, Claude): a handoff, "
                   "a document of what it's for, your instructions, decisions and the conversation, which the new agent reads "
@@ -922,11 +922,11 @@ class CtxApp(App):
     @work(group="box", thread=True)
     def misplaced_popup(self, item: dict) -> None:
         """The wrong-window box for one flagged prompt: its row from the hub (the prompt, the why), then the box, then
-        whatever key closed it. A row the hub can't find any more is left to the board's ⇄."""
+        whatever key closed it. A row the hub can't find any more is left to the board's ↯."""
         key, rid = item.get("key"), str(item.get("ref") or "").partition(":")[2]
         try:
             s = self.client.session(key, turns=0) or {}
-        except Exception as e:                          # noqa: BLE001 - the board's ⇄ still says it
+        except Exception as e:                          # noqa: BLE001 - the board's ↯ still says it
             popup_log(f"misplaced box: no row for {key}: {e}"); return
         row = next((r for r in fmt.misopens(s) if str(r.get("id")) == rid), None)
         if row is None:
@@ -1124,7 +1124,7 @@ class CtxApp(App):
             badge, badge_style = ("", "") if kid else fmt.pool_mark(s, self.host_pools)   # a job's own badge would
             mark = f"{badge} " if badge else ""                                     # say nothing: it inherits the switch
             # the title keeps 8 columns and the row never overflows (a scrollbar would hide the last row): the repo
-            # gives way first, then the host, then the +N, then the ⇄, then the ◐ age (the age column and the └ line
+            # gives way first, then the host, then the +N, then the ↯, then the ◐ age (the age column and the └ line
             # say it too)
             fixed = width - len(label.plain) - 1 - 8 - len(mark)   # after the glyph, the space after `where` and the title's 8
             if fixed - len(where) - len(ask_mark) - len(seen_mark) - len(mis_mark) < 0 and where != harness:
@@ -1241,7 +1241,7 @@ class CtxApp(App):
         self.detail = s
         row = self._selected_session() or {}
         if misplaced_mark(s) != misplaced_mark(row):    # its rows resolved (or appeared) since the list refreshed:
-            self.render_table()                         # the row's ⇄ has to catch up with what the card says
+            self.render_table()                         # the row's ↯ has to catch up with what the card says
         now = datetime.now(timezone.utc)
         st = fmt.session_state(s)
         t = Text()
@@ -1714,7 +1714,7 @@ class CtxApp(App):
         self._show_input("reply", f"answer \"{fmt.one_line(ask['text'], 50)}\", enter to send")
 
     def _mis_mark(self, s: dict) -> str:
-        """A row's ⇄: the detail's rows decide when that detail is up (what it resolved since the list refreshed
+        """A row's ↯: the detail's rows decide when that detail is up (what it resolved since the list refreshed
         leaves nothing marked), otherwise the list's count does."""
         return misplaced_mark(self.detail if (self.detail or {}).get("key") == s["key"] else s)
 
@@ -1733,16 +1733,16 @@ class CtxApp(App):
         """o: a prompt the hub thinks belongs elsewhere was meant for this session: say so, and leave it alone."""
         row = self._misplaced_row()
         if not row:
-            self.notify("nothing marked ⇄ on the selected session", severity="warning", timeout=5); return
+            self.notify("nothing marked ↯ on the selected session", severity="warning", timeout=5); return
         self.misplace_state(row, "kept")
 
     def action_misplace_move(self) -> None:
-        """t: send the ⇄ prompt where it looks like it belongs — to the session it names, after a y, or to a new one
+        """t: send the ↯ prompt where it looks like it belongs — to the session it names, after a y, or to a new one
         when the hub only knows this session has drifted off its purpose."""
         s = self._selected_session()
         row = self._misplaced_row()
         if not (s and row):
-            self.notify("nothing marked ⇄ on the selected session", severity="warning", timeout=5); return
+            self.notify("nothing marked ↯ on the selected session", severity="warning", timeout=5); return
         target = mis_target_key(row, self.sessions)
         if target:
             self.confirm(f"move this prompt to {mis_target_title(row, self.sessions)}?",

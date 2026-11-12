@@ -465,7 +465,7 @@ def message_note(s: dict, m: dict) -> str:
     return st
 
 
-MISPLACE_GLYPH = "⇄"                                   # a prompt here that looks like it belongs to another session
+MISPLACE_GLYPH = "↯"                                   # a prompt here that looks like it belongs to another session
 
 
 def misopens(s: dict) -> list[dict]:
