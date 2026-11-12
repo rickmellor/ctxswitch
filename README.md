@@ -1,6 +1,6 @@
 <h1 align="center">ctxswitch</h1>
 
-<p align="center"><b>Short-term memory for people who run a lot of coding agents at once.</b></p>
+<p align="center"><b>Simple human orchestration of many coding agents, across every machine you run them on.</b></p>
 
 <p align="center">
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776ab?logo=python&logoColor=white">
@@ -13,12 +13,13 @@
 <p align="center"><img src="docs/img/board.svg" alt="ctx in tmux: an agent session on the left, the ctxswitch board on the right" width="100%"></p>
 
 If you keep a dozen Claude Code, pi and Antigravity sessions going across a few machines, the hard part stops being the code.
-It becomes remembering, every time you switch back to one: *what was this session for, what did I tell it, what
-did I already answer, and what is it waiting on right now?* ctxswitch keeps that for you, live, and shows it
-in one narrow board next to whatever you're doing.
+It becomes orchestrating them: remembering, every time you switch back to one, *what was this session for, what did
+I tell it, what did I already answer, and what is it waiting on right now?*, then starting, steering, messaging and
+stopping them without losing track. ctxswitch does that bookkeeping for you, live, in one narrow board next to
+whatever you're doing, and catches the prompt you typed into the wrong window.
 
 Above: you're working with the OAuth session on the left (`▶`). On the right, every session on every machine,
-numbered so `Alt+N` jumps to it. Two are waiting on you, and each says for what (`↳`): a permission prompt, and a
+numbered so `Alt+N` jumps to it. Two are waiting on you, and each says for what (`└`): a permission prompt, and a
 question the rate-limiter session asked. Selected, that one shows what it's for, what you told it ("don't touch the
 billing endpoints"), what it claims, its recap, and a message you've queued for it. The image is the real board,
 rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessions.
@@ -48,7 +49,17 @@ rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessio
   any machine, or queues it for an ended one until it next runs. The board follows it from queued to delivered
   to the agent's reply. `a` (or `ctx reply`) answers the question a session is waiting on, and the ledger
   records your answer as you typed it.
+- **Catches a prompt in the wrong window (misplace detection).** A prompt that clearly belongs to another live
+  session is blocked before the agent sees it, at no cost: send it again to keep it. Subtler ones, and prompts that
+  drift off a session's purpose, are flagged by the local LLM within seconds of landing: the row gets `↯` and a
+  yellow *wrong window?* box pops up with a short chime. `t` moves the prompt to the right session (or a new one),
+  `o` keeps it, `d` drops it; an agent that already started on it is stopped and told to disregard it.
 - **Pops up what's new.** When a session asks you something, a box pops up over your tmux panes.
+- **Shows what it all costs.** The header carries today's spend, cloud and local, and what's left of the month's
+  budget (yellow as it runs down, red near the limit); `$` breaks it down by account, model, session and pool job.
+- **Works with a local agent pool.** Pool jobs (`saint-agent` workers) sit nested under the session that launched
+  them (`↳`) with their local cost; `⌂` says whether each session was told the local pool is on, and turns yellow
+  when that no longer matches its host's switch. `g` adds a CPU/GPU panel above the keys, for one host or several.
 - **Says what changed since you last looked.** Each row shows `+N` for the exchanges you haven't seen, and the
   detail pane lists the new ones.
 - **Links the same work across machines.** Sessions on the same repo and branch (on any host) are one

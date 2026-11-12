@@ -1,7 +1,7 @@
 [project]
 name = "ctxswitch"
 version = "0.0.1"
-description = "Live cross-machine operator memory for Claude Code and pi sessions"
+description = "Simple human orchestration of many coding agents (Claude Code, pi, Antigravity) across machines"
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",
