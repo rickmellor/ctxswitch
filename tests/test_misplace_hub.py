@@ -436,3 +436,53 @@ def test_where_names_a_repo_and_branch_or_else_the_folder():
     assert misplace.where({"host_id": "devbox", "repo_root": "/home/me/repos/webapp", "git_branch": "HEAD"}) == "devbox · webapp"
     assert misplace.where({"host_id": "laptop", "repo_root": "", "repo_remote": "", "cwd": "/home/me"}) == "laptop · ~"
     assert misplace.where({"host_id": "laptop", "repo_root": "", "repo_remote": "", "cwd": "/home/me/notes"}) == "laptop · ~/notes"
+
+
+# -- the fit check runs as the prompt lands, not when the exchange ends (2026-11-11: the operator's test prompt was
+#    flagged only after their next prompt closed the exchange — too late to stop the agent) ---------------------------
+def _fresh(minutes=0.5, **kw):
+    from datetime import datetime, timedelta, timezone
+    at = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    t = _turn(**kw)
+    return {**t, "started_at": at, "ended_at": at}
+
+
+async def test_a_prompt_the_agent_is_still_on_is_checked_at_once(tmp_path):
+    seat = Seat({"verdict": "other", "target_key": OTHER, "confidence": 0.9, "reason": "that's the sdk session's work"})
+    store, ex = _tracker(tmp_path, seat, name="f.db")
+    open_turn = {**_fresh(user="are the latest dmp sdk changes ready to go for the zephyr release"), "complete": False}
+    store.upsert_turns(KEY, [], open_turn)                         # in flight: the exchange hasn't ended
+    assert await ex.fit_fresh() == 1 and seat.n("misplace") == 1
+    rows = store.misplaced_for(KEY)
+    assert [(r["source"], r["verdict"], r["target_key"]) for r in rows] == [("llm", "other", OTHER)]
+    assert await ex.fit_fresh() == 0 and seat.n("misplace") == 1   # once a prompt
+    await ex.step(calls=5)                                         # the ledger pass over that exchange later
+    assert seat.n("misplace") == 1                                 # ... doesn't ask again
+
+
+async def test_only_recent_typed_prompts_of_live_sessions_are_checked_as_they_land(tmp_path):
+    seat = Seat({"verdict": "fits", "target_key": "", "confidence": 0.9, "reason": ""})
+    store, ex = _tracker(tmp_path, seat, name="g.db")
+    store.upsert_turns(KEY, [], {**_fresh(minutes=30, user="are the latest dmp sdk changes ready to go"), "complete": False})
+    assert await ex.fit_fresh() == 0                               # older than the window: a deploy's backlog, left alone
+    store.upsert_turns(KEY, [], {**_fresh(user="Message from the operator (sent with ctxswitch):\n\nship the sdk now"),
+                                 "complete": False})
+    assert await ex.fit_fresh() == 0                               # delivered, not typed
+    store.upsert_turns(KEY, [], {**_fresh(user="please check the sdk release notes for the zephyr build", origin="peer"),
+                                 "complete": False})
+    assert await ex.fit_fresh() == 0                               # another agent's message
+    assert seat.n("misplace") == 0
+
+
+def test_question_words_are_not_work_words():
+    assert misplace._terms("are the latest dmp sdk changes ready to go") == ["dmp", "sdk", "changes"] or \
+        "are" not in misplace._terms("are the latest dmp sdk changes ready to go")
+
+
+async def test_the_tracker_s_own_cycle_checks_a_landing_prompt_first(tmp_path):
+    seat = Seat({"verdict": "other", "target_key": OTHER, "confidence": 0.9, "reason": "sdk work"})
+    store, ex = _tracker(tmp_path, seat, name="h2.db")
+    store.upsert_turns(KEY, [], {**_fresh(user="are the latest dmp sdk changes ready for the zephyr release"), "complete": False})
+    await ex.step(calls=1)                                        # one cycle, as scheduler.run drives it
+    assert seat.n("misplace") == 1 and seat.calls[0][0] == "misplace"   # the landing prompt, before any ledger work
+    assert store.misplaced_for(KEY)

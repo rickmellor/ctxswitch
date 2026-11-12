@@ -41,6 +41,7 @@ MISPLACE_CHECK = True                               # one more seat call per exc
 MISPLACE_MIN_CONF = 0.7                             # ... and how sure it must be to flag the prompt
 MISPLACE_OTHERS = 12                                # other live sessions named to the model
 MISPLACE_REASON = 160                               # ... and how long its one-line reason may be
+MISPLACE_FRESH_S = 600                              # a prompt is fit-checked as it lands if it's this recent
 
 SYSTEM = (
     "You keep an operator's ledger for one coding-agent session. You are given ONE exchange: the operator's prompt "
@@ -241,7 +242,10 @@ class Extractor:
         # the hub matched to a message (via "ctx") arrived through ctxswitch, not by typing, so it is asked about by
         # whoever sent it, not here.
         ask_fit = (MISPLACE_CHECK and turn.get("via") != "ctx" and not misplace.skip(turn.get("user_text") or "")
-                   and not self.store.misplaced_seen(key, turn.get("user_text") or ""))
+                   and not self.store.misplaced_seen(key, turn.get("user_text") or "")
+                   and not self.store.fit_checked(key, turn.get("user_text") or ""))   # fit_fresh already asked
+        if ask_fit:
+            self.store.mark_fit_checked(key, turn.get("user_text") or "")
         try:
             out = await self.call_seat(build_prompt(s, turn, prev, active, st["purpose"]))
             if ask_fit:
@@ -293,11 +297,29 @@ class Extractor:
                                   "why": _clip(out.get("reason"), MISPLACE_REASON), "confidence": float(conf)})
         self.notify()
 
-    async def step(self, calls: int = 1) -> int:
-        """Up to ``calls`` seat calls (non-human turns are read past for free)."""
-        if time.time() < self._backoff_until:
+    async def fit_fresh(self, limit: int = 2) -> int:
+        """The fit check on a prompt as soon as it lands, while the agent is still on it — the board can only offer to
+        stop it while it's running. The newest operator prompt of each live session, once each (a marker a
+        session), ahead of the ledger: up to ``limit`` seat calls. Returns how many it made."""
+        if not MISPLACE_CHECK:
             return 0
         n = 0
+        for key, prompt in self.store.fresh_prompts(MISPLACE_FRESH_S):
+            if n >= limit:
+                break
+            if misplace.skip(prompt) or self.store.fit_checked(key, prompt) or self.store.misplaced_seen(key, prompt):
+                continue
+            self.store.mark_fit_checked(key, prompt)      # first, so a seat that fails isn't asked again and again
+            await self.check_fit(key, self.store.session(key, turns=1) or {}, prompt)
+            n += 1
+        return n
+
+    async def step(self, calls: int = 1) -> int:
+        """Up to ``calls`` seat calls (non-human turns are read past for free), after the fit check on any prompt
+        that just landed."""
+        if time.time() < self._backoff_until:
+            return 0
+        n = await self.fit_fresh()
         due = self.store.tracker_due(self.cutoff())
         self.status["backlog"] = len(due)
         for key in due:

@@ -150,6 +150,11 @@ def _accumulate(d: dict[str, Any], r: dict[str, Any]) -> None:
 
 
 
+def _fit_hash(prompt: str) -> str:
+    import hashlib
+    return hashlib.sha256((prompt or "")[:4000].encode()).hexdigest()[:16]
+
+
 class Store:
     def __init__(self, path: Path | str, prices: dict[str, dict[str, float]] | None = None):
         """``prices``: [hub.prices] rates per model, overriding the built-in table (see hub/spend.py)."""
@@ -518,6 +523,35 @@ class Store:
             if ok:
                 self._bump()
             return ok
+
+    def fresh_prompts(self, since_s: float = 600) -> list[tuple[str, str]]:
+        """(key, prompt) for each live session whose newest turn is a prompt the operator typed in the last
+        ``since_s`` seconds — the one the agent may be working on right now, open turn included. Pool workers and
+        shells are never asked about; a prompt older than the window (a deploy, a hub restart) is left alone."""
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - since_s))
+        rows = self.db.execute(
+            f"SELECT t.key, t.data FROM turns t JOIN sessions s ON s.key=t.key WHERE s.ended=0 "
+            f"AND s.live_status IN ({_LIVE_SQL}) AND s.harness!='shell' AND COALESCE(s.job,'')='' "
+            f"AND t.idx=(SELECT MAX(idx) FROM turns WHERE key=t.key) AND t.started_at>=?", (cutoff,)).fetchall()
+        out: list[tuple[str, str]] = []
+        for key, data in rows:
+            try:
+                t = json.loads(data)
+            except (TypeError, ValueError):
+                continue
+            if t.get("user_origin") == "human" and t.get("via") != "ctx" and isinstance(t.get("user_text"), str):
+                out.append((key, t["user_text"]))
+        return out
+
+    def fit_checked(self, key: str, prompt: str) -> bool:
+        """Whether the LLM fit check already ran on this session's prompt (its newest, so one marker a session)."""
+        return self._get(f"fitchk:{key}", "") == _fit_hash(prompt)
+
+    def mark_fit_checked(self, key: str, prompt: str) -> None:
+        with self._lock:
+            self.db.execute("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                            (f"fitchk:{key}", _fit_hash(prompt)))
+            self.db.commit()
 
     def misplaced_seen(self, key: str, prompt: str) -> bool:
         """Any row at all for this prompt in this session — the tracker's turn has no prompt_id, so it matches on
