@@ -429,3 +429,10 @@ def test_command_output_and_wrappers_are_never_checked():
     for p in ("<bash-stdout>  seats 3 free  </bash-stdout>", "<command-name>/model</command-name> pick opus please",
               "<task-notification> job finished with status ok </task-notification>"):
         assert misplace.skip(p), p
+
+
+def test_where_names_a_repo_and_branch_or_else_the_folder():
+    assert misplace.where({"host_id": "devbox", "repo_root": "/home/me/repos/webapp", "git_branch": "main"}) == "devbox · webapp@main"
+    assert misplace.where({"host_id": "devbox", "repo_root": "/home/me/repos/webapp", "git_branch": "HEAD"}) == "devbox · webapp"
+    assert misplace.where({"host_id": "laptop", "repo_root": "", "repo_remote": "", "cwd": "/home/me"}) == "laptop · ~"
+    assert misplace.where({"host_id": "laptop", "repo_root": "", "repo_remote": "", "cwd": "/home/me/notes"}) == "laptop · ~/notes"

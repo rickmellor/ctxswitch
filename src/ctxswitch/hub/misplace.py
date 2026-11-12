@@ -78,8 +78,17 @@ def skip(prompt: str) -> bool:
 
 
 def where(s: dict[str, Any]) -> str:
-    """Where a session runs, the way a person would say it: ``<host> · <repo>@<branch>``."""
-    return f"{s.get('host_id') or '?'} · {repo_name(s) or '?'}@{s.get('git_branch') or ''}"
+    """Where a session runs, the way a person would say it: ``<host> · <repo>@<branch>``, or ``<host> · <folder>``
+    (home as ~) for one with no repo; a detached HEAD names no branch."""
+    import os
+    host, repo, branch = s.get("host_id") or "?", repo_name(s), s.get("git_branch") or ""
+    if repo:
+        return f"{host} · {repo}" + (f"@{branch}" if branch and branch != "HEAD" else "")
+    cwd = str(s.get("cwd") or "")
+    home = os.path.expanduser("~")
+    m = re.match(r"^/(?:home|Users)/[^/]+", cwd)
+    cwd = "~" + cwd[len(m.group(0)):] if m else ("~" + cwd[len(home):] if cwd.startswith(home) else cwd)
+    return f"{host} · {cwd or '?'}"
 
 
 def _clip(text: str | None, n: int) -> str:
