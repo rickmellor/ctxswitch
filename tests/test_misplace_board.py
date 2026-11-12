@@ -470,7 +470,7 @@ def test_the_wrong_window_box_s_keys_are_t_o_and_anything_else():
 
 
 class _Box:
-    def __init__(self, rc): self.rc = rc
+    def __init__(self, rc): self.rc, self.stderr = rc, None
     def wait(self): return self.rc
     def poll(self): return self.rc
 
@@ -520,9 +520,8 @@ async def test_the_box_comes_with_the_eep_unless_it_s_turned_off(monkeypatch):
     await _popped(monkeypatch, 3, _row())
     assert played == ["eep"]
     played.clear()
-    monkeypatch.setattr(tui.Config, "misplace_sound", "", raising=False)
     app = _board(monkeypatch, [_sess(A, misplaced_open=1)], detail={A: {**_sess(A), "misplaced": [_row()]}})
-    app.cfg.misplace_sound = ""
+    app.cfg.popup_sound = ""
     monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
     monkeypatch.setattr(tui, "tmux_misplaced_box", lambda title, r: _Box(3))
     async with app.run_test(size=(70, 30)) as pilot:
@@ -530,3 +529,34 @@ async def test_the_box_comes_with_the_eep_unless_it_s_turned_off(monkeypatch):
         app.attention = [_mis_item()]; app.on_screen = {A}
         app.popup_now(); await pilot.pause(1)
     assert played == [""]                                          # sound.play("") is the silent path
+
+
+
+async def test_popup_sound_when_always_also_chimes_for_an_ordinary_pop_up(monkeypatch):
+    """misplaced (the default): only the wrong-window box chimes; always: every ctx pop-up does."""
+    played = []
+    monkeypatch.setattr(tui.sound, "play", lambda name: played.append(name))
+    for when, want in (("misplaced", []), ("always", ["eep"])):
+        played.clear()
+        app = _board(monkeypatch, [_sess(A)])
+        app.cfg.popup_sound_when = when
+        monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+        monkeypatch.setattr(tui, "tmux_box", lambda new: _Box(3))
+        async with app.run_test(size=(70, 30)) as pilot:
+            await pilot.pause(1)
+            app.attention = [{"key": B, "item": "ask", "kind": "plain", "ref": "1:plain", "text": "which one?",
+                              "asked_at": _ago(1), "host_id": "devbox", "harness": "claude", "title": "auth",
+                              "live_status": "waiting"}]
+            app.on_screen = set()
+            app.popup_now(); await pilot.pause(0.5)
+        assert played == want, when
+
+
+def test_the_two_sound_settings_load_and_a_bad_when_falls_back(tmp_path):
+    from ctxswitch.common.config import load
+    f = tmp_path / "c.toml"
+    f.write_text('popup_sound = ""\npopup_sound_when = "ALWAYS"\n')
+    c = load(f)
+    assert (c.popup_sound, c.popup_sound_when) == ("", "always")
+    f.write_text('popup_sound_when = "sometimes"\n')
+    assert load(f).popup_sound_when == "misplaced" and load(f).popup_sound == "eep"

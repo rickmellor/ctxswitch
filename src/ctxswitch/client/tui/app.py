@@ -906,6 +906,7 @@ class CtxApp(App):
         if tmux.in_tmux() and self.cfg.notify_style == "popup" and (self.box is None or self.box.poll() is not None):
             try:
                 self.box = tmux_box(new)
+                self.chime(misplaced=False)
                 popup_log(f"box skip={sorted(self.on_screen)} {ids} {msg}")
                 self.wait_box(self.box, [i["key"] for i in new], msg)
                 return
@@ -937,7 +938,7 @@ class CtxApp(App):
         except OSError as e:
             popup_log(f"misplaced box failed: {e}"); return
         self.box = box
-        sound.play(self.cfg.misplace_sound)            # the box is up: the eep, so it's heard as well as seen
+        self.chime(misplaced=True)                     # the box is up: heard as well as seen
         popup_log(f"misplaced box {key} row {rid}: {fmt.one_line(row.get('prompt'), 60)}")
         rc = box.wait()
         popup_log(f"misplaced box closed rc={rc} {key} row {rid}")
@@ -1022,8 +1023,16 @@ class CtxApp(App):
     def action_wider(self) -> None:
         self._step_width(tmux.WIDTH_STEP)
 
+    def chime(self, misplaced: bool) -> None:
+        """The pop-up's sound: on a wrong-window / drift box always (unless popup_sound is ""), on any other pop-up
+        only with popup_sound_when = "always"."""
+        if misplaced or self.cfg.popup_sound_when == "always":
+            sound.play(self.cfg.popup_sound)
+
     def status_popup(self, msg: str, ids: list[str]) -> None:
         shown = tmux.in_tmux() and tmux_popup(msg)
+        if shown:
+            self.chime(misplaced=False)
         popup_log(f"{'tmux' if shown else 'toast'} skip={sorted(self.on_screen)} {ids} {msg}")
         if not shown:
             self.notify(msg, timeout=8)                 # outside tmux (or tmux refused): the TUI's own toast

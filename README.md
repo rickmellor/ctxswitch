@@ -282,7 +282,8 @@ undo nothing, then sends the prompt itself to the session it belongs to (a drift
 and starts a new session of the same harness with the prompt as its first). `o` keeps it there. Nothing is recorded
 for slash commands, ctxswitch's own delivery headers or prompts of fewer than four words.
 
-When one is flagged, a yellow **`ctx: wrong window?`** box pops up over every pane — on the session you're looking at too, since that's where a wrong-window prompt always is — with the prompt, where it looks like it belongs (or that it drifts) and whether the agent already has it: `t` moves it there with no second question, `o` keeps it, any other key leaves the `↯` for later. It comes with a short synthesized "eep!" (played through Windows when the board runs in WSL, else `afplay`/`paplay`/`aplay`); `misplace_sound = ""` in the config silences it.
+When one is flagged, a yellow **`ctx: wrong window?`** box pops up over every pane — on the session you're looking at too, since that's where a wrong-window prompt always is — with the prompt, where it looks like it belongs (or that it drifts) and whether the agent already has it: `t` moves it there with no second question, `o` keeps it, any other key leaves the `↯` for later. It comes with a short synthesized "eep!" (played through Windows when the board runs in WSL, else `afplay`/`paplay`/`aplay`); `popup_sound = ""` in the config silences it, and `popup_sound_when = "always"` plays it with every ctx pop-up, not
+only this one.
 
 ## 4. Keys
 `?` shows all of this on the board itself:
