@@ -512,3 +512,21 @@ async def test_t_in_the_box_on_a_drift_asks_for_the_new_session_s_directory(monk
 def test_the_status_line_for_a_misplaced_prompt_has_one_glyph():
     line = tui.popup_line(tui.popup_items([_mis_item()])[0])
     assert line.count(fmt.MISPLACE_GLYPH) == 1, line
+
+
+async def test_the_box_comes_with_the_eep_unless_it_s_turned_off(monkeypatch):
+    played = []
+    monkeypatch.setattr(tui.sound, "play", lambda name: played.append(name))
+    await _popped(monkeypatch, 3, _row())
+    assert played == ["eep"]
+    played.clear()
+    monkeypatch.setattr(tui.Config, "misplace_sound", "", raising=False)
+    app = _board(monkeypatch, [_sess(A, misplaced_open=1)], detail={A: {**_sess(A), "misplaced": [_row()]}})
+    app.cfg.misplace_sound = ""
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tui, "tmux_misplaced_box", lambda title, r: _Box(3))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        app.attention = [_mis_item()]; app.on_screen = {A}
+        app.popup_now(); await pilot.pause(1)
+    assert played == [""]                                          # sound.play("") is the silent path

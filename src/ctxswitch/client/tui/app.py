@@ -43,6 +43,7 @@ from ctxswitch.common.schema import LIVE
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
+from ctxswitch.client import sound
 from ctxswitch.client.notify import BOX_ITEMS, MIS_RC_KEEP, MIS_RC_MOVE, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_misplaced_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
@@ -936,6 +937,7 @@ class CtxApp(App):
         except OSError as e:
             popup_log(f"misplaced box failed: {e}"); return
         self.box = box
+        sound.play(self.cfg.misplace_sound)            # the box is up: the eep, so it's heard as well as seen
         popup_log(f"misplaced box {key} row {rid}: {fmt.one_line(row.get('prompt'), 60)}")
         rc = box.wait()
         popup_log(f"misplaced box closed rc={rc} {key} row {rid}")

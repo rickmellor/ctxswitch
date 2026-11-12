@@ -178,6 +178,7 @@ class Config:
     # Which host the board's metrics panel shows when you haven't picked one: a host id, or "" for the one with the
     # most GPUs (the machine you'd want the curves of). Hosts with no GPUs stay last either way.
     metrics_host: str = ""
+    misplace_sound: str = "eep"            # the wrong-window pop-up's chime ("eep", or "" for none; client/sound.py)
 
     @property
     def host_id(self) -> str:
@@ -221,6 +222,7 @@ def load(path: Path | None = None) -> Config:
     cfg.notify_style = str(raw.get("notify_style", cfg.notify_style))
     cfg.ssh = {str(k): str(v) for k, v in (raw.get("ssh") or {}).items()}
     cfg.metrics_host = str(raw.get("metrics_host", cfg.metrics_host) or "")
+    cfg.misplace_sound = str(raw.get("misplace_sound", cfg.misplace_sound) or "")
     if "claude_profiles" in raw:
         cfg.claude_profiles = [_apply(ClaudeProfile(), p) for p in raw["claude_profiles"]] or cfg.claude_profiles
     for p in cfg.claude_profiles:                       # a profile's transcripts are indexed like the default ones

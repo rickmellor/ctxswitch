@@ -76,6 +76,7 @@ disable_thinking = true
 # laptop = ""                          # inbound blocked: show the command to run there instead
 
 # metrics_host = ""                   # the board's metrics panel host; "" = the one with the most GPUs
+# misplace_sound = "eep"              # the chime with the wrong-window pop-up; "" = silent
 
 notify = true                         # tmux pop-up on this machine for each new question or dialog
 notify_idle = false                   # ... and when an agent finishes its turn
