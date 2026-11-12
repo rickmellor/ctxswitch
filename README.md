@@ -280,6 +280,8 @@ last sample plus a minute of history per host, in memory and never in the databa
 marked `stale 42s`. What a host runs elsewhere doesn't move the panel: it's about silicon, not sessions.
 
 ### Misplaced prompts (`↯`)
+
+<p align="center"><img src="docs/img/misplaced.svg" alt="the ctx: wrong window? pop-up over your panes: the prompt, where it looks like it belongs, and t / o / d" width="85%"></p>
 A prompt typed into the wrong session's window is caught **before the agent sees it**: the Claude Code hook asks the
 hub's deterministic matcher (no model, under 100 ms) which live session it fits, and blocks it with the reason, the
 session it looks like it belongs to and your prompt quoted back — so a block costs no turns and no tokens. Send the

@@ -5,6 +5,7 @@
 architecture.svg  how it works: collectors → hub → your LLM and every client
 row.svg           one row of the board, every part called out
 messages.svg      a message's life, from queued to replied
+misplaced.svg     the wrong-window pop-up over your panes (misplace detection)
 
 Text is placed per segment (not per character), so a viewer's monospace font that's a little wider or narrower
 only shifts a segment, never the callouts. No external fonts: GitHub serves SVGs in a sandbox that can't fetch them.
@@ -230,10 +231,57 @@ def messages() -> None:
     s.save("messages.svg")
 
 
+def misplaced() -> None:
+    """The wrong-window pop-up as tmux draws it over your panes; its words are the board's own (notify.py)."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from ctxswitch.client.notify import misplaced_box_lines
+    row = {"verdict": "other", "target_title": "rate limiter", "source": "llm",
+           "prompt": "bump the public API's limit to 500 requests a minute per key",
+           "why": "the per-key limits are the rate limiter session's work, not the settings page's"}
+    lines = misplaced_box_lines("settings page", row)
+    s = Svg(1180, 560)
+    s.text(40, 52, "Misplace detection", size=24, weight=700)
+    s.text(40, 78, "a prompt typed into the wrong window is blocked before the agent sees it, or flagged within seconds of landing", size=14, fill=DIM)
+    # the tmux window behind it: an agent on the left, the board on the right, both dimmed by the pop-up
+    s.rect(40, 100, 1100, 430, fill="#0d0d0d", stroke=EDGE, rx=10)
+    s.add(f'<rect x="760" y="100" width="1.5" height="430" fill="{GREEN}" opacity="0.5"/>')
+    for k, (x, w) in enumerate(((60, 560), (60, 470), (60, 600), (60, 380), (60, 520), (60, 430), (60, 560), (60, 300),
+                                (60, 480), (60, 540))):
+        s.add(f'<rect x="{x}" y="{128 + k * 38}" width="{w}" height="9" rx="4" fill="#3a3a3a" opacity="0.55"/>')
+    for k in range(9):
+        s.add(f'<rect x="780" y="{128 + k * 42}" width="{220 + (k * 37) % 120}" height="9" rx="4" fill="#3a3a3a" opacity="0.55"/>')
+    s.add('<rect x="40" y="100" width="1100" height="430" rx="10" fill="#000" opacity="0.35"/>')
+    # the box
+    cw, lh = 9.6, 23
+    bw = int(max(len(x) for x in lines) * cw) + 48
+    bh = len(lines) * lh + 40
+    bx, by = 40 + (1100 - bw) // 2, 100 + (430 - bh) // 2
+    s.rect(bx, by, bw, bh, fill="#161616", stroke=YELLOW, rx=6, sw=2, extra='filter="url(#shadow)"')
+    title = " ctx: wrong window? "
+    tw = len(title) * cw
+    s.rect(bx + (bw - tw) / 2, by - 9, tw, 18, fill="#161616", stroke="#161616", rx=0, sw=0)
+    s.text(bx + bw / 2, by + 5, title, size=15, fill=YELLOW, weight=700, anchor="middle", mono=True)
+    for k, ln in enumerate(lines):
+        y = by + 32 + k * lh
+        if ln.startswith("t "):                                   # the keys: each one its own colour
+            segs = []
+            for part in ln.split(" · "):
+                key, _, rest = part.partition(" ")
+                segs += [(key, YELLOW, 700), (" " + rest, TEXT, 400), ("  ·  ", DIM, 400)]
+            s.spans(bx + 24, y, segs[:-1], size=15)
+        elif ln.startswith("It looks like it's for:"):
+            s.spans(bx + 24, y, [("It looks like it's for: ", TEXT, 400), (ln.split(": ", 1)[1], GREEN, 700)], size=15)
+        else:
+            colour = DIM if ln.startswith(("any other", "  ")) and '"' not in ln else (CYAN if '"' in ln else TEXT)
+            s.spans(bx + 24, y, [(ln, colour, 700 if ln.startswith("This prompt") else 400)], size=15)
+    s.save("misplaced.svg")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    architecture(); row(); messages()
-    for name in ("architecture.svg", "row.svg", "messages.svg"):
+    architecture(); row(); messages(); misplaced()
+    for name in ("architecture.svg", "row.svg", "messages.svg", "misplaced.svg"):
         print(f"docs/img/{name}", (OUT / name).stat().st_size // 1024, "KB")
 
 

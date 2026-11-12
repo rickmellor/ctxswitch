@@ -11,6 +11,7 @@ start.svg   the `s` start screen: a key per profile, and the ended sessions to r
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -102,6 +103,53 @@ def seed(store: Store) -> None:
                  BENCH: "10k rps profile done: p99 41 ms."}[key]
         store.set_recap(key, recap, anchor_of(s), "Rate limiting the public API.\nYou said: billing endpoints are off limits." if key == API else None)
     store.add_message(API, "keep the limits per API key, not per IP", "laptop")
+    # misplace detection: a rate-limit prompt typed into the settings page's window; it belongs to the rate limiter
+    store.add_misplaced({"key": UI, "prompt_id": "demo-1", "source": "llm", "verdict": "other", "target_key": API,
+                         "target_title": "rate limiter", "confidence": 0.93,
+                         "prompt": "bump the public API's limit to 500 requests a minute per key",
+                         "why": "the per-key limits are the rate limiter session's work, not the settings page's"})
+
+
+def _wave(n: int, base: float, swing: float, period: float, phase: float = 0.0) -> list[float]:
+    """A smooth, plausible load curve for a sparkline: n samples around ``base``."""
+    import math
+    return [max(0.0, min(100.0, base + swing * math.sin(2 * math.pi * (i / period) + phase)
+                         + 6 * math.sin(i * 1.7 + phase))) for i in range(n)]
+
+
+GIB = 1 << 30
+GPUS = [  # (vendor, name, util %, VRAM used GiB, total GiB, °C, W) — eight cards on one host, mostly busy serving
+    ("nvidia", "NVIDIA GeForce RTX 4090", 62, 21.4, 24, 61, 288.0),
+    ("nvidia", "NVIDIA GeForce RTX 4090", 8, 3.1, 24, 41, 36.5),
+    ("amd", "R9700", 91, 30.9, 32, 79, 271.0),
+    ("amd", "R9700", 74, 29.8, 32, 69, 231.0),
+    ("amd", "R9700", 47, 26.2, 32, 63, 158.0),
+    ("amd", "R9700", 66, 27.7, 32, 66, 204.0),
+    ("amd", "R9700", 95, 31.5, 32, 86, 296.0),
+    ("amd", "R9700", 33, 18.0, 32, 52, 96.0),
+]
+
+
+def metrics_body() -> dict:
+    """GET /v1/metrics as gpu-host's collector would fill it: one host, its CPU, and eight cards with a minute of
+    history each, so the panel's bars, per-core strip and sparklines all have something to say."""
+    cores = [round(v, 1) for v in _wave(24, 38, 30, 7.0)]
+    gpus = [{"index": i, "vendor": v, "name": n, "util": float(u), "mem_used": int(used * GIB),
+             "mem_total": int(total * GIB), "temp_c": float(t), "power_w": w}
+            for i, (v, n, u, used, total, t, w) in enumerate(GPUS)]
+    history = {"cpu": _wave(60, 41, 14, 19.0),
+               "gpus": {str(i): _wave(60, g["util"], 18, 11.0 + i, phase=i) for i, g in enumerate(gpus)}}
+    latest = {"host_id": "gpu-host", "at": iso(0),
+              "cpu": {"model": "AMD Ryzen Threadripper PRO 7965WX 24-Cores", "pct": 41.0, "cores": cores,
+                      "temp_c": 58.5, "mhz": 4210.0, "load": [9.8, 8.7, 7.9]},
+              "mem": {"used": int(168 * GIB), "total": int(251 * GIB)}, "gpus": gpus}
+    return {"hosts": {"gpu-host": {"latest": latest, "age_s": 1.2, "history": history}}}
+
+
+def panel_on(path: Path, on: bool) -> None:
+    """The g panel's remembered state, for the next board this script starts: shown with gpu-host only, or off."""
+    path.write_text(json.dumps({"shown": on, "hosts": ["gpu-host"] if on else []}))
+    tui.METRICS_FILE = path
 
 
 AGENT = Text.assemble(
@@ -177,17 +225,21 @@ def patch_spend(app: tui.CtxApp) -> None:
         "total_usd": 4.12, "unpriced_models": [], "rates": "default"}
 
 
-async def shoot(store: Store) -> None:
+async def shoot(store: Store, state: Path) -> None:
     cfg = Config(); cfg.hub.token = "t"; cfg.collector.host_id = "laptop"
+    panel_on(state, True)                               # the hero shot: the CPU/GPU panel up, for gpu-host only
     app = Demo(cfg, None)
     app.client._c = TestClient(Hub(store, token="t").app(), headers={"Authorization": "Bearer t"})
     patch_spend(app)
+    app.client.metrics = lambda host=None: metrics_body()
     app.start_shown = True                              # the board's own image, never the Start screen (see start.svg)
-    async with app.run_test(size=(150, 52)) as pilot:
-        await pilot.pause(1.5)
+    app.popups = False                                  # the ↯ row says it; a toast would cover the board
+    async with app.run_test(size=(150, 60)) as pilot:
+        await pilot.pause(2.5)
         t = app.query_one("#table")
         t.move_cursor(row=t.get_row_index(API)); await pilot.pause(1.0)
         (OUT / "board.svg").write_text(app.export_screenshot(title="ctx tmux"))
+    panel_on(state, False)                              # the other shots: no panel
     help_app = Demo(cfg, None)
     help_app.client._c = app.client._c
     patch_spend(help_app)
@@ -250,7 +302,7 @@ def main() -> None:
         store = Store(Path(d) / "hub.db")
         seed(store)
         patch_tmux()
-        asyncio.run(shoot(store))
+        asyncio.run(shoot(store, Path(d) / "metrics-panel"))
     asyncio.run(legend_svg())
     for p in sorted(OUT.glob("*.svg")):
         print(p.relative_to(OUT.parent.parent), p.stat().st_size // 1024, "KB")
