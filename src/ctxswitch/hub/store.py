@@ -99,7 +99,7 @@ REPLYABLE = ("plain", "text")                       # asks a message can answer;
 SIBLINGS = 6                                        # other sessions shown for a workstream
 SIBLING_DAYS = 14                                   # ... live, or active within this many days
 SEARCH_KINDS = ("decision", "instruction", "claim", "prompt")
-MISPLACE_STATES = ("kept", "moved", "resent")         # what the operator can do with an open misplaced row
+MISPLACE_STATES = ("kept", "moved", "resent", "dropped")         # what the operator can do with an open misplaced row
 
 TOKEN_TYPES = ("input", "output", "cache_read", "cache_creation")        # every usage dict has all four ints
 

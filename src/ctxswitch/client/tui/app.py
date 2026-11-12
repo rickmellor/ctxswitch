@@ -44,7 +44,7 @@ from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.client import tmux
 from ctxswitch.client import sound
-from ctxswitch.client.notify import BOX_ITEMS, MIS_RC_KEEP, MIS_RC_MOVE, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_misplaced_box, tmux_popup
+from ctxswitch.client.notify import BOX_ITEMS, MIS_RC_DROP, MIS_RC_KEEP, MIS_RC_MOVE, OPEN_RC, SETTLE_S, Notifier, item_id, log as popup_log, text as popup_text, tmux_box, tmux_misplaced_box, tmux_popup
 from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
 from ctxswitch.client.tui.metrics_panel import (METRICS_HUB_MSG, METRICS_NONE_MSG, HostPicker, MetricsPanel,
@@ -297,6 +297,7 @@ HELP_KEYS = [
     (("a",), "a", "answer the question it's waiting on (plain-text questions; dialogs are answered in the session)"),
     (("t",), "t", "a prompt marked ↯: move it to the session it looks like it belongs to (a drift: to a new session), after a y"),
     (("o",), "o", "keep the ↯ prompt where it is (the agent was meant to get it)"),
+    (("d",), "d", "drop the ↯ prompt: it was a mistake, it goes nowhere (an agent that has it is stopped and told to disregard it)"),
     (("x",), "x", "exchange: send the selected session elsewhere, picked from a list. To another Claude account: it moves "
                   "(same transcript, resumed with that profile's model). To another agent (pi, Antigravity, Claude): a handoff, "
                   "a document of what it's for, your instructions, decisions and the conversation, which the new agent reads "
@@ -719,6 +720,7 @@ class CtxApp(App):
         Binding("s", "start", "start"),
         Binding("m", "message", "msg"), Binding("a", "reply", "answer"), Binding("M", "message_buffer", show=False),
         Binding("t", "misplace_move", "move it", show=False), Binding("o", "misplace_keep", "keep it", show=False),
+        Binding("d", "misplace_drop", "drop it", show=False),
         Binding("k", "end_session", "end"), Binding("q", "detach", "detach"), Binding("Q", "kill_all", "quit all"),
         Binding("h", "cycle_host", "filter host"), Binding("slash", "filter", "find"), Binding("e", "toggle_ended", "ended"),
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
@@ -950,14 +952,17 @@ class CtxApp(App):
         popup_log(f"misplaced box {key} row {rid}: {fmt.one_line(row.get('prompt'), 60)}")
         rc = box.wait()
         popup_log(f"misplaced box closed rc={rc} {key} row {rid}")
-        if rc in (MIS_RC_MOVE, MIS_RC_KEEP):
-            self.call_from_thread(self.misplaced_chosen, key, row, rc == MIS_RC_MOVE)
+        if rc in (MIS_RC_MOVE, MIS_RC_KEEP, MIS_RC_DROP):        # t, o, d; move=None means drop
+            self.call_from_thread(self.misplaced_chosen, key, row, {MIS_RC_MOVE: True, MIS_RC_KEEP: False}.get(rc))
 
-    def misplaced_chosen(self, key: str, row: dict, move: bool) -> None:
-        """t or o in the wrong-window box: the same as on the board, with no second y (the key was the answer)."""
+    def misplaced_chosen(self, key: str, row: dict, move: bool | None) -> None:
+        """t, o or d in the wrong-window box (move True / False / None): the same as on the board, with no second y
+        (the key was the answer)."""
         s = next((x for x in self.sessions if x["key"] == key), None)
         if s is None:
             self.notify(f"{key} isn't on the board any more", timeout=6); return
+        if move is None:
+            self.drop_prompt(s, row); return
         if not move:
             self.misplace_state(row, "kept"); return
         target = mis_target_key(row, self.sessions)
@@ -1287,7 +1292,7 @@ class CtxApp(App):
                          style="dim")
                 where = ("t move it there" if mis_target_key(r, self.sessions) else
                          "t start a new session with it")
-                t.append(f"   {where} · o keep it here\n\n", style="dim")
+                t.append(f"   {where} · o keep it here · d drop it\n\n", style="dim")
         kids = kids if kids is not None else self._kids(s)   # load_detail fetched them with the session
         line = fmt.spend_line(s, kids or None)
         if line or kids:
@@ -1747,6 +1752,30 @@ class CtxApp(App):
             self.notify("nothing marked ↯ on the selected session", severity="warning", timeout=5); return
         self.misplace_state(row, "kept")
 
+    def action_misplace_drop(self) -> None:
+        """d: the ↯ prompt was a mistake and goes nowhere: an agent that has it is stopped and told to disregard it."""
+        s, row = self._selected_session(), self._misplaced_row()
+        if not (s and row):
+            self.notify("nothing marked ↯ on the selected session", severity="warning", timeout=5); return
+        self.drop_prompt(s, row)
+
+    @work(group="misplace", thread=True)
+    def drop_prompt(self, s: dict, row: dict) -> None:
+        """Nowhere for this prompt: stop the session if it already had it (Esc, then the disregard message); a prompt
+        the hook blocked never reached it, so there's nothing to tell. Then the flag is settled as dropped."""
+        try:
+            skipped = ""
+            if row.get("source") == "llm":
+                skipped = self.interrupt_session(s) or ""
+                self.client.send(s["key"], mis_disregard(row), self.this_host)
+            self.client.misplaced_state(row["id"], "dropped")
+            msg = "dropped" + skipped
+        except Exception as e:                          # noqa: BLE001
+            msg = f"not dropped: {e}"
+        popup_log(f"drop misplaced {row.get('id')} {s['key']}: {msg}")
+        self.call_from_thread(self.notify, msg, timeout=6)
+        self.call_from_thread(self.load_detail)
+
     def action_misplace_move(self) -> None:
         """t: send the ↯ prompt where it looks like it belongs — to the session it names, after a y, or to a new one
         when the hub only knows this session has drifted off its purpose."""
@@ -1799,7 +1828,7 @@ class CtxApp(App):
     def misplace_state(self, row: dict, state: str) -> None:
         try:
             self.client.misplaced_state(row["id"], state)
-            msg = {"kept": "kept here", "moved": "moved", "resent": "resent"}[state]
+            msg = {"kept": "kept here", "moved": "moved", "resent": "resent", "dropped": "dropped"}[state]
         except Exception as e:                          # noqa: BLE001 - an older hub has no such route
             msg = f"not recorded: {e}"
         self.call_from_thread(self.notify, msg, timeout=5)

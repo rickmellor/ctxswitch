@@ -24,7 +24,7 @@
   POST /v1/prompt-check              {key, prompt, prompt_id, cwd} -> {verdict: ok} or {verdict: other, id,
                                      target_key, target_title, target_where, why}. A hook's fast question before the
                                      agent sees the prompt: deterministic (hub/misplace.py), no seat, < 100 ms.
-  POST /v1/misplaced/{id}/state      {state: kept|moved|resent} -> {ok}   the operator's word on a flagged prompt
+  POST /v1/misplaced/{id}/state      {state: kept|moved|resent|dropped} -> {ok}   the operator's word on a flagged prompt
   POST /v1/metrics                 one host's CPU/GPU sample {host_id, at, cpu, mem, gpus} -> {ok}   in memory only
   GET  /v1/metrics?host=             the latest sample per host, its age at this hub, the last 60 samples' curves
   GET  /v1/health
@@ -234,7 +234,7 @@ class Hub:
                              "why": out["why"]})
 
     async def misplaced_state(self, req: Request) -> Response:
-        """POST /v1/misplaced/{id}/state {state: kept|moved|resent}: the operator's word on a flagged prompt.
+        """POST /v1/misplaced/{id}/state {state: kept|moved|resent|dropped}: the operator's word on a flagged prompt.
         "resent" = the hook let the same prompt through when it was sent again."""
         if not self._authorized(req.headers): return JSONResponse({"error": "unauthorized"}, 401)
         try:

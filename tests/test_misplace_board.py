@@ -171,11 +171,11 @@ async def test_the_detail_says_where_each_prompt_looks_like_it_belongs(monkeypat
                 '↯ 3m  "rename the retry helper in the auth service"',
                 "   looks like it's for auth-service@main work — only that session's repo has a retry helper",
                 "   blocked before the agent saw it",
-                "   t move it there · o keep it here",
+                "   t move it there · o keep it here · d drop it",
                 '↯ 9m  "also add a png to the release notes"',
                 "   off this session's purpose — nothing here touches release notes",
                 "   the agent may have started on it",
-                "   t start a new session with it · o keep it here"]
+                "   t start a new session with it · o keep it here · d drop it"]
         for ln in want:
             assert ln in t.splitlines(), (ln, t)
         assert t.index("WAITING ON YOU") < t.index("MISPLACED?")   # right after it, before the state and short-key lines
@@ -451,15 +451,16 @@ def test_the_wrong_window_box_says_what_went_where_and_offers_t_and_o():
     assert other[0] == "This prompt went into: webapp@main work"
     assert '"rename the retry helper in the auth service"' in other[1]
     assert "It looks like it's for: auth-service@main work" in other and "The agent hasn't seen it (it was blocked)." in other
-    assert other[-1].startswith("t move it there · o keep it here")
+    assert other[-2] == "t move it there · o keep it here · d drop it" and other[-1].startswith("any other key")
     drift = N.misplaced_box_lines("notes", _row(verdict="drift", target="", target_title="", source="llm"))
     assert "It looks like it's off this session's purpose." in drift and "The agent may already be working on it." in drift
-    assert drift[-1].startswith("t start a new session with it")
+    assert drift[-2].startswith("t start a new session with it")
     assert all(len(x) <= N.BOX_W - 4 for x in other + drift)
 
 
 def test_the_wrong_window_box_s_keys_are_t_o_and_anything_else():
-    for key, rc in (("t", N.MIS_RC_MOVE), ("T", N.MIS_RC_MOVE), ("o", N.MIS_RC_KEEP), ("x", 3), ("\n", 3)):
+    for key, rc in (("t", N.MIS_RC_MOVE), ("T", N.MIS_RC_MOVE), ("o", N.MIS_RC_KEEP), ("d", N.MIS_RC_DROP),
+                    ("D", N.MIS_RC_DROP), ("x", 3), ("\n", 3)):
         p = _sp.run(["bash", "-c", N.MIS_BOX_CMD.removeprefix("exec bash -c ").strip("'")], input=key, text=True,
                     capture_output=True, env={"CTX_POPUP": "hi", "PATH": "/usr/bin:/bin"})
         assert p.returncode == rc, (key, p.returncode, p.stderr)
@@ -560,3 +561,29 @@ def test_the_two_sound_settings_load_and_a_bad_when_falls_back(tmp_path):
     assert (c.popup_sound, c.popup_sound_when) == ("", "always")
     f.write_text('popup_sound_when = "sometimes"\n')
     assert load(f).popup_sound_when == "misplaced" and load(f).popup_sound == "eep"
+
+
+
+async def test_d_in_the_box_drops_a_blocked_prompt_without_telling_anyone(monkeypatch):
+    app, _, moved = await _popped(monkeypatch, N.MIS_RC_DROP, _row(source="pre"))
+    assert app.client.states == [(7, "dropped")] and app.client.sent == [] and moved == []
+
+
+async def test_d_drops_one_the_agent_already_has_by_stopping_it_and_saying_disregard(monkeypatch):
+    log = []
+    app = _board(monkeypatch, [_sess(A, misplaced_open=1)], detail={A: {**_sess(A), "misplaced": [_row(source="llm")]}})
+    monkeypatch.setattr(tui.tmux, "in_tmux", lambda: True)
+    monkeypatch.setattr(tui.tmux, "interrupt", lambda pane: log.append("esc"))
+    monkeypatch.setattr(tui.tmux, "agent_pane", lambda key, ps=None: SimpleNamespace(id="%3", key=key))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        await pilot.press("d"); await pilot.pause(1)
+    assert log == ["esc"] and [k for k, _ in app.client.sent] == [A]          # stopped, then told
+    assert "Disregard my last prompt" in app.client.sent[0][1]
+    assert app.client.states == [(7, "dropped")]
+
+
+def test_the_box_and_the_detail_offer_d():
+    lines = N.misplaced_box_lines("webapp@main work", _row())
+    assert any("d drop it" in ln for ln in lines)
+    assert any(shown == "d" and "drop" in words for _, shown, words in tui.HELP_KEYS)

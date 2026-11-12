@@ -486,3 +486,9 @@ async def test_the_tracker_s_own_cycle_checks_a_landing_prompt_first(tmp_path):
     await ex.step(calls=1)                                        # one cycle, as scheduler.run drives it
     assert seat.n("misplace") == 1 and seat.calls[0][0] == "misplace"   # the landing prompt, before any ledger work
     assert store.misplaced_for(KEY)
+
+
+
+def test_dropped_is_a_state_the_hub_accepts():
+    from ctxswitch.hub import store as ST
+    assert "dropped" in ST.MISPLACE_STATES

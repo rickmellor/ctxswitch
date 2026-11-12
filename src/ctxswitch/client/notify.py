@@ -105,10 +105,10 @@ def tmux_box(new: list[dict], popen=subprocess.Popen):
 
 
 # The wrong-window box: its own look and its own keys, so it can't be mistaken for "a session is waiting on you".
-MIS_RC_MOVE, MIS_RC_KEEP = 20, 21                       # its exit codes for t and o; any other key is 3 (later)
+MIS_RC_MOVE, MIS_RC_KEEP, MIS_RC_DROP = 20, 21, 22     # its exit codes for t, o and d; any other key is 3 (later)
 MIS_BOX_STYLE = "fg=yellow,bold"
 MIS_BOX_CMD = ("""exec bash -c 'printf "%s" "$CTX_POPUP"; IFS= read -rsn1 k || exit 0; """
-               """case "$k" in t|T) exit 20;; o|O) exit 21;; esac; exit 3'""")
+               """case "$k" in t|T) exit 20;; o|O) exit 21;; d|D) exit 22;; esac; exit 3'""")
 
 
 def misplaced_box_lines(title: str, row: dict) -> list[str]:
@@ -127,7 +127,7 @@ def misplaced_box_lines(title: str, row: dict) -> list[str]:
     out.append("The agent hasn't seen it (it was blocked)." if row.get("source") == "pre"
                else "The agent may already be working on it.")
     out += ["", ("t move it there" if other else "t start a new session with it") +
-            " · o keep it here · any other key: later (the ↯ stays on the board)"]
+            " · o keep it here · d drop it", "any other key: later (the ↯ stays on the board)"]
     return [fmt.one_line(x, BOX_W - 4) for x in out]
 
 
