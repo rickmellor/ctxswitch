@@ -555,7 +555,7 @@ def vtext(gen=1000.0, running=0.0, waiting=0.0, extra=()):
     return "\n".join(lines + list(extra)) + "\n"
 
 
-def _sampler(seats, clock, texts, window_s=600.0):
+def _sampler(seats, clock, texts, window_s=600.0, duty_window_s=86400.0):
     """An LlmSampler whose seats answer from a list of texts (the last one for ever), or raise when an entry is an
     exception — a scrape that fails is the only way a seat can be down."""
 
@@ -564,7 +564,7 @@ def _sampler(seats, clock, texts, window_s=600.0):
         if isinstance(t, Exception):
             raise t
         return t
-    return M.LlmSampler(seats, window_s, clock, fetch)
+    return M.LlmSampler(seats, window_s, clock, fetch, duty_window_s)
 
 
 def test_the_vllm_metrics_a_panel_wants_are_summed_over_label_sets():
@@ -583,7 +583,8 @@ def test_a_seat_s_nothing_until_its_second_scrape():
     clk = _Clock()
     s = _sampler({"worker1": "http://127.0.0.1:8002/metrics"}, clk, {"http://127.0.0.1:8002/metrics": [vtext()]})
     d = s.sample()
-    assert set(d) == {"window_s", "seats", "total"} and d["window_s"] == 600.0
+    assert set(d) == {"window_s", "duty_window_s", "seats", "total"} and d["window_s"] == 600.0
+    assert d["duty_window_s"] == 86400.0                       # min/avg/max over 10 min, duty over a day
     (seat,) = d["seats"]
     assert seat["name"] == "worker1" and seat["up"] is True
     assert seat["tok_s"] is None and seat["running"] == 0 and seat["waiting"] == 0  # the gauges read; no interval yet
@@ -690,7 +691,9 @@ def test_a_seat_that_stops_answering_is_down_and_keeps_the_window_it_had():
     assert s.sample()["seats"][0]["tok_s"] is None            # it came back: no interval across the gap
 
 
-def test_a_window_that_aged_out_leaves_the_stats_and_the_duty_behind():
+def test_a_window_that_aged_out_leaves_the_stats_behind_and_the_duty_the_memory_of():
+    """Throughput is 10 minutes of what the seat is doing now; duty is a day of what it did. An interval can be out
+    of one and still inside the other, which is what an idle afternoon is supposed to read like."""
     clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
     steps = [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0), vtext(gen=1400.0, running=0.0)]
     s = _sampler({"worker1": url}, clk, {url: steps}, window_s=10.0)
@@ -698,9 +701,36 @@ def test_a_window_that_aged_out_leaves_the_stats_and_the_duty_behind():
         clk.t = t
         s.sample()
     clk.t = 20.0
-    (seat,) = s.sample()["seats"]                             # everything before t=10 has aged out
-    assert (seat["min"], seat["avg"], seat["max"]) == (None, None, None)   # the steady interval is gone from the window
-    assert seat["duty"] == 0.0 and seat["tok_s"] == 0.0       # the seat is still watched, and still idle
+    (seat,) = s.sample()["seats"]                             # everything before t=10 has left the throughput window
+    assert (seat["min"], seat["avg"], seat["max"]) == (None, None, None)   # the steady interval is gone from that one
+    assert seat["duty"] == 20.0 and seat["tok_s"] == 0.0     # 4 busy of the 20 s it has watched, idle right now
+
+
+def test_a_steady_interval_out_of_the_throughput_window_is_still_duty():
+    clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0), vtext(gen=1400.0, running=0.0),
+             vtext(gen=1400.0, running=0.0)]
+    s = _sampler({"worker1": url}, clk, {url: steps}, window_s=60.0, duty_window_s=3600.0)
+    for t in (0.0, 2.0, 4.0):
+        clk.t = t
+        s.sample()
+    clk.t = 122.0
+    (seat,) = s.sample()["seats"]                             # 118 s of nothing, then this one
+    assert (seat["min"], seat["avg"], seat["max"]) == (None, None, None)   # its steady interval left the short window
+    assert seat["duty"] == round(100.0 * 4 / 122, 1) == 3.3   # still 4 of the 122 s it has watched
+
+
+def test_an_entry_older_than_the_duty_window_drops_out_of_both_windows():
+    clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0), vtext(gen=1400.0, running=0.0)]
+    s = _sampler({"worker1": url}, clk, {url: steps}, window_s=2.0, duty_window_s=4.0)   # a 4 s memory, either way
+    for t in (0.0, 2.0, 4.0):
+        clk.t = t
+        s.sample()
+    clk.t = 6.5
+    (seat,) = s.sample()["seats"]                     # the interval at t=2 has aged out of both, the one at t=4 hasn't
+    assert (seat["min"], seat["avg"], seat["max"]) == (None, None, None)
+    assert seat["duty"] == round(100.0 * 2 / 4.5, 1) == 44.4   # 2 busy seconds of the 4.5 it still remembers
 
 
 def test_the_total_is_the_seats_at_once_not_their_numbers_added_up():
@@ -728,6 +758,21 @@ def test_the_total_duty_is_seat_time_weighted_over_every_seat_it_watched():
     assert d["total"]["tok_s"] == 200.0                                    # only one seat was generating
 
 
+def test_the_total_duty_spans_the_day_even_where_its_rates_do_not():
+    """The host's duty is every seat's seat-time over the long window; its min/avg/max stay in the short one."""
+    clk, a, b = _Clock(), "http://127.0.0.1:8002/metrics", "http://127.0.0.1:8003/metrics"
+    texts = {a: [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0), vtext(gen=1400.0, running=0.0)],
+             b: [vtext(gen=0.0, running=0.0)] * 3}                         # worker2 never woke up
+    s = _sampler({"worker1": a, "worker2": b}, clk, texts, window_s=2.0, duty_window_s=3600.0)
+    for t in (0.0, 2.0, 4.0):
+        clk.t = t
+        d = s.sample()
+    clk.t = 100.0
+    d = s.sample()
+    assert (d["total"]["min"], d["total"]["avg"], d["total"]["max"]) == (None, None, None)   # 96 s of idle ticks
+    assert d["total"]["duty"] == round(100.0 * 4 / 200, 1) == 2.0     # 4 busy seat-seconds of the 200 it has watched
+
+
 def test_a_host_with_no_seats_sends_no_llm_key_at_all(tmp_path):
     proc, sys = cpu_tree(tmp_path)
     card(tmp_path, 0)
@@ -739,7 +784,7 @@ def test_a_host_with_no_seats_sends_no_llm_key_at_all(tmp_path):
                      {"http://127.0.0.1:8002/metrics": [vtext()]})
     d = s.sample("gpu-box")
     assert set(d) == {"host_id", "at", "cpu", "mem", "gpus", "llm"}
-    assert set(d["llm"]) == {"window_s", "seats", "total"}
+    assert set(d["llm"]) == {"window_s", "duty_window_s", "seats", "total"}
 
 
 def test_the_seats_are_configured_as_a_table_of_urls(tmp_path):
@@ -747,6 +792,7 @@ def test_the_seats_are_configured_as_a_table_of_urls(tmp_path):
                                 'worker1 = "http://127.0.0.1:8002/metrics"\n'))
     assert cfg.collector.llm_seats == {"worker1": "http://127.0.0.1:8002/metrics"}
     assert cfg.collector.llm_window_s == 600.0
+    assert cfg.collector.llm_duty_window_s == 86400.0          # duty looks a day back, throughput 10 minutes
     assert C.Config().collector.llm_seats == {}                # opt-in, like the interval it rides on
 
 

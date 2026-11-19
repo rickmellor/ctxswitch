@@ -203,8 +203,8 @@ def calls_body(*records, host="laptop"):
 
 
 def test_one_call_gives_its_rate_its_span_and_a_full_history_bucket():
-    rows = agent_rows([("bedrock", NOW - 10, 10.0, 1000)], NOW)
-    assert rows["window_s"] == 600
+    rows = agent_rows([("bedrock", NOW - 10, 10.0, 1000)], NOW, duty_s=600)
+    assert rows["window_s"] == 600 and rows["duty_window_s"] == 600
     (r,) = rows["rows"]
     assert r["name"] == "bedrock" and r["calls"] == 1
     assert (r["tok_s"], r["min"], r["avg"], r["max"]) == (16.7, 100.0, 100.0, 100.0)   # 1000 over the last 60 s
@@ -215,20 +215,44 @@ def test_one_call_gives_its_rate_its_span_and_a_full_history_bucket():
 
 def test_two_overlapping_calls_cover_the_window_once():
     calls = [("bedrock", NOW - 50, 50.0, 5000), ("bedrock", NOW - 20, 50.0, 5000)]   # [now-100,now-50] + [now-70,now-20]
-    (r,) = agent_rows(calls, NOW)["rows"]
+    (r,) = agent_rows(calls, NOW, duty_s=600)["rows"]
     assert r["duty"] == 13.3 and r["calls"] == 2                     # 80 s of union, not 100 s of intervals
 
 
 def test_a_short_reply_moves_tokens_and_duty_but_not_min_avg_max():
     calls = [("max", NOW - 10, 10.0, 1000), ("max", NOW - 5, 5.0, 150)]   # the 150-token reply is all time-to-first-token
-    (r,) = agent_rows(calls, NOW)["rows"]
+    (r,) = agent_rows(calls, NOW, duty_s=600)["rows"]
     assert r["tok_s"] == 19.2 and (r["min"], r["avg"], r["max"]) == (100.0, 100.0, 100.0)
     assert r["duty"] == 2.5 and r["calls"] == 2                      # 15 s of one reply's span
 
 
-def test_a_call_outside_the_window_leaves_no_row_at_all():
-    assert agent_rows([("claude", NOW - 601, 10.0, 1000)], NOW) is None
+def test_an_idle_label_keeps_its_row_for_a_day_and_reads_zero():
+    """A reply half an hour ago is long out of the throughput window but the account is still on the board — with no
+    rate to claim, only the duty its span still covers of the day."""
+    (r,) = agent_rows([("bedrock", NOW - 1800, 10.0, 1000)], NOW)["rows"]
+    assert r["name"] == "bedrock" and r["calls"] == 0 and r["tok_s"] == 0.0
+    assert (r["min"], r["avg"], r["max"]) == (None, None, None)
+    assert r["duty"] == 0.0                                          # 10 s of 86 400 rounds away
+    assert agent_rows([("claude", NOW - 86401, 10.0, 1000)], NOW) is None      # a day and a second: no row at all
     assert agent_rows([], NOW) is None                              # nothing to say, so no "agents" key
+    # the same split at any size: out of the 10 s window, still 10 s of the 100 s duty one
+    assert agent_rows([("bedrock", NOW - 90, 10.0, 1000)], NOW, window_s=60, duty_s=100)["rows"][0]["duty"] == 10.0
+
+
+def test_a_young_hub_divides_duty_by_its_own_age_not_by_a_day():
+    """A hub that came up an hour ago has never seen the other 23 hours, so it says nothing about them: the day's
+    duty is the share of the hour it has watched."""
+    (r,) = agent_rows([("bedrock", NOW - 600, 60.0, 6000)], NOW, since=NOW - 3600)["rows"]
+    assert r["duty"] == round(100.0 * 60 / 3600, 1) == 1.7
+
+
+def test_a_quiet_label_and_a_busy_one_are_both_rows():
+    calls = [("max", NOW - 10, 10.0, 1000), ("agy", NOW - 7200, 100.0, 20000)]      # agy last answered 2 h ago
+    rows = agent_rows(calls, NOW)["rows"]
+    assert [r["name"] for r in rows] == ["agy", "max"]
+    assert [r["calls"] for r in rows] == [0, 1] and [r["tok_s"] for r in rows] == [0.0, 16.7]
+    assert rows[0]["duty"] == round(100.0 * 100 / 86400, 1)          # 100 s of the day, and none of the last 10 min
+    assert (rows[0]["min"], rows[0]["avg"], rows[0]["max"]) == (None, None, None)
 
 
 def test_every_label_is_its_own_row_sorted_by_name():
@@ -261,10 +285,23 @@ def test_a_record_that_is_not_one_is_skipped_and_the_rest_still_count():
     assert r["name"] == "bedrock" and r["calls"] == 1
 
 
-def test_no_calls_means_no_agents_key_and_an_old_one_ages_out():
+def test_no_calls_means_no_agents_key_and_an_old_one_ages_out_after_a_day():
     m = Metrics()
     m.put(sample(host="laptop"))
     assert "agents" not in m.get(now=NOW)
     m.put(calls_body({"agent": "agy", "end": at(-30), "dur_s": 10.0, "out": 1000}))
     assert "agents" in m.get(now=NOW)
-    assert "agents" not in m.get(now=NOW + 601)                      # the window moved past it
+    assert "agents" in m.get(now=NOW + 601)                          # past its rates' window, still on the board
+    assert m.get(now=NOW + 601)["agents"]["rows"][0]["calls"] == 0
+    assert "agents" not in m.get(now=NOW + 86401)                    # the duty window moved past it
+
+
+def test_a_call_survives_a_day_of_later_samples_not_just_ten_minutes():
+    m = Metrics()
+    m.started = NOW - 86400                                       # a hub that has been up its whole duty window
+    m.put(calls_body({"agent": "agy", "end": at(-3600), "dur_s": 10.0, "out": 1000}))    # an hour ago
+    m.put(sample(host="laptop"))                                    # a later sample prunes what has aged out
+    body = m.get(now=NOW)["agents"]
+    assert body["duty_window_s"] == 86400.0
+    (r,) = body["rows"]
+    assert r["name"] == "agy" and r["calls"] == 0 and r["tok_s"] == 0.0

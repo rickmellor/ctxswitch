@@ -17,8 +17,10 @@ An LLM host adds ``"llm"``: every vLLM seat named in ``[collector.llm_seats]`` i
 counters are read the way ``/proc/stat`` is — as the delta since the last scrape, so a seat's first sample says
 nothing. Each interval is then classed: **active** (a request running at either end, or tokens generated) counts
 toward the duty cycle, and **steady** (requests running at both ends *and* tokens generated) toward min/avg/max, so
-idle time, ramp-up/ramp-down and token-less prefill never look like a slow generation rate. Both come out of a
-window of the last ``llm_window_s`` seconds, dropped entry by entry as it ages.
+idle time, ramp-up/ramp-down and token-less prefill never look like a slow generation rate. The throughput numbers
+come from the last ``llm_window_s`` seconds, the duty from the last ``llm_duty_window_s`` — a day, so a seat that
+worked this morning and idled all afternoon still says what it's capable of. Entries are dropped one by one as they
+age out of the longer of the two.
 
 A sample also carries ``"calls"`` when the indexer has agent API replies that finished since the last one (Claude Code
 and Antigravity, read out of their own transcripts): the hub turns those into the board's per-agent rows. Nothing
@@ -480,18 +482,26 @@ class LlmSampler:
     *capable of*", which a single interval never does.
 
     An interval is **active** when a request was running at either end of it or it generated tokens, and **steady**
-    when requests ran at both ends and it generated tokens. Duty comes from the active ones; min, max and the
-    time-weighted avg from the steady ones alone, so an idle seat, a ramp-up and a token-less prefill interval don't
-    read as a slow generation rate. A seat that can't be scraped is down: nulls this sample, its window kept, so it
-    comes back with the stats it had rather than a window wiped by a slow scrape.
+    when requests ran at both ends and it generated tokens. Min, max and the time-weighted avg come from the steady
+    ones in the last ``window_s`` alone — 10 minutes of what the seat is doing now — so an idle seat, a ramp-up and a
+    token-less prefill interval don't read as a slow generation rate. Duty is the share of that time something was
+    running over a window of its own, ``duty_window_s`` — a day — so a seat that worked this morning and has been idle
+    all afternoon still shows what it does. A seat that can't be scraped is down: nulls this sample, its window kept,
+    so it comes back with the stats it had rather than a window wiped by a slow scrape.
+
+    A day of 2 s intervals is ~43 000 entries a seat, so a sample walks each window once: the throughput numbers come
+    from the entries still inside ``window_s``, the duty sums from every entry the window holds.
 
     The total is not the seats' numbers added up — two seats generating in the same interval are the same wall-clock
-    seconds — so it has its own window of per-call ticks over the whole host."""
+    seconds — so it has its own window of per-call ticks over the whole host, read the same two-window way."""
 
     def __init__(self, seats: dict[str, str], window_s: float = 600.0, clock: Callable[[], float] = time.monotonic,
-                 fetch: Callable[[str], str] = fetch_text):
+                 fetch: Callable[[str], str] = fetch_text, duty_window_s: float = 86400.0):
         self.seats, self.window_s, self.clock, self.fetch = dict(seats), float(window_s), clock, fetch
-        self._prev: dict[str, tuple[float, float, float]] = {}        # seat -> (now, tokens generated, running)
+        self.duty_window_s = float(duty_window_s)
+        self._keep_s = max(self.window_s, self.duty_window_s)     # what ages an entry out of either window
+        self._prev: dict[str, tuple[float, float, float]] = {}    # seat -> (now, tokens generated, running)
+        # seat -> (now, dt, dgen, active, steady)
         self._win: dict[str, deque[tuple[float, float, float, bool, bool]]] = {n: deque() for n in self.seats}
         self._ticks: deque[tuple[float, float, float, bool]] = deque()    # (now, seconds, tokens, any steady)
         self._tick_t: float | None = None
@@ -513,7 +523,7 @@ class LlmSampler:
                 self._prev.pop(name, None)   # ... and the next good one starts fresh, with tok_s null
                 self._prune(win, now)        # the window keeps aging while the seat is away
                 rows.append({"name": name, "up": False, "tok_s": None, "running": None, "waiting": None,
-                             **{k: _r1(v) for k, v in self._stats(win).items()}})
+                             **{k: _r1(v) for k, v in self._stats(win, now).items()}})
                 continue
             running, waiting = cur.get("num_requests_running"), cur.get("num_requests_waiting")
             busy = running or 0.0                # a seat without the gauge is judged by its tokens alone
@@ -529,41 +539,59 @@ class LlmSampler:
             rows.append({"name": name, "up": True, "tok_s": _r1(tok_s),
                          "running": None if running is None else int(running),
                          "waiting": None if waiting is None else int(waiting),
-                         **{k: _r1(v) for k, v in self._stats(win).items()}})
+                         **{k: _r1(v) for k, v in self._stats(win, now).items()}})
             dgen_sum += dgen
         if any_interval and self._tick_t is not None and now > self._tick_t:
             self._ticks.append((now, now - self._tick_t, dgen_sum, any_steady))
         self._tick_t = now
         self._prune(self._ticks, now)
-        return {"window_s": self.window_s, "seats": rows,
-                "total": {k: _r1(v) for k, v in self._total(rows).items()}}
+        return {"window_s": self.window_s, "duty_window_s": self.duty_window_s, "seats": rows,
+                "total": {k: _r1(v) for k, v in self._total(rows, now).items()}}
 
     def _prune(self, win: deque, now: float) -> None:
-        """Drop what has aged out of the window — from the front, which is oldest first."""
-        while win and win[0][0] < now - self.window_s:
+        """Drop what has aged out of the longer of the two windows — from the front, which is oldest first. The
+        shorter one is only ever read as a slice of what this leaves."""
+        cutoff = now - self._keep_s
+        while win and win[0][0] < cutoff:
             win.popleft()
 
-    @staticmethod
-    def _stats(win: deque) -> dict[str, float | None]:
-        """min / time-weighted avg / max over the window's steady intervals, and the share of its time that was
-        active. Nothing to compute from is null, never a 0 that reads as an idle seat."""
-        rates = [dgen / dt for _, dt, dgen, _, steady in win if steady and dt > 0]
-        sd = [(dt, dgen) for _, dt, dgen, _, steady in win if steady and dt > 0]
-        seen = sum(dt for _, dt, _, _, _ in win if dt > 0)
+    def _stats(self, win: deque, now: float) -> dict[str, float | None]:
+        """min / time-weighted avg / max over the steady intervals of the last ``window_s``, and the share of the
+        time the whole duty window watched that was active — of what it has seen, so a collector that came up an hour
+        ago divides by an hour. Nothing to compute from is null, never a 0 that reads as an idle seat."""
+        lo, act, seen = now - self.window_s, 0.0, 0.0
+        rates: list[float] = []
+        sd: list[tuple[float, float]] = []
+        for t, dt, dgen, active, steady in win:         # one pass over the seat's window
+            if dt <= 0:
+                continue
+            if t >= lo:
+                if steady:
+                    rates.append(dgen / dt)
+                    sd.append((dt, dgen))
+            if active:
+                act += dt
+            seen += dt
         return {"min": min(rates) if rates else None,
                 "avg": (sum(g for _, g in sd) / sum(dt for dt, _ in sd)) if sd else None,
                 "max": max(rates) if rates else None,
-                "duty": (100.0 * sum(dt for _, dt, _, active, _ in win if active and dt > 0) / seen) if seen else None}
+                "duty": (100.0 * act / seen) if seen else None}
 
-    def _total(self, rows: list[dict[str, Any]]) -> dict[str, float | None]:
-        """The host's own numbers. tok_s is the seats' current rates added up; min/avg/max come from the tick window,
-        where two seats busy in the same interval count as one interval of wall clock; duty is seat-time weighted —
-        of all the seat-seconds the window watched, how many had something running."""
+    def _total(self, rows: list[dict[str, Any]], now: float) -> dict[str, float | None]:
+        """The host's own numbers. tok_s is the seats' current rates added up; min/avg/max come from the ticks of the
+        last ``window_s``, where two seats busy in the same interval count as one interval of wall clock; duty is
+        seat-time weighted — of all the seat-seconds the duty windows watched, how many had something running."""
+        lo = now - self.window_s
         rates = [r["tok_s"] for r in rows if r["up"] and r["tok_s"] is not None]
-        st = [(dt, g) for _, dt, g, s in self._ticks if s and dt > 0]
-        seen = sum(dt for _, dt, _, _ in self._ticks if dt > 0)
-        act = sum(sum(dt for _, dt, _, a, _ in win if a and dt > 0) for win in self._win.values())
-        obs = sum(sum(dt for _, dt, _, _, _ in win if dt > 0) for win in self._win.values())
+        act = obs = 0.0
+        for win in self._win.values():                  # one pass over every seat's window
+            for _, dt, _, active, _ in win:
+                if dt <= 0:
+                    continue
+                if active:
+                    act += dt
+                obs += dt
+        st = [(dt, g) for t, dt, g, s in self._ticks if s and dt > 0 and t >= lo]
         return {"tok_s": sum(rates) if rates else None,
                 "min": min((g / dt for dt, g in st), default=None),
                 "avg": (sum(g for _, g in st) / sum(dt for dt, _ in st)) if st else None,

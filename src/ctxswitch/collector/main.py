@@ -169,7 +169,8 @@ class Collector:
         self.urls = {"ingest": base + "/v1/ingest", "outbox": base + "/v1/outbox", "messages": base + "/v1/messages",
                      "metrics": base + "/v1/metrics"}
         c = cfg.collector
-        self.sampler = Sampler(llm=LlmSampler(c.llm_seats, c.llm_window_s) if c.llm_seats else None,
+        self.sampler = Sampler(llm=LlmSampler(c.llm_seats, c.llm_window_s,
+                                              duty_window_s=c.llm_duty_window_s) if c.llm_seats else None,
                                calls=self.ix.drain_calls)
         # this host's CPU/GPU, its vLLM seats when configured, and the agent API replies the indexer read since the
         # last sample (collector/metrics.py)

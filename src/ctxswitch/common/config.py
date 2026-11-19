@@ -90,7 +90,8 @@ class CollectorConfig:
     # vLLM seats on this host (collector/metrics.py): a seat's name -> its /metrics URL, as a [collector.llm_seats]
     # table (`worker1 = "http://127.0.0.1:8002/metrics"`). Scraped with each CPU/GPU sample, so they need metrics_every.
     llm_seats: dict[str, str] = field(default_factory=dict)
-    llm_window_s: float = 600.0             # how far back a seat's min/avg/max and duty cycle look
+    llm_window_s: float = 600.0             # how far back a seat's min/avg/max look
+    llm_duty_window_s: float = 86400.0      # how far back its duty cycle looks: a day, not the throughput window
 
 
 @dataclass
