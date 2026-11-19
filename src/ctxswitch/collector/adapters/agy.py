@@ -21,9 +21,11 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from ctxswitch.collector.adapters.claude import _POOL_HOOK
 from ctxswitch.common.schema import Ask, Turn, trim
 
 USER_INPUT, PLANNER_RESPONSE = 14, 15
+SYSTEM_MESSAGE = 101                                     # a system message, e.g. what a SessionStart hook injected
 READ_TOOLS = {"read_file", "view_file", "view_file_outline", "list_dir", "find_by_name", "grep_search", "codebase_search",
               "search_web", "read_url_content", "view_code_item", "read_resource", "read_terminal", "view_files"}
 EDIT_TOOLS = {"write_to_file", "replace_file_content", "multi_replace_file_content", "edit_file", "create_file",
@@ -118,7 +120,7 @@ def iso(epoch: float) -> str:
 class AgyParser:
     def __init__(self, max_text: int = 4000):
         self.max_text = max_text
-        self.meta: dict[str, Any] = {}
+        self.meta: dict[str, Any] = {"pool_seen": True}  # pool*: what saint-pool's SessionStart hook told it (no catch-up needed)
         self._done: list[Turn] = []
         self._cur: Turn | None = None
         self._n = 0
@@ -170,7 +172,27 @@ class AgyParser:
                 cur.assistant_text = trim(body, self.max_text)
             self._call(meta)
         else:
+            self.pool_step(row)
             self._tool(meta, ts, offset_end)
+
+    def pool_step(self, row: dict[str, Any]) -> None:
+        """What saint-pool's SessionStart hook told this conversation about the local Qwen pool. agy 1.5.12 keeps a
+        hook's injected text as a system-message step ("…injected by a SessionStart hook:\nLOCAL POOL ON (…)…"),
+        read with the same patterns as Claude's hook output. A pool that's off makes the hook print nothing, so agy
+        records no step and the session stays "never told" (Claude's empty stdout reads as "off")."""
+        if row.get("step_type") != SYSTEM_MESSAGE:
+            return
+        meta, payload = row.get("metadata") or b"", row.get("step_payload") or b""
+        blob = (payload + meta).decode("utf-8", "replace")
+        if "SessionStart hook" not in blob:
+            return
+        state = next((st for st, rx in _POOL_HOOK if rx.search(blob)), "")
+        if not state:
+            return
+        self.meta["pool"], self.meta["pool_how"] = state, "startup"   # agy runs SessionStart on a resume too
+        ts = stamp(path(meta, 1)) or stamp(path(payload, 5, 1))
+        if ts:
+            self.meta["pool_at"] = ts
 
     def _call(self, meta: bytes) -> None:
         """One planner response as a call record: request sent at metadata f1, its last token at f7, its output

@@ -199,3 +199,66 @@ def test_a_response_s_sub_second_span_is_not_rounded_away():
     p.feed({"idx": 0, "step_type": PLANNER_RESPONSE, "status": 3, "metadata": meta, "step_payload": b""}, 1)
     (c,) = p.drain_calls()
     assert c["dur_s"] == 0.5 and c["out"] == 40 and c["end"] == "2026-10-30T18:29:31Z"
+
+
+POOL_TEXT = ("The following message was injected by a SessionStart hook:\nLOCAL POOL ON (http://gpu-host:4000): "
+             "construction, test-writing, mechanical refactors, bulk edits and long runs go to the local Qwen pool")
+
+
+def system_step(text: str, secs: int) -> tuple[bytes, bytes]:
+    """A system-message step (101), as agy 1.5.12 keeps a SessionStart hook's injected text."""
+    return TS(1, secs), V(1, 101) + S(2, text)
+
+
+def test_saint_pool_s_session_start_message_is_what_the_conversation_was_told():
+    p = AgyParser()
+    for i, (t, (meta, payload)) in enumerate([(101, system_step(POOL_TEXT, 1_793_384_960)), (14, user_step("hi", 1_793_384_968))]):
+        p.feed({"idx": i, "step_type": t, "metadata": meta, "step_payload": payload}, i + 1)
+    assert p.meta["pool"] == "on" and p.meta["pool_how"] == "startup" and p.meta["pool_at"].startswith("2026-")
+    unreachable = POOL_TEXT.replace("LOCAL POOL ON (", "LOCAL POOL ON but SAINT is unreachable (")
+    q = AgyParser(); m, pl = system_step(unreachable, 1_793_384_960)
+    q.feed({"idx": 0, "step_type": 101, "metadata": m, "step_payload": pl}, 1)
+    assert q.meta["pool"] == "unreachable"
+    # a system message that isn't a SessionStart hook's (or a pool text quoted elsewhere) tells it nothing
+    r = AgyParser(); m, pl = system_step("Reminder: LOCAL POOL ON (http://gpu-host:4000) was mentioned", 1_793_384_960)
+    r.feed({"idx": 0, "step_type": 101, "metadata": m, "step_payload": pl}, 1)
+    assert "pool" not in r.meta
+
+
+def test_a_conversation_indexed_before_pool_tracking_catches_up_once(tmp_path):
+    root = tmp_path / "agy"
+    cid = "4abccfc5-7c28-4ad2-bd3c-7c66acbc4384"
+    db = make_store(root, cid, [(101, system_step(POOL_TEXT, 1_793_384_960)), *STEPS[:4]])
+    cfg = CollectorConfig(claude_roots=[], pi_roots=[], claude_win_roots=[], agy_roots=[str(root / "conversations")])
+    events = []
+    ix = Indexer(cfg, "laptop", CollectorState(tmp_path / "c.db"), lambda k, p: events.append((k, p)))
+    assert ix.process(db)
+    assert [p for k, p in events if k == "session"][-1]["pool"] == "on"             # a fresh index reads it
+    rec = ix.state.file(str(db))
+    st = rec["parser_state"]
+    st["meta"].pop("pool", None); st["meta"].pop("pool_seen", None)              # as an older collector left it
+    ix.state.save_file(str(db), rec["harness"], rec["session_key"], rec["offset"], st, rec["size"], rec["mtime"],
+                       rec["turns_emitted"], rec["ended"])
+    events.clear()
+    ix2 = Indexer(cfg, "laptop", ix.state, lambda k, p: events.append((k, p)))     # the next collector run
+    ix2.process(db)
+    sess = [p for k, p in events if k == "session"]
+    assert sess and sess[-1]["pool"] == "on"                                          # caught up from step 0, resent
+    assert ix2.state.file(str(db))["parser_state"]["meta"]["pool_seen"] is True
+
+
+def test_an_agy_session_is_never_taken_for_a_pool_job(tmp_path):
+    """saint-agent's workers are Claude Code: an agy conversation started in a job's workdir at its start time stays
+    top level (job nesting matches by cwd and time, so it must not even be asked)."""
+    root = tmp_path / "agy"
+    db = make_store(root, "4abccfc5-7c28-4ad2-bd3c-7c66acbc4384", STEPS[:5])
+    cfg = CollectorConfig(claude_roots=[], pi_roots=[], claude_win_roots=[], agy_roots=[str(root / "conversations")])
+    events = []
+    ix = Indexer(cfg, "laptop", CollectorState(tmp_path / "c.db"), lambda k, p: events.append((k, p)))
+    asked = []
+    ix.jobs.for_session = lambda *a, **k: asked.append(a) or {"job": "sa-1", "job_status": "ok", "job_brief": "b.md",
+                                                             "job_dur_s": 1, "job_turns": 1, "job_tokens": None,
+                                                             "parent_session": "p1"}
+    assert ix.process(db)
+    meta = [p for k, p in events if k == "session"][-1]
+    assert asked == [] and not meta.get("parent_key") and not meta.get("job")

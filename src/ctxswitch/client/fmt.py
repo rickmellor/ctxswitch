@@ -324,8 +324,8 @@ def pool_stale(s: dict, host_pools: dict | None) -> bool:
 
 def pool_mark(s: dict, host_pools: dict | None) -> tuple[str, str]:
     """The badge after a row's harness·host label: ``(text, style)``. Green ⌂ told on (dim green: on, but SAINT didn't
-    answer), grey ⌂ told off, yellow ⌂ stale. ``("", "")`` for anything but Claude, and for a session never told."""
-    if s.get("harness") != "claude":
+    answer), grey ⌂ told off, yellow ⌂ stale. ``("", "")`` for anything but Claude and agy, and for a session never told."""
+    if s.get("harness") not in ("claude", "agy"):                   # agy: what saint-pool's SessionStart hook injected
         return "", ""
     if pool_stale(s, host_pools):                                  # told one thing, the file says the other — which
         return "⌂", "bold yellow"                                  # ever way round, including a session saying "off"

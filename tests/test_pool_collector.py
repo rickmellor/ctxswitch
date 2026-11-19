@@ -158,14 +158,17 @@ def test_the_indexer_puts_the_pools_state_in_the_claude_sessions_meta(tmp_path):
 
 
 def test_the_indexer_leaves_the_other_harnesses_pool_empty(tmp_path):
-    """Only Claude's parser reads the switch out of a transcript; the field is there for the board, blank elsewhere."""
+    """Claude's and agy's parsers read what saint-pool's SessionStart hook told them; the field is there for the
+    board, blank for every other harness."""
     ix = _ix(tmp_path, [])
     f = tmp_path / "x.jsonl"
     f.touch()
-    for harness in ("pi", "shell", "agy", "claude-win"):
-        m = ix._meta({"cwd": "/x", "pool": "on", "pool_at": "t", "pool_how": "startup"},
-                     f"laptop/{harness}/sid", f, harness, f.stat())
+    told = {"cwd": "/x", "pool": "on", "pool_at": "t", "pool_how": "startup"}
+    for harness in ("pi", "shell", "claude-win"):
+        m = ix._meta(told, f"laptop/{harness}/sid", f, harness, f.stat())
         assert (m["pool"], m["pool_at"], m["pool_how"]) == ("", "", ""), harness
+    m = ix._meta(told, "laptop/agy/sid", f, "agy", f.stat())
+    assert (m["pool"], m["pool_at"], m["pool_how"]) == ("on", "t", "startup")
 
 
 # -- the host's own switch ---------------------------------------------------------------------------------------
