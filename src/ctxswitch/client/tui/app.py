@@ -362,7 +362,13 @@ HELP_TIPS = [
      "whose collector also lists `llm_seats` gets an LLM row and one row a seat: tok/s right now, its minute of "
      "history, then min/avg/max over the window counting only time the seat was actually generating — idle, ramp-up "
      "and prefill-only intervals don't count — and its duty, the share of the time a request was running. The LLM "
-     "row is the whole rig: its tok/s is the seats' summed, its duty every seat's seconds weighted together.")),
+     "row is the whole rig: its tok/s is the seats' summed, its duty every seat's seconds weighted together. Below "
+     "the seats, one row per agent account seen anywhere on the rig — each Claude Code profile (`bedrock`, `max`, …; "
+     "`claude` on a host whose profiles don't matter) and `agy` for Antigravity — measured from the agents' own "
+     "transcripts: tok/s over the last minute, min/avg/max per reply of 200+ tokens (the time runs from request to "
+     "last token, so it includes time to first token), and duty, the share of the window a call was in flight. Those "
+     "rows are rig-wide — every host's sessions of an account merge into one — and print once, under the host that "
+     "has seats.")),
     ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
      "pane is ever gone, `ctx tmux` puts it back; if the left pane is (the board alone in its window), the board "
      "puts the most recent session back there, or a shell.")),
@@ -775,6 +781,7 @@ class CtxApp(App):
         self.metrics_timer = None                    # the 2 s poll, running only while the panel is shown
         self.metrics_names: list[str] = []           # the hosts that reported, sorted: what G lists to pick from
         self.metrics_counts: dict[str, int] = {}     # host -> cards in its last sample: what G counts after its name
+        self.metrics_agents: dict | None = None      # the hub's rig-wide agent rows ({"window_s", "rows"}), or None
         self.metrics_picking = False                 # G pressed before the hub had answered: open the picker on it
 
     def compose(self) -> ComposeResult:
@@ -1500,11 +1507,13 @@ class CtxApp(App):
             self.call_from_thread(self.metrics_said, METRICS_HUB_MSG)
             return
         hosts = (body or {}).get("hosts") or {}
-        self.call_from_thread(self.metrics_show, hosts, sorted(hosts))
+        self.call_from_thread(self.metrics_show, hosts, sorted(hosts), (body or {}).get("agents"))
 
-    def metrics_show(self, hosts: dict, names: list[str]) -> None:
-        """The panel for the hosts picked (every one that reports when none were), never more than half the board."""
+    def metrics_show(self, hosts: dict, names: list[str], agents: dict | None = None) -> None:
+        """The panel for the hosts picked (every one that reports when none were), never more than half the board.
+        The hub's rig-wide ``agents`` block rides along; a hub that doesn't send one changes nothing."""
         self.metrics_names, self.metrics_counts = names, {h: gpu_count(e) for h, e in hosts.items()}
+        self.metrics_agents = agents
         if self.metrics_picking:                               # G was pressed before the hub had answered
             self._open_picker()
         if not hosts:
@@ -1512,7 +1521,7 @@ class CtxApp(App):
             return
         w = self.query_one("#metrics", MetricsPanel)
         w.update(hosts_text(hosts, self.metrics_picked, max(20, w.content_size.width - 2), self.size.height,
-                            self.cfg.metrics_host, self.this_host))
+                            self.cfg.metrics_host, self.this_host, self.metrics_agents))
 
     def metrics_said(self, msg: str) -> None:
         """One dim line where the panel would be, and if G is waiting on it, an empty picker to say the same."""

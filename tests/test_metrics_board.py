@@ -727,6 +727,131 @@ def test_the_help_says_what_the_llm_rows_mean():
     assert "min/avg/max" in tip.replace(" ", "") or "min/avg/max" in tip
 
 
+# -- the agent rows: what the accounts on the rig generated, from their own transcripts ----------------------------
+
+
+def _agent(name, *, tok_s=23.5, mn=40.1, avg=81.0, mx=114.4, duty=34.2, calls=52, hist=None):
+    """One agent row exactly as the hub's ``agents`` block puts it: an account's rate now, its window's min/avg/max
+    per reply, the share of the window a call was in flight, how many calls, and 60 buckets of 10 s."""
+    return {"name": name, "tok_s": tok_s, "min": mn, "avg": avg, "max": mx, "duty": duty, "calls": calls,
+            "history": [tok_s] * 60 if hist is None else hist}
+
+
+def _agents(*rows, window=600):
+    """The GET /v1/metrics body's top-level "agents" block, beside "hosts" — absent, as the hub leaves it out when
+    the window holds no calls."""
+    return {"window_s": window, "rows": list(rows)}
+
+
+def _show(hosts, width=62, height=200) -> list[str]:
+    """hosts_text over a body's hosts, with its "agents" block when it has one (the "_agents" a test parked)."""
+    hosts = dict(hosts)
+    agents = hosts.pop("_agents", None)
+    return hosts_text(hosts, sorted(hosts), width, height, agents=agents).plain.splitlines()
+
+
+def test_no_agent_rows_change_not_a_character():
+    """A hub with no "agents" key, an empty one, or one whose rows are empty: the board is byte for byte what it
+    said before agents existed, with seats and without them."""
+    for hosts in ({"gpu-host": _sample()}, {"gpu-host": _with_llm(_sample(gpus=_ten()))}):
+        before = _show(hosts)
+        for agents in (None, {}, {"window_s": 600}, _agents()):
+            assert _show({**hosts, "_agents": agents}) == before, agents
+
+
+def test_the_agent_rows_are_the_seat_rows_columns_under_the_seats():
+    """One host, two accounts: LLM, its seats, then the accounts, then the cards — and an account row is a seat row
+    in every column, only its own name and history."""
+    entry = _with_llm(_sample())
+    lines = panel_text("gpu-host", entry, 62, agents=[_agent("bedrock"), _agent("max", tok_s=8.4, duty=0.0)]
+                       ).plain.splitlines()
+    assert [ln.split()[0] for ln in lines[3:8]] == ["LLM", "worker1", "worker2", "bedrock", "max"]
+    assert lines[8].startswith("#0 ")
+    rows = [ln for ln in lines if ln.split()[0] in ("worker1", "worker2", "bedrock", "max")]
+    assert len({len(r) for r in rows}) == 1, rows                    # as long as the seat rows
+    assert len({r.index("tok/s") for r in rows}) == 1, rows          # and tok/s in the same column
+    bedrock = lines[6]
+    assert "tok/s" in bedrock and "40/  81/ 114" in bedrock and bedrock.rstrip().endswith("duty  34%"), bedrock
+
+
+def test_the_agent_rows_appear_once_where_the_seats_are():
+    """Rows are rig-wide, so they print once: in the first rendered host whose latest sample has LLM seats."""
+    hosts = {"alpha": _sample("alpha"), "beta": _with_llm(_sample("beta"))}
+    lines = _show({**hosts, "_agents": _agents(_agent("bedrock"), _agent("agy"))})
+    assert sum(1 for ln in lines if ln.startswith("bedrock")) == 1 and sum(1 for ln in lines if ln.startswith("agy ")) == 1
+    at = [i for i, ln in enumerate(lines) if ln.startswith(("alpha", "beta"))]        # the two title bands
+    block_b = lines[at[1]:]
+    assert block_b[0].startswith("beta") and block_b[3].startswith("LLM")
+    assert block_b[6].startswith("bedrock") and block_b[7].startswith("agy") and not any(ln.startswith("agy") for ln in lines[:at[1]])
+
+
+def test_without_llm_seats_anywhere_the_agent_rows_sit_under_the_memory_of_the_first_host():
+    hosts = {"alpha": _sample("alpha"), "beta": _sample("beta")}
+    lines = _show({**hosts, "_agents": _agents(_agent("max"))})
+    at = [i for i, ln in enumerate(lines) if ln.startswith(("alpha", "beta"))]
+    assert lines[at[0] + 3].startswith("max ") and sum(1 for ln in lines if ln.startswith("max ")) == 1
+    assert lines[at[1] + 3].startswith("#0 "), lines[at[1]:at[1] + 4]      # the second host says nothing about agents
+
+
+def test_an_account_that_answered_nothing_prints_dashes_and_an_idle_one_its_zero():
+    """A window with no 200+ token reply has no min/avg/max to show; a duty of 0 is an answer, not a dash — and a
+    row has no "up", so it is never the one that says "down"."""
+    entry = _with_llm(_sample())
+    rows = [ln for ln in panel_text("gpu-host", entry, 62, agents=[
+        _agent("bedrock", tok_s=None, mn=None, avg=None, mx=None, duty=None),
+        _agent("agy", tok_s=0.0, mn=None, avg=None, mx=None, duty=0.0)]).plain.splitlines()
+        if ln.startswith(("bedrock", "agy"))]
+    assert rows[0].count("—") == 5 and "duty   —%" in rows[0] and "down" not in rows[0], rows[0]
+    assert rows[1].rstrip().endswith("duty   0%") and " 0 tok/s" in rows[1] and rows[1].count("—") == 3, rows[1]
+
+
+def test_a_short_panel_cuts_the_agent_rows_after_the_cards_and_before_the_seats():
+    """Ten cards, two seats and two accounts in a panel too short for the lot: the cards go first (and the line says
+    GPUs), and only when the accounts have to go too does it start saying lines — the seats are worth more than
+    they are."""
+    rows = [_agent("bedrock"), _agent("max")]
+    entry = _with_llm(_sample(gpus=_ten()))
+    entry["history"]["gpus"] = {str(i): [10.0] * 60 for i in range(10)}
+    roomy = hosts_text({"gpu-host": entry}, ["gpu-host"], 62, 34, agents=_agents(*rows)).plain.splitlines()
+    assert roomy[-1].startswith("+3 more GPUs") and any(ln.startswith("max ") for ln in roomy)
+    assert sum(1 for ln in roomy if ln.startswith("#")) == 7 and len(roomy) <= 34 // 2 - 1
+    tight = hosts_text({"gpu-host": entry}, ["gpu-host"], 62, 14, agents=_agents(*rows)).plain.splitlines()
+    assert tight[-1].startswith("+13 more lines") and any(ln.startswith("worker1 ") for ln in tight)
+    assert any(ln.startswith("LLM") for ln in tight)
+    assert not any(ln.startswith(("worker2 ", "bedrock", "max ")) for ln in tight), tight
+
+
+def test_agent_rows_stay_inside_every_pane():
+    entry = _with_llm(_sample(gpus=_ten()))
+    agents = _agents(_agent("bedrock"), _agent("max", tok_s=None, mn=None, avg=None, mx=None, duty=None), _agent("agy"))
+    for w in (41, 62, 100):
+        lines = _show({"gpu-host": entry, "_agents": agents}, w)
+        assert all(len(ln) <= w for ln in lines), (w, [ln for ln in lines if len(ln) > w])
+        assert sum(1 for ln in lines if "tok/s" in ln) == 6, w        # LLM, two seats, three accounts
+
+
+def test_the_agent_rows_cost_lines_only_where_they_print():
+    """The host that carries them counts them; the one that doesn't isn't shortened by them, and a hub that sends no
+    "agents" costs the height plan nothing at all."""
+    with_seats, plain = _with_llm(_sample()), _sample()
+    assert line_count(with_seats) == 5 and line_count(plain) == 2        # line_count itself knows nothing of agents
+    rows = [_agent("bedrock"), _agent("max")]
+    hosts = {"alpha": plain, "beta": with_seats}                          # alpha sorted first, beta carries the rows
+    roomy = _show({**hosts, "_agents": _agents(*rows)}, 62, 40)
+    assert sum(1 for ln in roomy if ln.startswith("#")) == 4, roomy       # every line of both hosts fits
+    assert sum(1 for ln in roomy if ln.startswith(("bedrock", "max "))) == 2
+    assert plan_heights([line_count(plain), line_count(with_seats) + 2], 40)[0] == [2, 7]
+    tight = _show({**hosts, "_agents": _agents(*rows)}, 62, 24)           # the two rows cost beta its own tail
+    assert sum(1 for ln in tight if ln.startswith("#")) == 2, tight       # alpha still shows both of its cards
+    assert not any(ln.startswith(("bedrock", "max ")) for ln in tight) and any(ln.startswith("worker1 ") for ln in tight)
+
+
+def test_the_help_says_what_the_agent_rows_mean():
+    tip = dict(tui.HELP_TIPS)["CPU and GPU"]
+    for word in ("bedrock", "agy", "duty", "tok/s", "transcript"):
+        assert word in tip, word
+
+
 def test_vram_temperature_and_power_sit_in_columns_whatever_their_digits():
     """A 3.4 GiB card under a 29.6 GiB one, 9 W under 271 W, 8 °C under 86 °C, a card with a second of history under
     ones with a minute, an unreadable VRAM: every line is as long as the next, so each field starts in one column."""

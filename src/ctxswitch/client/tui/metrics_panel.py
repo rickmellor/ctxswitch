@@ -3,8 +3,9 @@
 Pure rendering — ``panel_text`` takes one host's entry straight out of the hub's GET /v1/metrics body (``latest``,
 ``age_s``, ``history``) and says it in two lines plus one per GPU (plus an LLM row and one per LLM seat, for a host
 whose collector scrapes them), nothing wider than the pane, and ``plan_heights`` decides which of several hosts get
-which of the lines the panel is allowed. The collector and the hub's side of this are elsewhere; a board on an older
-hub simply gets an exception and says so.
+which of the lines the panel is allowed. Beside the hosts the body also carries the rig-wide ``agents`` block — one
+row an account, from the agents' own transcripts — which one host's block shows, once. The collector and the hub's
+side of this are elsewhere; a board on an older hub simply gets an exception and says so.
 
 Unknown values print "—", never a guess. Nothing here assumes a number of GPUs: 10 cards is 10 lines, and the
 caller trims what doesn't fit in half the board's height.
@@ -167,12 +168,27 @@ def _nspark(width: int) -> int:
     return max(5, min(12, (width - 44) // 2))    # room for the history grows with the pane
 
 
-def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[int, int] | None = None) -> Text:
+def agent_rows(agents) -> list:
+    """The agent rows, whether handed the hub's whole ``agents`` block (``hosts_text``, straight out of the body) or
+    the list of rows itself (``panel_text``), in the order they're listed (which is by name). Absent, empty or a hub
+    that predates them is no rows at all — and nothing else on the board changes."""
+    rows = agents.get("rows") if isinstance(agents, dict) else agents
+    return [r for r in (rows or []) if isinstance(r, dict)]
+
+
+def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[int, int] | None = None,
+               agents: list | None = None) -> Text:
     """One host's entry ({"latest", "age_s", "history"}) as text no line of which is wider than ``width``.
 
+    ``agents`` is the rig-wide agent rows (what :func:`agent_rows` answers), which belong to one host's block —
+    whoever's showing them passes the list, everyone else passes nothing. They sit under the LLM seat rows, or under
+    MEM when this host has no LLM rows, and are the same rows in the same columns: an account's tok/s, its history,
+    its min/avg/max per reply and its duty.
+
     ``more`` is for a panel too short for every line: the caller says how many it left out (what fits_height
-    answers), those lines are left off — the cards first, then the LLM seat rows, last first, then the LLM row —
-    and one dim line counts them, "+N more GPUs" while they were all cards, "+N more lines" once seats went too."""
+    answers), those lines are left off — the cards first, then the agent rows, last first, then the LLM seat rows,
+    last first, then the LLM row — and one dim line counts them, "+N more GPUs" while they were all cards,
+    "+N more lines" once anything else went too."""
     entry = entry or {}
     latest = entry.get("latest") or {}
     hist = entry.get("history") or {}
@@ -229,17 +245,26 @@ def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[in
     seats = [s for s in (llm.get("seats") or []) if isinstance(s, dict)]
     hist_llm = hist.get("llm") or {}
     nspark = _nspark(width)
-    # what a height too short cut from the END: the cards first, then the seats last-first, then the LLM row itself
-    cut_gpu, cut_seat, cut_agg = min(more, len(gpus)), 0, 0
+    rows = agent_rows(agents)
+    # what a height too short cut from the END: the cards first, then the agent rows last-first, then the seats
+    # last-first, then the LLM row itself
+    cut_gpu, cut_agent, cut_seat, cut_agg = min(more, len(gpus)), 0, 0, 0
     if more > cut_gpu:
-        cut_seat = min(more - cut_gpu, len(seats))
-        cut_agg = 1 if more > cut_gpu + cut_seat else 0
+        cut_agent = min(more - cut_gpu, len(rows))
+        if more > cut_gpu + cut_agent:
+            cut_seat = min(more - cut_gpu - cut_agent, len(seats))
+            cut_agg = 1 if more > cut_gpu + cut_agent + cut_seat else 0
     if seats:
         if not cut_agg:
             lines.append(_llm_line("LLM", llm.get("total"), hist.get("llm_total"), nspark, width, len(label)))
         for s in seats[:max(0, len(seats) - cut_seat)]:
             name = str(s.get("name") or "?")
             lines.append(_llm_line(name[:len(label)], s, hist_llm.get(name), nspark, width, len(label)))
+    # the agent rows, under the seats when there are any, under the memory when this host has no LLM rows: the same
+    # columns, the label the account's name cut to the CPU label's width (an agent row has no "up", so never "down")
+    for r in rows[:max(0, len(rows) - cut_agent)]:
+        name = str(r.get("name") or "?")
+        lines.append(_llm_line(name[:len(label)], r, r.get("history"), nspark, width, len(label)))
     for i, g in enumerate(gpus[:max(0, len(gpus) - cut_gpu)]):
         idx = g.get("index")
         idx = i if not isinstance(idx, int) else idx
@@ -412,7 +437,7 @@ def plan_heights(counts: list[int], height: int) -> tuple[list[int | None], int]
 
 
 def hosts_text(hosts: dict, chosen: list[str], width: int, height: int,
-               configured: str = "", this_host: str = "") -> Text:
+               configured: str = "", this_host: str = "", agents: dict | None = None) -> Text:
     """The chosen hosts stacked in the panel, sorted: each its own :func:`panel_text` block, and one dim line for a
     host the hub has no sample from — it stopped reporting, or never had ``metrics_every`` set.
 
@@ -420,12 +445,19 @@ def hosts_text(hosts: dict, chosen: list[str], width: int, height: int,
     ``configured`` name and ``this_host`` breaking a tie. The panel may take half the board's ``height`` at most;
     :func:`plan_heights` says how that splits between the hosts, and each one that lost lines gets the ``more``
     count that :func:`panel_text` turns into its "+N more GPUs" or "+N more lines" line.
-    """
+
+    ``agents`` is the hub's rig-wide "agents" block. Its rows are not a host's — every host's sessions of an account
+    merge into one row — so they print once, in the first rendered host whose latest sample has LLM seats, or in the
+    first rendered host when none does, and only that host counts them in its lines."""
     hosts = hosts or {}
     if not hosts:
         return Text(METRICS_NONE_MSG, "dim")
     names = sorted(chosen) if chosen else [pick_host(hosts, configured, this_host)]
-    counts = [line_count(hosts.get(n) or {}) for n in names]
+    rows = agent_rows(agents)
+    carrier = next((n for n in names if n in hosts and llm_lines(hosts[n] or {})), None)
+    if carrier is None:
+        carrier = next((n for n in names if n in hosts), None)
+    counts = [line_count(hosts.get(n) or {}) + (len(rows) if n == carrier else 0) for n in names]
     every = [label_cols(((hosts.get(n) or {}).get("latest") or {}).get("gpus") or [], width) for n in names]
     cols = (max((c[0] for c in every), default=0), max((c[1] for c in every), default=0))   # one column, all hosts     # a host the hub never heard of counts no cards:
     plan, more_hosts = plan_heights(counts, height)             # its one dim line is cheaper than a block of them
@@ -436,7 +468,8 @@ def hosts_text(hosts: dict, chosen: list[str], width: int, height: int,
         if name not in hosts:                                      # one dim line says the whole host
             parts.append(header_band(Text(f"{name} · no samples (is metrics_every set on it?)", "dim"), width))
             continue
-        parts.append(panel_text(name, hosts[name], width, max(0, count - shown), cols))
+        parts.append(panel_text(name, hosts[name], width, max(0, count - shown), cols,
+                                rows if name == carrier else None))
     if more_hosts:
         parts.append(Text(f"+{more_hosts} more hosts (widen the board, or G to pick fewer)", "dim")[:width])
     return Text("\n").join(parts)

@@ -275,6 +275,12 @@ last minute of history, then min/avg/max over the window counting only the time 
 (idle, ramp and prefill-only intervals never count), and its duty — the share of the time a request was running. The
 `LLM` row is the whole rig: the seats' tok/s summed, their duty weighted by seat-time.
 
+Below the seats, one row per agent account seen anywhere on the rig — each Claude Code profile (`bedrock`, `max`, …;
+`claude` on a host whose profiles don't matter) and `agy` for Antigravity — measured from the agents' own transcripts:
+tokens per second over the last minute, min/avg/max per reply of 200+ tokens (the time runs from request to last
+token, so it includes time to first token), and duty — the share of the window a call was in flight. Those rows are
+rig-wide, so every host's sessions of an account merge into one, and they print once.
+
 ```toml
 [collector.llm_seats]
 worker1 = "http://127.0.0.1:8002/metrics"
