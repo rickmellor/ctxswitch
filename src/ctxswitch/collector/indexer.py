@@ -300,7 +300,7 @@ class Indexer:
             job = self.jobs.for_session(m.session_id, cwd, pm.get("started_at"))
             if job:
                 parent = job["parent_session"]
-                m.parent_key = session_key(self.host_id, "claude", parent) if parent else ""
+                m.parent_key = session_key(self.host_id, job.get("parent_harness") or "claude", parent) if parent else ""
                 m.job, m.job_status, m.job_brief = job["job"], job["job_status"], job["job_brief"]
                 m.job_dur_s, m.job_turns, m.job_tokens = job["job_dur_s"], job["job_turns"], job["job_tokens"]
         return m.to_dict()

@@ -109,12 +109,16 @@ class Jobs:
         if rec is None:
             return None
         parent = rec.get("session")
-        return {"job": rec.get("job", "") or "",
-                "job_status": rec.get("status") or "running",
-                "job_brief": os.path.basename(str(rec.get("brief") or "")),
-                "job_dur_s": _count(rec.get("dur_s")), "job_turns": _count(rec.get("turns")),
-                "job_tokens": rec.get("tokens") if isinstance(rec.get("tokens"), dict) else None,
-                "parent_session": parent if isinstance(parent, str) and parent else None}
+        out = {"job": rec.get("job", "") or "",
+               "job_status": rec.get("status") or "running",
+               "job_brief": os.path.basename(str(rec.get("brief") or "")),
+               "job_dur_s": _count(rec.get("dur_s")), "job_turns": _count(rec.get("turns")),
+               "job_tokens": rec.get("tokens") if isinstance(rec.get("tokens"), dict) else None,
+               "parent_session": parent if isinstance(parent, str) and parent else None}
+        ph = rec.get("parent_harness")
+        if isinstance(ph, str) and ph:
+            out["parent_harness"] = ph
+        return out
 
     def _by_time(self, cwd: str, start: float | None) -> dict[str, Any] | None:
         if start is None or not cwd:

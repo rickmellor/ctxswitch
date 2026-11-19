@@ -193,6 +193,27 @@ def test_jobs_refreshes_when_the_ledger_grows(tmp_path):
     p = ledger(tmp_path / "ledger.jsonl", dict(START, ts=iso(T0)))
     j = Jobs(p)
     assert j.for_session("S1")["job_status"] == "running"
+
+
+def test_jobs_and_indexer_nest_under_agy_parent_harness(tmp_path):
+    from ctxswitch.collector.indexer import Indexer
+    from ctxswitch.collector.state import CollectorState
+    from ctxswitch.common.config import CollectorConfig
+
+    p = ledger(tmp_path / "ledger.jsonl",
+               dict(START, sid="S_AGY", job="J_AGY", session="conv-42", parent_harness="agy", ts=iso(T0)))
+    j = Jobs(p)
+    got = j.for_session("S_AGY")
+    assert got["parent_session"] == "conv-42" and got["parent_harness"] == "agy"
+
+    cfg = CollectorConfig(claude_roots=[str(tmp_path / "claude")], pi_roots=[], backfill_days=30)
+    idx = Indexer(cfg, "laptop", CollectorState(tmp_path / "c.db"), lambda k, p: None)
+    idx.jobs = j
+    f = tmp_path / "proj" / "S_AGY.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_text("{}\n")
+    meta = idx._meta({"session_id": "S_AGY", "cwd": str(tmp_path)}, "laptop/claude/S_AGY", f, "claude", f.stat())
+    assert meta["parent_key"] == "laptop/agy/conv-42"
     with open(p, "a") as f:
         f.write(json.dumps(dict(START, ts=iso(T0 + timedelta(minutes=1)), status="ok", turns=3, dur_s=60)) + "\n")
     os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 5))
