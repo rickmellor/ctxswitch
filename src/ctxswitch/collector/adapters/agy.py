@@ -26,6 +26,10 @@ from ctxswitch.common.schema import Ask, Turn, trim
 
 USER_INPUT, PLANNER_RESPONSE = 14, 15
 SYSTEM_MESSAGE = 101                                     # a system message, e.g. what a SessionStart hook injected
+# A tool step's status (agy 1.5.12, probed live): 9 while it waits for the operator's approval, then 2 (running) and
+# 3 (done) once allowed, or 6 / 7 once denied or cancelled. ask_question has its own question ask (the hooks).
+TOOL_STEP, WAITING, ALLOWED = 132, 9, (2, 3)
+QUESTION_TOOL = "ask_question"
 READ_TOOLS = {"read_file", "view_file", "view_file_outline", "list_dir", "find_by_name", "grep_search", "codebase_search",
               "search_web", "read_url_content", "view_code_item", "read_resource", "read_terminal", "view_files"}
 EDIT_TOOLS = {"write_to_file", "replace_file_content", "multi_replace_file_content", "edit_file", "create_file",
@@ -117,6 +121,17 @@ def iso(epoch: float) -> str:
 
 
 # -- the parser ----------------------------------------------------------------------------------------------------
+def question_answer(result: str) -> str:
+    """The operator's choice from an ask_question's tool result ("Created At: …\nCompleted At: …\nA1: (Recommended) Yes,
+    send it"): the A<n> lines' text, several joined by " | "; "" when there's none (a skipped question)."""
+    out = []
+    for ln in (result or "").splitlines():
+        head, sep, rest = ln.partition(":")
+        if sep and head.strip()[:1] == "A" and head.strip()[1:].isdigit() and rest.strip():
+            out.append(rest.strip())
+    return trim(" | ".join(out), 400)
+
+
 class AgyParser:
     def __init__(self, max_text: int = 4000):
         self.max_text = max_text
@@ -125,16 +140,20 @@ class AgyParser:
         self._cur: Turn | None = None
         self._n = 0
         self._calls: list[dict[str, Any]] = []       # completed model calls awaiting drain_calls()
+        self.pending: dict[str, dict[str, Any]] = {}  # tool steps waiting for approval, by step idx (str: json keys)
+        self._hooks: list[dict[str, Any]] = []       # hook events the steps imply, awaiting drain_hooks()
         self.bad_lines = 0
 
     def state(self) -> dict[str, Any]:
-        return {"meta": self.meta, "cur": self._cur.to_dict() if self._cur else None, "n": self._n, "bad": self.bad_lines}
+        return {"meta": self.meta, "cur": self._cur.to_dict() if self._cur else None, "n": self._n, "bad": self.bad_lines,
+                "pending": self.pending}
 
     @classmethod
     def from_state(cls, st: dict[str, Any], max_text: int = 4000) -> "AgyParser":
         p = cls(max_text)
         p.meta = st["meta"]; p._n = st["n"]; p.bad_lines = st.get("bad", 0)
         p._cur = Turn.from_dict(st["cur"]) if st["cur"] else None
+        p.pending = dict(st.get("pending") or {})
         return p
 
     def drain(self) -> list[Turn]:
@@ -173,7 +192,48 @@ class AgyParser:
             self._call(meta)
         else:
             self.pool_step(row)
+            self.step_status(row, ts)
             self._tool(meta, ts, offset_end)
+
+    def step_status(self, row: dict[str, Any], ts: str | None = None) -> None:
+        """What a tool step's status says the board should show: a permission ask while it waits for the operator
+        (status 9), resolved allowed or denied when it moves on, and an ask_question's actual answer once it's done.
+        Called for every newly read step and again for each still-waiting one (the indexer re-reads them by idx), so a
+        step read while waiting is seen again when it resolves. Events are named by conversation, step and outcome:
+        a re-read or a restart can't repeat one."""
+        if row.get("step_type") != TOOL_STEP:
+            return
+        idx, status = str(row.get("idx")), row.get("status")
+        meta, payload = row.get("metadata") or b"", row.get("step_payload") or b""
+        call, tool = text(path(meta, 4, 1)), text(path(meta, 4, 2))
+        ts = ts or stamp(path(meta, 1)) or ""
+        if tool == QUESTION_TOOL:
+            if status in ALLOWED:
+                answer = question_answer(text(path(payload, 140, 2, 1)))
+                if answer and call:
+                    self._hooks.append({"name": f"answer:{idx}", "event": "AskAnswered", "ts": ts,
+                                        "data": {"tool_name": tool, "tool_use_id": call, "answer": answer}})
+            return
+        if status == WAITING and idx not in self.pending:
+            try:
+                args = json.loads(text(path(meta, 4, 3)) or "{}")
+            except ValueError:
+                args = {}
+            self.pending[idx] = {"call": call, "tool": tool}
+            self._hooks.append({"name": f"perm:{idx}", "event": "PermissionRequest", "ts": ts,
+                                "data": {"tool_name": tool, "tool_use_id": call,
+                                         "tool_input": {k: trim(v, 400) if isinstance(v, str) else v
+                                                        for k, v in (args if isinstance(args, dict) else {}).items()}}})
+        elif status != WAITING and idx in self.pending:
+            p = self.pending.pop(idx)
+            self._hooks.append({"name": f"perm:{idx}:done", "event": "PermissionResolved", "ts": ts,
+                                "data": {"tool_name": p["tool"], "tool_use_id": p["call"],
+                                         "answer": "allowed" if status in ALLOWED else "denied"}})
+
+    def drain_hooks(self) -> list[dict[str, Any]]:
+        """The hook events the steps implied since the last drain ({name, event, ts, data}; the indexer adds the rest)."""
+        out, self._hooks = self._hooks, []
+        return out
 
     def pool_step(self, row: dict[str, Any]) -> None:
         """What saint-pool's SessionStart hook told this conversation about the local Qwen pool. agy 1.5.12 keeps a
@@ -267,6 +327,23 @@ def read_steps(db_path: str, start: int) -> list[dict[str, Any]]:
         try:
             rows = c.execute("SELECT idx, step_type, status, metadata, step_payload FROM steps WHERE idx >= ? ORDER BY idx",
                              (start,)).fetchall()
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return []
+    return [{"idx": r[0], "step_type": r[1], "status": r[2], "metadata": r[3], "step_payload": r[4]} for r in rows]
+
+
+def read_steps_at(db_path: str, idxs: list[int]) -> list[dict[str, Any]]:
+    """The steps at exactly these indexes (the ones still waiting for approval), in order; [] as read_steps does."""
+    import sqlite3
+    if not idxs:
+        return []
+    try:
+        c = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        try:
+            q = f"SELECT idx, step_type, status, metadata, step_payload FROM steps WHERE idx IN ({','.join('?' * len(idxs))}) ORDER BY idx"
+            rows = c.execute(q, list(idxs)).fetchall()
         finally:
             c.close()
     except sqlite3.Error:

@@ -33,7 +33,8 @@ DEDUPE_S = 30
 TRANSCRIPT_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 AGY_QUESTION_TOOL = "ask_question"                          # Antigravity's AskUserQuestion; the only hooked agy tool
 AGY_CLOSES = ("Stop", "SessionStart")
-SUMMARY_KEYS = ("command", "file_path", "path", "url", "pattern", "query", "description", "prompt")
+SUMMARY_KEYS = ("command", "file_path", "path", "url", "pattern", "query", "description", "prompt",
+                "CommandLine", "Path")                   # agy's run_command / file tools
 CLOSE_TEXT = {"Stop": "closed: turn ended", "UserPromptSubmit": "closed: new prompt", "SessionEnd": "closed: session ended",
               "SessionStart": "closed: session restarted", "session_start": "closed: session restarted",
               "session_shutdown": "closed: session ended"}
@@ -166,10 +167,26 @@ class HookApplier:
             self._close_all(key, CLOSE_TEXT[event], ts)
 
     def _agy(self, key: str, name: str, event: str, ts: str, d: dict[str, Any]) -> None:
-        """Antigravity: only the question tool's calls reach us (hook.AGY_SPOOL), so this is that ask's whole life. Its
-        transcript adapter records no question asks, so PostToolUse resolves it and Stop / SessionStart clear one
-        that never got an answer."""
+        """Antigravity. Its hooks bring the question tool's calls (hook.AGY_SPOOL): PreToolUse opens the ask, PostToolUse
+        resolves it, Stop / SessionStart clear one that never got an answer. The collector adds what agy has no hook
+        event for, read off the conversation's steps (adapters/agy.AgyParser.step_status): a tool waiting for the
+        operator's approval (PermissionRequest / PermissionResolved, like Claude's permission dialogs) and the
+        question's actual answer (AskAnswered), in whichever order the two paths deliver."""
         tool = d.get("tool_name") if isinstance(d.get("tool_name"), str) else ""
+        call = d.get("tool_use_id") if isinstance(d.get("tool_use_id"), str) else ""
+        if event == "PermissionRequest":
+            self._open(key, f"hook:perm:{tool}:{call or name}", "permission", summarize(tool or "tool", d.get("tool_input")), ts)
+            return
+        if event == "PermissionResolved":
+            answer = d.get("answer") if isinstance(d.get("answer"), str) and d["answer"] else "answered"
+            self._resolve(key, f"hook:perm:%:{_like(call)}" if call else "hook:perm:%", answer, ts)
+            return
+        if event == "AskAnswered":
+            answer = d.get("answer")
+            if call and isinstance(answer, str) and answer.strip():          # the real choice beats "answered"
+                self.store.db.execute("UPDATE asks SET answered=1, answer=?, answered_at=COALESCE(answered_at, ?) "
+                                      "WHERE key=? AND ref=?", (answer, ts, key, f"hook:ask:{call}"))
+            return
         if event == "PreToolUse" and tool == AGY_QUESTION_TOOL:
             ref = d.get("tool_use_id") if isinstance(d.get("tool_use_id"), str) and d["tool_use_id"] else name
             self._open(key, f"hook:ask:{ref}", "question", question_text(d.get("questions")), ts)

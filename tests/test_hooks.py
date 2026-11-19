@@ -321,3 +321,40 @@ def test_question_text_is_the_same_from_either_source():
     assert question_text([]) == question_text(None) == "(question)"
     long = question_text(["q" * 700])
     assert len(long) == 600 and "…" in long
+
+
+# -- Antigravity: what the collector reads off its steps -----------------------------------------------------------
+AKEY = "laptop/agy/c1"
+
+
+def _agy_feed(tmp_path):
+    f = Feed(tmp_path)
+    f.store.upsert_session({"key": AKEY, "host_id": "laptop", "harness": "agy", "session_id": "c1",
+                            "last_activity": "2026-10-28T10:00:00Z"})
+    f.store.set_liveness("laptop", [{"key": AKEY, "status": "busy"}])
+    return f
+
+
+def test_an_agy_tool_waiting_for_approval_is_a_permission_ask_until_it_moves_on(tmp_path):
+    f = _agy_feed(tmp_path)
+    f("PermissionRequest", 1, harness="agy", sid="c1", tool_name="run_command", tool_use_id="call_7",
+      tool_input={"CommandLine": "rm -rf build", "WaitMsBeforeAsync": 5000, "toolSummary": "Clean"})
+    assert f.attention() == [("permission", "allow run_command: rm -rf build")]       # agy's CommandLine, not the summary
+    f("PermissionResolved", 4, harness="agy", sid="c1", tool_name="run_command", tool_use_id="call_7", answer="denied")
+    (a,) = f.asks(AKEY)
+    assert a["answered"] == 1 and a["answer"] == "denied" and f.attention() == []
+
+
+def test_an_agy_question_s_real_answer_replaces_answered_whichever_comes_first(tmp_path):
+    for order in (("PostToolUse", "AskAnswered"), ("AskAnswered", "PostToolUse")):
+        (tmp_path / order[0]).mkdir()
+        f = _agy_feed(tmp_path / order[0])
+        f("PreToolUse", 1, harness="agy", sid="c1", tool_name="ask_question", tool_use_id="call_9",
+          questions=[{"question": "Tea or coffee?", "options": ["Tea", "Coffee"]}])
+        for i, ev in enumerate(order):
+            if ev == "PostToolUse":
+                f(ev, 5 + i, harness="agy", sid="c1", tool_name="ask_question", tool_use_id="call_9")
+            else:
+                f(ev, 5 + i, harness="agy", sid="c1", tool_name="ask_question", tool_use_id="call_9", answer="Coffee")
+        (a,) = f.asks(AKEY)
+        assert a["ref"] == "hook:ask:call_9" and a["answered"] == 1 and a["answer"] == "Coffee", order

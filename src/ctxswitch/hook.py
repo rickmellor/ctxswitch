@@ -63,6 +63,7 @@ ANY = object()                                              # spooled whatever t
 # what gets spooled, and the tool whose calls do: PreInvocation fires on every model call, so it isn't spooled at all
 AGY_SPOOL = {"SessionStart": ANY, "Stop": ANY, "PreToolUse": AGY_ASK_TOOL, "PostToolUse": AGY_ASK_TOOL}
 AGY_KEYS = (("tool_name", ("toolCall", "name")),            # agy's names → the ones the hub's applier reads
+            ("tool_use_id", ("toolCall", "id")),            # the call id: the ask's ref, so its answer can find it
             ("tool_input", ("toolCall", "args")),
             ("cwd", ("cwd",)), ("transcript_path", ("transcriptPath",)),
             ("reason", ("terminationReason",)), ("error", ("error",)))

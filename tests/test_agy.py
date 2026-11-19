@@ -262,3 +262,66 @@ def test_an_agy_session_is_never_taken_for_a_pool_job(tmp_path):
     assert ix.process(db)
     meta = [p for k, p in events if k == "session"][-1]
     assert asked == [] and not meta.get("parent_key") and not meta.get("job")
+
+
+def tool_step_at(name: str, call: str, args: str, secs: int, result: str = "") -> tuple[bytes, bytes]:
+    """A tool step as agy 1.5.12 writes it: call id / name / json args in metadata f4, the result at payload 140.2.1."""
+    meta = TS(1, secs) + S(4, S(1, call) + S(2, name) + S(3, args))
+    return meta, V(1, 132) + (S(140, S(2, S(1, result))) if result else b"")
+
+
+def _row(idx, status, step):
+    return {"idx": idx, "step_type": 132, "status": status, "metadata": step[0], "step_payload": step[1]}
+
+
+def test_a_tool_waiting_for_approval_opens_once_and_resolves_when_it_moves_on():
+    from ctxswitch.collector.adapters.agy import question_answer
+    p = AgyParser()
+    run = tool_step_at("run_command", "call_7", '{"CommandLine": "echo hi"}', 1_793_384_960)
+    p.feed(_row(5, 9, run), 6)
+    p.step_status(_row(5, 9, run))                                     # re-read while still waiting: nothing new
+    (h,) = p.drain_hooks()
+    assert h["event"] == "PermissionRequest" and h["name"] == "perm:5"
+    assert h["data"] == {"tool_name": "run_command", "tool_use_id": "call_7", "tool_input": {"CommandLine": "echo hi"}}
+    assert p.pending == {"5": {"call": "call_7", "tool": "run_command"}}
+    p2 = AgyParser.from_state(p.state())                                # the collector restarted meanwhile
+    p2.step_status(_row(5, 2, run))
+    (h,) = p2.drain_hooks()
+    assert (h["event"], h["data"]["answer"], h["name"]) == ("PermissionResolved", "allowed", "perm:5:done") and not p2.pending
+    p.step_status(_row(5, 6, run))                                      # denied
+    assert [x["data"]["answer"] for x in p.drain_hooks()] == ["denied"]
+    q = AgyParser()                                                     # ask_question waiting is a question, not a permission
+    ask = tool_step_at("ask_question", "call_9", "{}", 1_793_384_960,
+                       "Created At: 2026-11-18T21:33:52-08:00\nCompleted At: 2026-11-18T21:34:03-08:00\nA1: (Recommended) Yes")
+    q.feed(_row(8, 9, ask), 9)
+    assert q.drain_hooks() == [] and not q.pending
+    q.step_status(_row(8, 3, ask))
+    (h,) = q.drain_hooks()
+    assert (h["event"], h["data"]["tool_use_id"], h["data"]["answer"]) == ("AskAnswered", "call_9", "(Recommended) Yes")
+    assert question_answer("A1: Tea\nA2: Write-in: oolong") == "Tea | Write-in: oolong" and question_answer("Completed At: x") == ""
+
+
+def test_the_indexer_sees_a_waiting_step_resolve_behind_its_offset_and_only_while_live(tmp_path):
+    root = tmp_path / "agy"
+    cid = "4abccfc5-7c28-4ad2-bd3c-7c66acbc4384"
+    db = make_store(root, cid, STEPS[:3])
+    c = sqlite3.connect(db)
+    run = tool_step_at("run_command", "call_7", '{"CommandLine": "echo hi"}', 1_793_384_960)
+    c.execute("INSERT INTO steps(idx, step_type, status, metadata, step_payload) VALUES(3, 132, 9, ?, ?)", run); c.commit()
+    cfg = CollectorConfig(claude_roots=[], pi_roots=[], claude_win_roots=[], agy_roots=[str(root / "conversations")])
+    events = []
+    ix = Indexer(cfg, "laptop", CollectorState(tmp_path / "c.db"), lambda k, p: events.append((k, p)))
+    ix.live_keys = {f"laptop/agy/{cid}"}
+    ix.process(db)
+    hooks = [p for k, p in events if k == "hook"]
+    assert [(h["event"], h["name"]) for h in hooks] == [("PermissionRequest", f"agy:{cid}:perm:3")]
+    events.clear()
+    c.execute("UPDATE steps SET status=3 WHERE idx=3"); c.commit(); os.utime(db, None)    # allowed; no new step
+    ix.process(db)
+    assert [(p["event"], p["data"]["answer"]) for k, p in events if k == "hook"] == [("PermissionResolved", "allowed")]
+    # the same waiting step in a conversation that isn't live (a first index of an old one) asks nothing
+    events.clear()
+    c.execute("UPDATE steps SET status=9 WHERE idx=3"); c.commit()
+    ix2 = Indexer(cfg, "laptop", CollectorState(tmp_path / "c2.db"), lambda k, p: events.append((k, p)))
+    ix2.process(db)
+    assert [p for k, p in events if k == "hook"] == [] and ix2.state.file(str(db))["parser_state"]["pending"] == {}

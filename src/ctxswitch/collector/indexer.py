@@ -255,6 +255,10 @@ class Indexer:
         for row in rows:
             parser.feed(row, row["idx"] + 1)
         offset = (rows[-1]["idx"] + 1) if rows else offset
+        # a step read while it waited for approval resolves later, behind the offset: read those again by idx
+        if parser.pending:
+            for row in agy_store.read_steps_at(str(path), [int(i) for i in parser.pending]):
+                parser.step_status(row)
         live = key in self.live_keys
         ended = not live and (time.time() - mtime) > ENDED_AFTER_S
         if ended:
@@ -273,6 +277,15 @@ class Indexer:
             self.emit("turns", {"key": key, "turns": [t.to_dict() for t in turns],
                                 "open": parser.current.to_dict() if parser.current else None, "ended": ended})
             emitted = True
+        for h in parser.drain_hooks():
+            # a waiting step in a conversation that isn't live (a first index of old ones) is history, not a prompt
+            if not live and h["event"].startswith("Permission"):
+                continue
+            self.emit("hook", {"harness": "agy", "session_id": sid, "name": f"agy:{sid}:{h['name']}",
+                               "event": h["event"], "ts": h["ts"], "data": h["data"]})
+            emitted = True
+        if not live:
+            parser.pending.clear()
         self.state.save_file(str(path), "agy", key, offset, parser.state(), total, mtime,
                              (rec["turns_emitted"] if rec else 0) + len(turns), ended)
         return emitted
