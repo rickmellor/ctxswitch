@@ -171,6 +171,11 @@ Greenfield repo: `~/repos/ctxswitch`.
 - 2026-11-04 (left pane): a board left alone in its window (left pane closed outright, no hand-off) moves the most
   recently active session back on its left, or opens a shell, on its next refresh and when `ctx tmux` rejoins; never
   when another pane shares its window.
+- 2026-11-19 (a window's other job): a window also comes to show a background job by `/resume` picking one that is
+  already running (it parks its own empty conversation as a new `parkedJobId` and shows the job it picked, which its
+  transcript names in an `Opening "…", running in the background (<id>)` line). The collector folds the window into
+  the job it SHOWS — the transcript's last one, else its `parkedJobId` — so one conversation is one row; a parked job
+  it no longer shows stays a row of its own.
 
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +69,26 @@ def _tmux_at(v: Any) -> str | None:
     return v if isinstance(v, str) and ":" in v and "." in v else None
 
 
+def _opened_job_id(claude_dir: Path, session_id: str) -> str | None:
+    """The background job id a window's transcript last says it opened: /resume picking a session that is already a
+    background job writes `Opening "…", running in the background (<id>)` into the window's own transcript as a
+    local_command line. The last one wins (the window can open several in turn). Only the tail of the file counts."""
+    try:
+        f = next(iter(claude_dir.glob(f"projects/*/{session_id}.jsonl")), None)  # the slug varies, the id doesn't
+        if f is None:
+            return None
+        size = f.stat().st_size
+        with open(f, "rb") as fh:
+            if size > 256 * 1024:
+                fh.seek(size - 256 * 1024)
+            tail = fh.read()
+    except OSError:
+        return None
+    found = [m for line in tail.splitlines() if b"local-command-stdout" in line
+             for m in re.findall(rb"running in the background \(([0-9a-f]{6,})\)", line)]
+    return found[-1].decode("ascii", "replace") if found else None
+
+
 def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> dict[str, Liveness]:
     out: dict[str, Liveness] = {}
     if not sessions_dir.is_dir():
@@ -84,21 +105,32 @@ def _claude_registry(sessions_dir: Path, host_id: str, harness: str, alive) -> d
             continue
         if alive(pid, d):
             entries.append(d)
-    # A window can park its conversation into a background job (the window's entry names it parkedJobId, the job's
-    # entry jobId): the job is the conversation now, forked under a new session id, and the window only shows it.
-    # Report the job, as shown by the window's process, and not the window's frozen session as a second live one.
+    # A window can end up showing a background job two ways: it parked its own conversation into one (its entry
+    # names it parkedJobId), or /resume picked a session that is already a job (the window parked an empty
+    # conversation of its own under a new parkedJobId and shows the picked job, named in its transcript). Either way
+    # the job is the conversation now, under a new session id, and the window only shows it: report the job, as run
+    # by the window's process, and not the window's own session as a second live one. A job the window parked but no
+    # longer shows (stopped, or running on) stays a row of its own.
     jobs = {d["jobId"]: d for d in entries if isinstance(d.get("jobId"), str) and d["jobId"]}
     via: dict[int, int] = {}
     at: dict[int, str] = {}
+    shown: set[int] = set()                                   # entries by id(): the windows folded into a job
     for d in entries:
-        job = jobs.get(d.get("parkedJobId")) if isinstance(d.get("parkedJobId"), str) else None
-        if job is not None and job is not d:
-            via[job["pid"]] = d["pid"]
-            at[job["pid"]] = _tmux_at(d.get("tmux"))      # the job shows in the window's pane, not in one of its own
-    parked = {id(d) for d in entries if isinstance(d.get("parkedJobId"), str) and d["parkedJobId"] in jobs
-              and jobs[d["parkedJobId"]] is not d}
+        # the transcript says only what the window SHOWS; parkedJobId says what it holds. The lookup is for windows
+        # only (their entries are kind interactive, a job's are kind bg), and few windows are live.
+        opened = _opened_job_id(sessions_dir.parent, d["sessionId"]) if d.get("kind") == "interactive" else None
+        job = None
+        for jid in (opened, d.get("parkedJobId")):
+            if isinstance(jid, str) and (cand := jobs.get(jid)) is not None and cand is not d:
+                job = cand
+                break
+        if job is None:
+            continue
+        via[job["pid"]] = d["pid"]
+        at[job["pid"]] = _tmux_at(d.get("tmux"))          # the job shows in the window's pane, not one of its own
+        shown.add(id(d))
     for d in entries:
-        if id(d) in parked:
+        if id(d) in shown:
             continue
         pid, sid = d["pid"], d["sessionId"]
         status = d.get("status") if d.get("status") in LIVE else "unknown"

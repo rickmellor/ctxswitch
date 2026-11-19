@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 from ctxswitch.collector.gitinfo import repo_info
@@ -106,3 +105,77 @@ def test_a_window_parked_into_a_background_job_is_reported_as_the_job_shown_by_t
     assert set(live) == {"laptop/claude/s-job", "laptop/claude/s-other"}       # the frozen window session is gone
     assert live["laptop/claude/s-job"].pid == 200 and live["laptop/claude/s-job"].via_pid == 100
     assert live["laptop/claude/s-other"].via_pid is None                         # its job isn't running: it stays
+
+
+def _transcript(tmp_path, window_sid: str, *job_ids: str) -> None:
+    """The window's own transcript, holding one `Opening "…", running in the background (<id>)` line per job id —
+    what /resume writes when the session it picked is already a background job."""
+    d = tmp_path / "projects" / "-home-x"
+    d.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps({"type": "system", "subtype": "local_command", "timestamp": "2026-11-19T17:03:58.007Z",
+                         "content": f'<local-command-stdout>Opening "saint ctx tmux connection", running in the '
+                                    f'background ({j})</local-command-stdout>'}) for j in job_ids]
+    (d / f"{window_sid}.jsonl").write_text("".join(l + "\n" for l in lines))
+
+
+def _opened_job_reg(tmp_path, parked_live: bool) -> tuple[Path, Path]:
+    """A window (pid 100) that parked an empty conversation into job P (pid 400) and shows job J (pid 200), which
+    /resume picked out of the running background jobs. P is live only when told so. Returns (proc, reg)."""
+    proc = _fake_proc(tmp_path, 100, "11")
+    _fake_proc(tmp_path, 200, "22")
+    _fake_proc(tmp_path, 300, "33")
+    _fake_proc(tmp_path, 400, "44" if parked_live else "99")       # 99: the pid is gone, so P isn't live
+    reg = tmp_path / "sessions"; reg.mkdir()
+    (reg / "100.json").write_text(json.dumps({"pid": 100, "sessionId": "s-window", "procStart": "11", "status": "busy",
+                                               "kind": "interactive", "parkedJobId": "aaaaaaa1", "tmux": "ctx:@0.%2"}))
+    (reg / "200.json").write_text(json.dumps({"pid": 200, "sessionId": "s-shown", "procStart": "22", "status": "busy",
+                                               "kind": "bg", "jobId": "7209eb53"}))
+    (reg / "400.json").write_text(json.dumps({"pid": 400, "sessionId": "s-parked", "procStart": "44", "status": "busy",
+                                               "kind": "bg", "jobId": "aaaaaaa1"}))
+    return proc, reg
+
+
+def test_a_window_showing_a_job_it_resumed_is_reported_as_that_job(tmp_path):
+    """The other way a window comes to show a job: /resume picks one that is already running in the background. The
+    window parks its own (empty) conversation as a new job and shows the picked one, which its transcript names.
+    The window's row goes to the job it shows, even when the parked job has stopped."""
+    proc, reg = _opened_job_reg(tmp_path, parked_live=False)
+    _transcript(tmp_path, "s-window", "7209eb53")
+    live = read_claude_registry(reg, "laptop", proc=str(proc))
+    assert set(live) == {"laptop/claude/s-shown"}                              # one conversation, one row
+    assert live["laptop/claude/s-shown"].via_pid == 100
+    assert live["laptop/claude/s-shown"].tmux_at == "ctx:@0.%2"
+
+
+def test_a_window_showing_a_job_leaves_its_parked_job_its_own_row(tmp_path):
+    """The parked job is live too but the window shows another one: it stays a row of its own, with no window
+    showing it."""
+    proc, reg = _opened_job_reg(tmp_path, parked_live=True)
+    _transcript(tmp_path, "s-window", "7209eb53")
+    live = read_claude_registry(reg, "laptop", proc=str(proc))
+    assert set(live) == {"laptop/claude/s-shown", "laptop/claude/s-parked"}
+    assert live["laptop/claude/s-shown"].via_pid == 100
+    assert live["laptop/claude/s-parked"].via_pid is None
+
+
+def test_a_window_shows_the_job_it_opened_last(tmp_path):
+    proc, reg = _opened_job_reg(tmp_path, parked_live=False)
+    (reg / "300.json").write_text(json.dumps({"pid": 300, "sessionId": "s-first", "procStart": "33", "status": "busy",
+                                               "kind": "bg", "jobId": "bbbbbbb2"}))
+    _transcript(tmp_path, "s-window", "bbbbbbb2", "7209eb53")                  # opened A, then J
+    live = read_claude_registry(reg, "laptop", proc=str(proc))
+    assert set(live) == {"laptop/claude/s-shown", "laptop/claude/s-first"}
+    assert live["laptop/claude/s-shown"].via_pid == 100
+    assert live["laptop/claude/s-first"].via_pid is None
+
+
+def test_an_opening_line_for_a_job_that_isnt_live_falls_back_to_the_parked_one(tmp_path):
+    """The transcript says the window opened a job that has since stopped: the window still parked its conversation
+    into P, so P is the conversation the window holds (the existing behaviour)."""
+    proc, reg = _opened_job_reg(tmp_path, parked_live=True)
+    _transcript(tmp_path, "s-window", "cccccc33")                              # no such job running
+    live = read_claude_registry(reg, "laptop", proc=str(proc))
+    assert set(live) == {"laptop/claude/s-parked", "laptop/claude/s-shown"}
+    assert live["laptop/claude/s-parked"].via_pid == 100                       # the window folds into P, as before
+    assert live["laptop/claude/s-parked"].tmux_at == "ctx:@0.%2"
+    assert live["laptop/claude/s-shown"].via_pid is None                       # J runs on, shown by no window
