@@ -566,7 +566,7 @@ processes, against the Claude and pi registries, or the Antigravity presence loc
 pick a name, and outside a session it can't send at all. It's delivered like yours (Messages, above) but headed
 
     Message from another agent session, not from the operator (sent with ctxswitch).
-    From: session laptop/claude/1f0c… "docs layout" on host laptop
+    From: Claude Code session laptop/claude/1f0c… "docs layout" on host laptop
     To reply, use the mcp__ctxswitch__send_message tool (ctxswitch MCP; not SendMessage) with session "laptop/claude/1f0c…".
 
 (Claude's own SendMessage only reaches sessions on its machine, so Claude is given the full tool name.) It's

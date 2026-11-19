@@ -105,11 +105,22 @@ def test_the_delivered_turn_is_the_agents_not_yours(tmp_path):
 def test_header_names_the_sender_for_both_harnesses():
     h = deliver.agent_header(B, "api   work\nnow")
     assert h.startswith("Message from another agent session, not from the operator") and deliver.HEADER not in h
-    assert f'From: session {B} "api work now" on host devbox' in h and f'session "{B}"' in h
+    assert f'From: {deliver.SENDER_NAMES[B.split("/")[1]]} session {B} "api work now" on host devbox' in h
+    assert f'session "{B}"' in h
     for harness, tool in (("claude", "use the mcp__ctxswitch__send_message tool"), ("pi", "use the ctxswitch MCP server's send_message tool")):
         c = json.loads(deliver.line(harness, "s", "hi", 3, from_key=B, from_title="api work"))["message"]["content"]
         assert c == deliver.agent_header(B, "api work", harness) + "hi" and tool in c
-    assert "From: session devbox/pi/x on host devbox\n" in deliver.agent_header("devbox/pi/x", "")
+    assert "From: pi session devbox/pi/x on host devbox\n" in deliver.agent_header("devbox/pi/x", "")
+
+
+def test_the_from_line_says_which_agent_sent_it_whatever_the_receiver_calls_it():
+    """Claude Code heads every inbox message "Another Claude session sent a message"; the From line says who it was."""
+    for key, kind in (("laptop/agy/c2d3", "Antigravity session"), ("laptop/claude/a1", "Claude Code session"),
+                      ("devbox/pi/p1", "pi session"), ("laptop/claude-win/w1", "Claude Code (Windows) session"),
+                      ("laptop/shell/s1", "session")):
+        h = deliver.agent_header(key, "t")
+        assert f"From: {kind} {key} " in h, h
+        assert h.startswith("Message from another agent session, not from the operator (sent with ctxswitch).\n")
 
 
 async def test_collector_delivers_an_agent_message_with_its_header(tmp_path, monkeypatch):

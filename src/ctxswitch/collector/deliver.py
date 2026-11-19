@@ -38,13 +38,20 @@ REPLY_TOOL = {"claude": "mcp__ctxswitch__send_message tool (ctxswitch MCP; not S
               "agy": "send_message tool of the ctxswitch MCP server"}
 
 
+SENDER_NAMES = {"claude": "Claude Code", "claude-win": "Claude Code (Windows)", "pi": "pi", "agy": "Antigravity"}
+
+
 def agent_header(from_key: str, title: str | None = None, harness: str = "pi") -> str:
     """Heads another agent's message, for either harness (pi would otherwise show it as the operator's prompt)."""
-    host = from_key.split("/", 1)[0]
+    host, sender = (from_key.split("/") + ["", ""])[:2]
     name = f' "{" ".join(title.split())[:80]}"' if title and title.strip() else ""
     tool = REPLY_TOOL.get(harness, "ctxswitch MCP server's send_message tool")
+    # The first line stays word for word: the misplaced-prompt check and the skill recognise a peer's message by it.
+    # Who sent it goes on the From line, since the receiving harness may say otherwise (Claude Code heads every
+    # inbox message "Another Claude session sent a message", whichever agent it came from).
+    kind = f"{SENDER_NAMES[sender]} session" if sender in SENDER_NAMES else "session"
     return (f"Message from another agent session, not from the operator (sent with ctxswitch).\n"
-            f"From: session {from_key}{name} on host {host}\n"
+            f"From: {kind} {from_key}{name} on host {host}\n"
             f"To reply, use the {tool} with session \"{from_key}\".\n\n")
 
 
