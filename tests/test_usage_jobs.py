@@ -288,3 +288,13 @@ def test_a_job_launched_outside_a_claude_session_has_a_job_but_no_parent(tmp_pat
     assert ix.scan_all() == 1
     sess = [p for k, p in events if k == "session"][0]
     assert sess["job"] == "J1" and sess["parent_key"] == ""                     # not "laptop/claude/" or "laptop/claude/None"
+
+
+def test_an_unknown_parent_harness_never_reaches_a_session_key(tmp_path):
+    """The ledger is a file anything can append to: a parent_harness that isn't a harness we know is dropped, so the
+    job nests under a Claude parent as before, never under a key like "laptop/../x/conv"."""
+    for i, bad in enumerate(("../x", "", 3, None, "pi/evil")):
+        p = ledger(tmp_path / f"ledger{i}.jsonl",
+                   dict(START, sid=f"S{i}", job=f"J{i}", session="conv-42", parent_harness=bad, ts=iso(T0)))
+        got = Jobs(p).for_session(f"S{i}")
+        assert got["parent_session"] == "conv-42" and "parent_harness" not in got, bad

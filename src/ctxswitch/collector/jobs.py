@@ -54,6 +54,9 @@ def _count(v: Any) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
+PARENT_HARNESSES = ("claude", "agy")              # who can launch a saint-agent job (the ledger says which)
+
+
 class Jobs:
     """Ledger lines, indexed by job id, looked up by the session they describe."""
 
@@ -116,7 +119,7 @@ class Jobs:
                "job_tokens": rec.get("tokens") if isinstance(rec.get("tokens"), dict) else None,
                "parent_session": parent if isinstance(parent, str) and parent else None}
         ph = rec.get("parent_harness")
-        if isinstance(ph, str) and ph:
+        if ph in PARENT_HARNESSES:                      # it becomes part of a session key: only a harness we know
             out["parent_harness"] = ph
         return out
 
