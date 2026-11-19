@@ -1,9 +1,10 @@
 """The board's CPU/GPU panel: what the hosts doing the work last said about their silicon, in words.
 
 Pure rendering — ``panel_text`` takes one host's entry straight out of the hub's GET /v1/metrics body (``latest``,
-``age_s``, ``history``) and says it in two lines plus one per GPU, nothing wider than the pane, and
-``plan_heights`` decides which of several hosts get which of the lines the panel is allowed. The collector and the
-hub's side of this are elsewhere; a board on an older hub simply gets an exception and says so.
+``age_s``, ``history``) and says it in two lines plus one per GPU (plus an LLM row and one per LLM seat, for a host
+whose collector scrapes them), nothing wider than the pane, and ``plan_heights`` decides which of several hosts get
+which of the lines the panel is allowed. The collector and the hub's side of this are elsewhere; a board on an older
+hub simply gets an exception and says so.
 
 Unknown values print "—", never a guess. Nothing here assumes a number of GPUs: 10 cards is 10 lines, and the
 caller trims what doesn't fit in half the board's height.
@@ -169,8 +170,9 @@ def _nspark(width: int) -> int:
 def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[int, int] | None = None) -> Text:
     """One host's entry ({"latest", "age_s", "history"}) as text no line of which is wider than ``width``.
 
-    ``more`` is for a panel too short for every card: the caller says how many it left out (what fits_height
-    answers), those lines are left off, and a dim "+N more GPUs" line counts them."""
+    ``more`` is for a panel too short for every line: the caller says how many it left out (what fits_height
+    answers), those lines are left off — the cards first, then the LLM seat rows, last first, then the LLM row —
+    and one dim line counts them, "+N more GPUs" while they were all cards, "+N more lines" once seats went too."""
     entry = entry or {}
     latest = entry.get("latest") or {}
     hist = entry.get("history") or {}
@@ -222,16 +224,79 @@ def panel_text(host: str, entry: dict, width: int, more: int = 0, cols: tuple[in
     row.append(f" {float(used) / GB:.0f}/{float(total) / GB:.0f}G" if have else f" {DASH}/{DASH}G", style="dim")
     lines.append(row[:width])
 
-    hist_gpus = hist.get("gpus") or {}
+    # an LLM row and one per seat, between the memory and the cards, when this host's collector lists llm_seats
+    llm = latest.get("llm") if isinstance(latest.get("llm"), dict) else {}
+    seats = [s for s in (llm.get("seats") or []) if isinstance(s, dict)]
+    hist_llm = hist.get("llm") or {}
     nspark = _nspark(width)
-    shown = gpus[:max(0, len(gpus) - more)]
-    for i, g in enumerate(shown):
+    # what a height too short cut from the END: the cards first, then the seats last-first, then the LLM row itself
+    cut_gpu, cut_seat, cut_agg = min(more, len(gpus)), 0, 0
+    if more > cut_gpu:
+        cut_seat = min(more - cut_gpu, len(seats))
+        cut_agg = 1 if more > cut_gpu + cut_seat else 0
+    if seats:
+        if not cut_agg:
+            lines.append(_llm_line("LLM", llm.get("total"), hist.get("llm_total"), nspark, width, len(label)))
+        for s in seats[:max(0, len(seats) - cut_seat)]:
+            name = str(s.get("name") or "?")
+            lines.append(_llm_line(name[:len(label)], s, hist_llm.get(name), nspark, width, len(label)))
+    for i, g in enumerate(gpus[:max(0, len(gpus) - cut_gpu)]):
         idx = g.get("index")
         idx = i if not isinstance(idx, int) else idx
-        lines.append(_gpu_line(idx, g, hist_gpus.get(str(idx)) or [], bar_w, nspark, width, name_w, idx_w))
+        lines.append(_gpu_line(idx, g, (hist.get("gpus") or {}).get(str(idx)) or [], bar_w, nspark, width, name_w, idx_w))
     if more:
-        lines.append(Text(f"+{more} more GPUs (widen or close the detail)", "dim")[:width])
+        word = "GPUs" if cut_gpu == more else "lines"
+        lines.append(Text(f"+{more} more {word} (widen or close the detail)", "dim")[:width])
     return Text("\n").join(lines)
+
+
+def _llm_line(label: str, stats: dict | None, hist: list | None, nspark: int, width: int, lab_w: int) -> Text:
+    """One LLM row: tok/s now, its history, then min/avg/max and duty, every field a fixed width so the rows line
+    up with each other. A seat that's down says only that. As with a card, a narrow pane gives ground from the
+    right — a shorter sparkline first, then the min/avg/max, then the duty — and is never wider than the pane."""
+    stats = stats if isinstance(stats, dict) else {}
+    if stats.get("up") is False:                              # a seat that's down says that, and nothing else
+        return Text.assemble((label.rstrip(), "bold"), "  ", ("down", "yellow"))[:width]
+    lead = Text.assemble((label.ljust(lab_w), "bold"), " ", (_num(stats.get("tok_s"), 5, "tok/s"),
+                                                              "bold" if _f(stats.get("tok_s")) else "dim"))
+    # fixed widths, so every LLM row is as long as the next and the history, the three rates and the duty all sit in
+    # one column. Listed in the order they give ground: a narrow pane loses the min/avg/max before it loses the duty.
+    tail = [Text(f" {DASH:>4}/{DASH:>4}/{DASH:>4}", "dim") if not any(_f(stats.get(k)) for k in ("min", "avg", "max"))
+            else Text(f" {_num(stats.get('min'), 4)}/{_num(stats.get('avg'), 4)}/{_num(stats.get('max'), 4)}", "dim"),
+            Text(f" duty {DASH.rjust(3)}%", "dim") if not _f(stats.get("duty"))
+            else Text(f" duty {_num(stats.get('duty'), 3)}%", style=level_style(_f(stats.get("duty"))))]
+    for drop in range(3):                                   # the spark shortens first, then min/avg/max, duty last
+        for n in range(nspark, 0, -1):
+            spark = _llm_spark(hist, n, stats.get("max"))   # a seat with less history is padded on its left
+            t = Text.assemble(lead, " ", " " * (n - len(spark.plain)), spark, *tail[drop:])
+            if len(t.plain) <= width:
+                return t
+    return Text.assemble(lead, *tail)[:width]
+
+
+def _llm_spark(hist: list | None, n: int, top) -> Text:
+    """A seat's tok/s history as one run of characters, its last value's level colouring the lot — as a card's, but
+    scaled to 0..100 against the fastest interval it ever had (the row's own max when that is bigger), so a seat
+    topping out at 240 tok/s fills the block as full as a card at 100% does. Nothing to scale by — no history yet,
+    or a window that never generated — is the bottom block, and a short run is padded out by the row."""
+    vals = [float(v) for v in (hist or []) if isinstance(v, (int, float))][-max(0, n):]
+    peak = max([_f(top) or 0.0, *vals]) if vals or _f(top) else 0.0
+    if not vals:
+        return Text(SPARK[0] * max(0, n), style="dim")
+    if peak <= 0:                                             # it never generated: the bottom block, in its own green
+        return Text(SPARK[0] * len(vals), style=level_style(0.0))
+    return Text("".join(SPARK[min(7, max(0, int(round(v * 7 / peak))))] for v in vals),
+                style=level_style(min(100.0, max(0.0, vals[-1] * 100 / peak))))
+
+
+def _f(v) -> float | None:
+    """The number when there is one, else None — so a null prints its dash and a zero its 0."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _num(v: float | None, w: int, unit: str = "") -> str:
+    """A number right-aligned in its own width, a dash in the same width when the collector has no answer."""
+    return (f"{v:>{w}.0f}" if v is not None else DASH.rjust(w)) + (f" {unit}" if unit else "")
 
 
 def _gpu_line(idx: int, g: dict, hist: list, bar_w: int, nspark: int, width: int, name_w: int = 0,
@@ -269,9 +334,9 @@ def _gpu_line(idx: int, g: dict, hist: list, bar_w: int, nspark: int, width: int
 
 
 def fits_height(entry: dict, height: int) -> tuple[int, int]:
-    """How many of one host's GPUs fit in a panel on a board ``height`` lines tall, and how many that leaves out —
-    :func:`plan_heights` for the single-host case, which is what a board that picked no hosts shows."""
-    n = gpu_count(entry)
+    """How many of one host's GPU and LLM lines fit in a panel on a board ``height`` lines tall, and how many that
+    leaves out — :func:`plan_heights` for the single-host case, which is what a board that picked no hosts shows."""
+    n = line_count(entry)
     per, _ = plan_heights([n], height)
     shown = per[0] if per and per[0] is not None else 0
     return shown, n - shown
@@ -296,22 +361,36 @@ def gpu_count(entry: dict) -> int:
     return len((((entry or {}).get("latest") or {}).get("gpus")) or [])
 
 
+def llm_lines(entry: dict) -> int:
+    """How many LLM lines a host's last sample asks for: its LLM row plus one a seat, or none at all when its
+    collector has no ``llm_seats`` to scrape (the sample then carries no "llm" key, as it always did)."""
+    llm = ((entry or {}).get("latest") or {}).get("llm")
+    seats = llm.get("seats") if isinstance(llm, dict) else None
+    return 1 + len(seats or []) if seats else 0
+
+
+def line_count(entry: dict) -> int:
+    """The lines a host's block costs beyond its title, CPU and MEM: one a card, plus the LLM row and its seats."""
+    return gpu_count(entry) + llm_lines(entry)
+
+
 FIXED = 3                                       # lines every shown host keeps: title, CPU, MEM
 
 
 def plan_heights(counts: list[int], height: int) -> tuple[list[int | None], int]:
     """Which of several stacked hosts get which of the lines a panel on a board ``height`` lines tall may take.
 
-    ``counts`` is one entry per host, in sorted order, holding what :func:`gpu_count` says of it; the answer is
-    ``(per, more_hosts)``, one entry per host the same way round: how many of that host's card lines fit, or ``None``
-    for a host the panel has no room for at all, plus how many hosts that left out.
+    ``counts`` is one entry per host, in sorted order, holding what :func:`line_count` says of it — card lines plus
+    the LLM row and its seat rows; the answer is ``(per, more_hosts)``, one entry per host the same way round: how
+    many of that host's lines fit, or ``None`` for a host the panel has no room for at all, plus how many hosts
+    that left out.
 
     The panel may take no more than half the board and one of those lines is its border. What every host shown keeps
     is its three lines — the title, CPU and memory lines — so the hosts that fit at all are however many of those
-    pairs fit, last ones dropped first (``more_hosts``). The card lines left over go out host by host in that same
-    sorted order. A host that lost some of its cards ends with a "+N more GPUs" line, which itself costs a line, so
-    lines go back from the last host with any until the whole lot, the "+N more" lines included, is inside the
-    height. Nothing the answer promises can exceed it.
+    pairs fit, last ones dropped first (``more_hosts``). The lines left over go out host by host in that same
+    sorted order. A host that lost some of them ends with a "+N more" line, which itself costs a line, so lines go
+    back from the last host with any until the whole lot, the "+N more" lines included, is inside the height.
+    Nothing the answer promises can exceed it.
     """
     counts = [int(c) if isinstance(c, (int, float)) else 0 for c in (counts or [])]
     room = max(0, (height or 0) // 2 - 1)
@@ -339,14 +418,14 @@ def hosts_text(hosts: dict, chosen: list[str], width: int, height: int,
 
     An empty ``chosen`` is the old automatic choice: the one host :func:`pick_host` picks from the hub's body, its
     ``configured`` name and ``this_host`` breaking a tie. The panel may take half the board's ``height`` at most;
-    :func:`plan_heights` says how that splits between the hosts, and each one that lost card lines gets the
-    ``more`` count that :func:`panel_text` turns into "+N more GPUs".
+    :func:`plan_heights` says how that splits between the hosts, and each one that lost lines gets the ``more``
+    count that :func:`panel_text` turns into its "+N more GPUs" or "+N more lines" line.
     """
     hosts = hosts or {}
     if not hosts:
         return Text(METRICS_NONE_MSG, "dim")
     names = sorted(chosen) if chosen else [pick_host(hosts, configured, this_host)]
-    counts = [gpu_count(hosts.get(n) or {}) for n in names]
+    counts = [line_count(hosts.get(n) or {}) for n in names]
     every = [label_cols(((hosts.get(n) or {}).get("latest") or {}).get("gpus") or [], width) for n in names]
     cols = (max((c[0] for c in every), default=0), max((c[1] for c in every), default=0))   # one column, all hosts     # a host the hub never heard of counts no cards:
     plan, more_hosts = plan_heights(counts, height)             # its one dim line is cheaper than a block of them

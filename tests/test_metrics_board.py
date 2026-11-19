@@ -13,7 +13,7 @@ from textual.widgets import Static
 
 from ctxswitch.client.tui import app as tui
 from ctxswitch.client.tui.metrics_panel import (METRICS_HUB_MSG, METRICS_NONE_MSG, HostPicker, fits_height,
-                                                hosts_text, panel_text, pick_host, plan_heights)
+                                                gpu_count, hosts_text, panel_text, pick_host, plan_heights)
 from ctxswitch.common.config import Config
 
 GB = 1_000_000_000
@@ -38,6 +38,29 @@ def _sample(host="gpu-host", *, util=0.0, gpus=None, cores=None, age=3.0, model=
 def _gpu(i, *, vendor="amd", name="AMD GPU", util=10.0, used=int(28.8 * GB), total=32 * GB, temp=31.0, power=21.0):
     return {"index": i, "vendor": vendor, "name": name, "util": util, "mem_used": used, "mem_total": total,
             "temp_c": temp, "power_w": power}
+
+
+def _seat(name, *, up=True, tok_s=219.3, running=2, waiting=0, mn=140.2, avg=175.0, mx=231.9, duty=63.4):
+    """One seat as the "llm" part of a sample lists it: its rate now, its window's min/avg/max, its duty."""
+    return {"name": name, "up": up, "tok_s": tok_s, "running": running, "waiting": waiting,
+            "min": mn, "avg": avg, "max": mx, "duty": duty}
+
+
+def _total(*, tok_s=306.4, mn=150.0, avg=301.2, mx=420.5, duty=31.7):
+    return {"tok_s": tok_s, "min": mn, "avg": avg, "max": mx, "duty": duty}
+
+
+def _with_llm(entry, *, seats=None, total=None, hist=True):
+    """A host's entry as a collector that lists ``[collector] llm_seats`` sends it: the same sample, plus its "llm"
+    key and the hub's per-seat history beside the cards'. A host without them sends no "llm" key at all."""
+    seats = [_seat("worker1"), _seat("worker2", tok_s=87.1, mn=60.0, avg=74.0, mx=91.2, duty=41.0)] \
+        if seats is None else seats
+    total = _total() if total is None else total
+    entry["latest"]["llm"] = {"window_s": 600, "seats": seats, "total": total}
+    if hist:
+        entry["history"]["llm"] = {s["name"]: [s["tok_s"]] * 60 for s in seats}
+        entry["history"]["llm_total"] = [total["tok_s"]] * 60
+    return entry
 
 
 def _ten():
@@ -594,6 +617,105 @@ def test_a_host_with_no_samples_gets_the_band_too():
     band = header_band(Text("devbox · no samples", "dim"), 40)
     assert len(band.plain) == 40 and _bg_cols(band) == set(range(40))
     assert len(header_band(Text("x" * 60), 40).plain) == 40                   # never wider than the pane
+
+
+# -- the LLM rows: what the seats generated, and how busy they were --------------------------------------------------
+
+from ctxswitch.client.tui.metrics_panel import line_count, llm_lines  # noqa: E402
+
+
+def _llm_rows(entry, width=62) -> list[str]:
+    return [ln for ln in panel_text("gpu-host", entry, width).plain.splitlines()
+            if ln.startswith(("LLM", "worker"))]
+
+
+def test_a_host_with_no_llm_seats_says_exactly_what_it_said_before():
+    """The old shape is untouched: no "llm" key at all, or one with nothing in it, and the panel is byte for byte
+    what it was before seats existed — including a seat list that came in empty."""
+    plain = panel_text("gpu-host", _sample(), 62).plain
+    for llm in ({}, {"window_s": 600, "seats": [], "total": None}, None):
+        entry = _sample()
+        entry["latest"]["llm"] = llm
+        assert panel_text("gpu-host", entry, 62).plain == plain
+    assert panel_text("gpu-host", _with_llm(_sample(), seats=[]), 62).plain == plain
+
+
+def test_two_up_seats_get_an_llm_row_and_one_a_seat_between_the_memory_and_the_cards():
+    lines = panel_text("gpu-host", _with_llm(_sample()), 62).plain.splitlines()
+    assert lines[3].startswith("LLM") and lines[4].startswith("worker1") and lines[5].startswith("worker2")
+    assert lines[6].startswith("#0 ")                       # the LLM rows sit above the cards
+    rows = _llm_rows(_with_llm(_sample()))
+    assert len(rows) == 3 and len({len(r) for r in rows}) == 1, rows
+    assert all("tok/s" in r and "duty" in r for r in rows), rows
+    assert len({r.index("tok/s") for r in rows}) == 1, rows   # one column for all three
+    assert "219 tok/s" in rows[1] and "306 tok/s" in rows[0] and "140/ 175/ 232" in rows[1]
+    assert rows[0].rstrip().endswith("duty  32%") and rows[1].rstrip().endswith("duty  63%")
+
+
+def test_a_rate_the_collector_has_no_answer_for_prints_a_dash_and_a_down_seat_says_only_down():
+    entry = _with_llm(_sample(), seats=[_seat("worker1", tok_s=None, mn=None, avg=None, mx=None, duty=None),
+                                        _seat("worker2", up=False, tok_s=None, mn=None, avg=None, mx=None, duty=None)],
+                      total=_total(tok_s=None, mn=None, avg=None, mx=None, duty=None))
+    lines = panel_text("gpu-host", entry, 62).plain.splitlines()
+    assert lines[3].startswith("LLM") and "tok/s" in lines[3] and "0 tok/s" not in lines[3]
+    assert lines[3].count("—") == 5 and "duty   —%" in lines[3], lines[3]   # tok/s, the three rates, the duty — and
+    assert lines[4].count("—") == 5 and lines[4].rstrip().endswith("—%")     # the seat's, its history still the block
+    assert lines[5].rstrip() == "worker2  down" and "tok/s" not in lines[5]
+    assert _style_of(panel_text("gpu-host", entry, 62), 5, "down") == "yellow"
+
+
+def test_a_seats_history_is_its_own_whatever_its_neighbours_are_called():
+    """A seat name longer than the CPU label is cut to it, so "worker12" and "worker13" can print the same word —
+    the hub's history is still keyed by the whole name, so each row keeps its own run, scaled to its own fastest
+    interval, and neither comes out blank."""
+    entry = _with_llm(_sample(), seats=[_seat("worker12", tok_s=10.0, mx=200.0), _seat("worker13", tok_s=10.0, mx=20.0)])
+    rows = [ln for ln in panel_text("gpu-host", entry, 44).plain.splitlines() if ln.startswith("worker")]
+    assert len(rows) == 2 and all(ln.startswith("worker ") for ln in rows), rows     # cut to the label's width
+    assert len({len(re.findall(r"[▁▂▃▄▅▆▇█]", r)) for r in rows}) == 1               # both found theirs, neither empty
+    assert "▁" in rows[0] and "▅" in rows[1], rows           # 10 tok/s is a floor against 200, a shoulder against 20
+
+
+def test_the_llm_rows_fit_every_pane_and_a_narrow_one_keeps_tok_s_and_duty():
+    entry = _with_llm(_sample())
+    for w in (41, 44, 62, 69, 100):
+        lines = panel_text("gpu-host", entry, w).plain.splitlines()
+        assert all(len(ln) <= w for ln in lines), (w, lines)
+        assert len(_llm_rows(entry, w)) == 3, w
+    rates = lambda r: re.search(r"\d+/\s*\d+/\s*\d+", r.split("tok/s")[1])       # the window's three rates
+    for w in (41, 44):                                   # too narrow for the window: tok/s and duty stay
+        rows = _llm_rows(entry, w)
+        assert all("tok/s" in r and "duty" in r and not rates(r) for r in rows), (w, rows)
+    for w in (62, 69, 100):                              # and the min/avg/max is back as soon as it fits
+        assert all(rates(r) for r in _llm_rows(entry, w)), w
+        assert "140/ 175/ 232" in _llm_rows(entry, w)[1], w
+
+
+def test_a_short_panel_cuts_the_cards_first_and_the_seat_rows_only_after_them():
+    """Ten cards and two seats in a panel too short for the lot: the LLM rows are worth too much to lose, so the
+    cards go, and the line says GPUs; only when even the seats have to go does it start saying lines."""
+    entry = _with_llm(_sample(gpus=_ten()))
+    entry["history"]["gpus"] = {str(i): [10.0] * 60 for i in range(10)}
+    roomy = hosts_text({"gpu-host": entry}, ["gpu-host"], 62, 30).plain.splitlines()
+    assert roomy[-1].startswith("+3 more GPUs") and any(ln.startswith("worker2 ") for ln in roomy)
+    assert sum(1 for ln in roomy if ln.startswith("#")) == 7 and len(roomy) <= 30 // 2 - 1
+    tight = hosts_text({"gpu-host": entry}, ["gpu-host"], 62, 14).plain.splitlines()
+    assert tight[-1].startswith("+11 more lines") and any(ln.startswith("LLM") for ln in tight)
+    assert not any(ln.startswith("worker2 ") for ln in tight) and any(ln.startswith("worker1 ") for ln in tight)
+    assert len(tight) <= 14 // 2 - 1, tight
+
+
+def test_the_lines_a_host_costs_are_its_cards_plus_the_llm_row_and_its_seats():
+    two, none = _with_llm(_sample()), _sample()
+    assert gpu_count(two) == gpu_count(none) == 2           # the G picker still counts cards, only cards
+    assert llm_lines(two) == 3 and llm_lines(none) == 0
+    assert line_count(two) == gpu_count(two) + 3 and line_count(none) == 2
+    assert line_count(_with_llm(_sample(gpus=_ten()))) == 13
+
+
+def test_the_help_says_what_the_llm_rows_mean():
+    tip = dict(tui.HELP_TIPS)["CPU and GPU"]
+    assert "llm_seats" in tip and "duty" in tip and "tok/s" in tip
+    assert "min/avg/max" in tip.replace(" ", "") or "min/avg/max" in tip
 
 
 def test_vram_temperature_and_power_sit_in_columns_whatever_their_digits():

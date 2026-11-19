@@ -358,7 +358,11 @@ HELP_TIPS = [
      "so when nobody does. `G` picks which hosts the panel stacks, several at once, remembered for next time; "
      "picked, a host that stopped reporting still gets one line saying it has no samples. Left unpicked it shows the "
      "one host `metrics_host` names, or else the one with the most GPUs, which is the one doing the work. Each "
-     "collector samples every 2 s and the hub keeps the last sample and the last minute of history per host.")),
+     "collector samples every 2 s and the hub keeps the last sample and the last minute of history per host. A host "
+     "whose collector also lists `llm_seats` gets an LLM row and one row a seat: tok/s right now, its minute of "
+     "history, then min/avg/max over the window counting only time the seat was actually generating — idle, ramp-up "
+     "and prefill-only intervals don't count — and its duty, the share of the time a request was running. The LLM "
+     "row is the whole rig: its tok/s is the seats' summed, its duty every seat's seconds weighted together.")),
     ("Restarting the board", ("`ctx tmux --restart` restarts it on new code; your agents keep running. If the board's "
      "pane is ever gone, `ctx tmux` puts it back; if the left pane is (the board alone in its window), the board "
      "puts the most recent session back there, or a shell.")),

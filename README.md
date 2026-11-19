@@ -270,6 +270,16 @@ CPU (a bar, the percent, then one character per core and the memory), then one l
 minute of history, VRAM, temperature, power — NVIDIA's first and the rest by card number, so `#0`…`#9` read like
 btop's. Nothing a collector can't read is guessed: it prints `—`.
 
+A host whose collector also lists `llm_seats` gets an LLM row and one row per seat: tokens per second right now, its
+last minute of history, then min/avg/max over the window counting only the time the seat was actually generating
+(idle, ramp and prefill-only intervals never count), and its duty — the share of the time a request was running. The
+`LLM` row is the whole rig: the seats' tok/s summed, their duty weighted by seat-time.
+
+```toml
+[collector.llm_seats]
+worker1 = "http://127.0.0.1:8002/metrics"
+```
+
 It is opt-in per host: a host only reports once its collector has `[collector] metrics_every` set (default `0`, which
 samples nothing), and the panel says so when none do. `G` opens a picker that lists every host that reports with its
 GPU count; a digit toggles one, Enter, Esc or `G` closes it, and the panel stacks whichever are ticked, sorted — laptop,
