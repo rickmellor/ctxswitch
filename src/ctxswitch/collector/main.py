@@ -40,7 +40,7 @@ def ensure_shell_roots(roots) -> None:
             except OSError:
                 pass
 
-from ctxswitch.collector.deliver import deliver
+from ctxswitch.collector.deliver import deliver, deliver_agy
 from ctxswitch.collector.indexer import Indexer
 from ctxswitch.collector import spool
 from ctxswitch.collector.liveness import (fill_tmux_at, read_agy_presence, read_claude_registry, read_claude_win_registry,
@@ -271,12 +271,14 @@ class Collector:
         mid, key = int(m["id"]), m["key"]
         live = self.live.get(key)
         harness = key.split("/", 2)[1]
-        if live is None or not live.socket or harness not in ("claude", "pi"):
-            return False
+        if live is None or harness not in ("claude", "pi", "agy") or (harness != "agy" and not live.socket):
+            return False                               # agy needs no socket: its pane, else the inbox it hooks
         done = self.state.get(f"msg:{mid}")
         if done is None:                               # never write the same message twice, even if the report is lost
-            err = await deliver(live.socket, harness, key.split("/", 2)[2], m["body"], mid,
-                                from_key=m.get("from_key"), from_title=m.get("from_title"))
+            sid = key.split("/", 2)[2]
+            kw = {"from_key": m.get("from_key"), "from_title": m.get("from_title")}
+            err = (await deliver_agy(live, sid, m["body"], mid, **kw) if harness == "agy"
+                   else await deliver(live.socket, harness, sid, m["body"], mid, **kw))
             done = err or ""
             self.state.set(f"msg:{mid}", done)
             log.info("message %d -> %s: %s", mid, key, done or "sent")

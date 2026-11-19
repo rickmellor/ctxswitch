@@ -93,8 +93,9 @@ REPLY_CHARS = 2000
 MATCH_CHARS = 200                                   # a turn is the message's when its prompt contains this much of the body
 MSG_OPEN = ("queued", "sent")
 AGENT_PER_HOUR = 20                                 # messages one agent session may send in an hour
-NOT_DELIVERABLE = ("claude-win", "agy", "shell")  # Windows-native Claude: no socket reachable from WSL; agy: no input
-                                                  # channel; shell: a bash, nobody is listening for a prompt
+NOT_DELIVERABLE = ("claude-win", "shell")     # Windows-native Claude: no socket reachable from WSL; shell: a bash, nobody
+                                              # is listening for a prompt. agy takes them through its hooks' inbox, or
+                                              # its tmux pane while idle (collector/deliver.deliver_agy)
 REPLYABLE = ("plain", "text")                       # asks a message can answer; the rest are dialogs in the session
 SIBLINGS = 6                                        # other sessions shown for a workstream
 SIBLING_DAYS = 14                                   # ... live, or active within this many days

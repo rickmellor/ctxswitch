@@ -148,11 +148,10 @@ HELD_MODES = ("plan", "bypassPermissions")          # Claude holds an unenvelope
 
 
 def can_message(s: dict) -> str | None:
-    """None if a message can be queued for this session, else why not."""
+    """None if a message can be queued for this session, else why not. agy takes them through its hooks' inbox, or
+    its tmux pane while idle (collector/deliver.deliver_agy)."""
     if s.get("harness") == "claude-win":
         return "Windows-native Claude sessions can't take messages"
-    if s.get("harness") == "agy":
-        return "Antigravity sessions can't take messages (no input channel yet)"
     if s.get("harness") == "shell":
         return "shells don't take messages"
     return None

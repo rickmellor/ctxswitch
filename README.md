@@ -401,8 +401,11 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
 - **Antigravity sessions** (`agy`) are read from agy's own SQLite store (one conversation per file, protobuf
   steps read raw: the prompt, the model's reply, tool calls by name), live while agy holds the conversation's
   presence lock, busy or idle from its summary row. Enter resumes one with `agy --conversation <id>`; `n` starts
-  one; `k` ends one. No messaging into them yet (agy has no input channel we can reach), and no hook events, so
-  permission prompts don't show as waiting. Verified on agy 1.4.11.
+  one; `k` ends one. Messages reach them (`m`, `ctx send`, an agent's `send_message`): typed into the pane's input
+  box while it sits idle at agy's prompt (a tmux pane on this host), otherwise through the inbox its hooks read —
+  mid-turn for a busy one, with the next turn for an idle one outside tmux — which needs `ctx install`'s
+  Antigravity hooks. No hook events, so permission prompts don't show as waiting. Read on agy 1.4.11, delivery
+  verified on 1.5.12.
 - **Windows-native Claude sessions** (`cw`) are read-only: Enter tells you the command to run in a Windows
   terminal. They're picked up within 30 s (Windows writes don't wake the Linux file watcher).
 - **Ending a session**: `k` on its row, then `y`. It ends that agent only (its transcript stays, so it's

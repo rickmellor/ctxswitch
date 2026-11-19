@@ -153,7 +153,7 @@ def test_agy_store_is_watched_by_default_and_resumes_by_conversation(tmp_path):
     assert load(tmp_path / "c.toml").collector.agy_roots == []
     s = {"harness": "agy", "session_id": "4abc", "host_id": "laptop"}
     assert tmux.resume_argv(s) == ["agy", "--conversation", "4abc"] == launch.resume_command(s)
-    assert fmt.harness_label(s) == "agy" and fmt.can_message(s).startswith("Antigravity")
+    assert fmt.harness_label(s) == "agy" and fmt.can_message(s) is None   # messages reach an agy session now
 
 
 def test_the_picker_offers_each_claude_account_then_pi_and_antigravity():
