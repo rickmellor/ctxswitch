@@ -1,6 +1,7 @@
 """The collector's CPU/GPU sample: what the board's metrics panel shows for this host. Every reader takes its root,
 so each test hands it a fake /proc and /sys tree — the numbers below are the real ones off the GPU box."""
 import asyncio
+import struct
 import subprocess
 
 import pytest
@@ -244,7 +245,7 @@ class _Clock:
 
 def test_the_first_sample_of_an_xe_card_names_it_and_says_nothing_about_load_or_watts(tmp_path):
     xe_card(tmp_path, 2)
-    (g,) = M.IntelSampler(tmp_path / "sys", _Clock()).sample()
+    (g,) = M.IntelSampler(tmp_path / "sys", _Clock(), vram=lambda dev: (None, None)).sample()
     assert g["index"] == 0 and g["vendor"] == "intel" and g["name"] == "Arc Pro B50"
     assert g["util"] is None and g["power_w"] is None          # both are deltas: no interval, nothing to say
     assert g["temp_c"] == 55.0 and g["mem_used"] is None and g["mem_total"] is None
@@ -252,7 +253,7 @@ def test_the_first_sample_of_an_xe_card_names_it_and_says_nothing_about_load_or_
 
 def test_util_is_the_busiest_gt_and_power_the_joules_over_the_interval(tmp_path):
     d, clk = xe_card(tmp_path, 2), _Clock()
-    s = M.IntelSampler(tmp_path / "sys", clk)
+    s = M.IntelSampler(tmp_path / "sys", clk, vram=lambda dev: (None, None))
     s.sample()
     clk.t = 2.0
     w(d, "tile0/gt0/gtidle/idle_residency_ms", str(93_587 + 1000) + "\n")   # idled 1000 of 2000 ms: 50 % busy
@@ -264,7 +265,7 @@ def test_util_is_the_busiest_gt_and_power_the_joules_over_the_interval(tmp_path)
 
 def test_an_idle_counter_that_went_backwards_contributes_nothing(tmp_path):
     d, clk = xe_card(tmp_path, 2, idle=(93_587, 102_710)), _Clock(100.0)
-    s = M.IntelSampler(tmp_path / "sys", clk)
+    s = M.IntelSampler(tmp_path / "sys", clk, vram=lambda dev: (None, None))
     s.sample()
     clk.t = 102.0
     w(d, "tile0/gt0/gtidle/idle_residency_ms", "80000\n")        # the driver reloaded: that counter went down
@@ -274,7 +275,7 @@ def test_an_idle_counter_that_went_backwards_contributes_nothing(tmp_path):
 
 def test_an_energy_counter_that_went_backwards_says_nothing(tmp_path):
     d, clk = xe_card(tmp_path, 2), _Clock()
-    s = M.IntelSampler(tmp_path / "sys", clk)
+    s = M.IntelSampler(tmp_path / "sys", clk, vram=lambda dev: (None, None))
     s.sample()
     clk.t = 2.0
     w(d, "hwmon/hwmon3/energy1_input", str(121_800_692_199 - 43_600_000) + "\n")
@@ -283,7 +284,7 @@ def test_an_energy_counter_that_went_backwards_says_nothing(tmp_path):
 
 def test_an_energy_counter_without_a_card_label_is_still_the_card_s(tmp_path):
     d, clk = xe_card(tmp_path, 2, energy_label="pkg"), _Clock()   # no "card" label anywhere: take energy1
-    s = M.IntelSampler(tmp_path / "sys", clk)
+    s = M.IntelSampler(tmp_path / "sys", clk, vram=lambda dev: (None, None))
     s.sample()
     clk.t = 2.0
     w(d, "hwmon/hwmon3/energy1_input", str(121_800_692_199 + 20_000_000) + "\n")
@@ -294,7 +295,7 @@ def test_with_no_card_label_the_lowest_numbered_counter_wins_not_the_smallest_re
     d, clk = xe_card(tmp_path, 2, energy_label="pkg"), _Clock()
     w(d, "hwmon/hwmon3/energy2_label", "other\n")
     w(d, "hwmon/hwmon3/energy2_input", "100\n")                  # smaller than energy1, but numbered after it
-    s = M.IntelSampler(tmp_path / "sys", clk)
+    s = M.IntelSampler(tmp_path / "sys", clk, vram=lambda dev: (None, None))
     s.sample()
     clk.t = 2.0
     w(d, "hwmon/hwmon3/energy1_input", str(121_800_692_199 + 20_000_000) + "\n")
@@ -304,7 +305,8 @@ def test_with_no_card_label_the_lowest_numbered_counter_wins_not_the_smallest_re
 
 def test_a_temperature_labelled_vram_is_not_the_gpu_temperature(tmp_path):
     xe_card(tmp_path, 2, temp_label="vram")                     # no "pkg" label: nothing to say about temperature
-    assert M.IntelSampler(tmp_path / "sys", _Clock()).sample()[0]["temp_c"] is None
+    s = M.IntelSampler(tmp_path / "sys", _Clock(), vram=lambda dev: (None, None))
+    assert s.sample()[0]["temp_c"] is None
 
 
 def test_a_card_with_no_gtidle_is_an_intel_card_xe_does_not_drive(tmp_path):
@@ -316,10 +318,14 @@ def test_the_intel_reader_takes_only_intel_cards_and_the_amd_reader_only_amd(tmp
     card(tmp_path, 0)                                               # the AMD box's card: gpu_busy_percent, no gtidle
     xe_card(tmp_path, 2)
     assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["AMD GPU"]
-    assert [x["name"] for x in M.IntelSampler(tmp_path / "sys", _Clock()).sample()] == ["Arc Pro B50"]
+    intel = M.IntelSampler(tmp_path / "sys", _Clock(), vram=lambda dev: (None, None))
+    assert [x["name"] for x in intel.sample()] == ["Arc Pro B50"]
 
 
-def test_a_sample_lists_nvidia_then_amd_then_intel_and_numbers_them_like_btop(tmp_path):
+def test_a_sample_lists_nvidia_then_amd_then_intel_and_numbers_them_like_btop(tmp_path, monkeypatch):
+    def no_ioctl(node):                                        # the real one is an ioctl on /dev/dri: not here
+        raise OSError("no xe driver")
+    monkeypatch.setattr(M, "xe_mem_regions", no_ioctl)
     proc, sys = cpu_tree(tmp_path, hwmon={"k10temp": {"temp1_input": 45750}})
     card(tmp_path, 0)
     xe_card(tmp_path, 2)
@@ -327,6 +333,75 @@ def test_a_sample_lists_nvidia_then_amd_then_intel_and_numbers_them_like_btop(tm
     assert [g["vendor"] for g in s["gpus"]] == ["nvidia", "nvidia", "amd", "intel"]
     assert [g["index"] for g in s["gpus"]] == [0, 1, 2, 3]
     assert s["gpus"][3]["name"] == "Arc Pro B50" and s["gpus"][3]["util"] is None
+    assert s["gpus"][3]["mem_used"] is None and s["gpus"][3]["mem_total"] is None
+
+
+# -- an xe card's VRAM, from the device-query ioctl ----------------------------------------------------------------
+
+VRAM_TOTAL = 17_093_969_838                                  # 15.92 GiB, the B50's
+VRAM_USED = 3_656_090_910                                    # 3.405 GiB of it, as the query on gpu-host answered
+
+
+def xe_reply(*regions):
+    """A ``DRM_XE_DEVICE_QUERY_MEM_REGIONS`` reply: a count, then one 88-byte struct drm_xe_mem_region per region,
+    each (mem_class, instance, min_page_size, total_size, used, cpu_visible_size, cpu_visible_used, reserved[6])."""
+    out = struct.pack("II", len(regions), 0)
+    for cls, total, used in regions:
+        out += struct.pack("HHIQQQQ6Q", cls, 0, 4096, total, used, total, used, *([0] * 6))
+    return out
+
+
+def test_the_vram_regions_of_a_query_reply_are_summed(tmp_path):
+    raw = xe_reply((0, 16_106_127_360, 8_000_000_000), (1, VRAM_TOTAL, VRAM_USED))   # sysmem beside the card's own
+    assert M.parse_mem_regions(raw) == (VRAM_USED, VRAM_TOTAL)
+    half = VRAM_TOTAL // 2
+    two_tiles = xe_reply((1, half, 1_000), (1, half, 2_000))                         # vram0 + vram1, both counted
+    assert M.parse_mem_regions(two_tiles) == (3_000, VRAM_TOTAL)
+
+
+def test_a_query_that_names_no_vram_or_reports_no_used_says_nothing(tmp_path):
+    assert M.parse_mem_regions(xe_reply((0, 16_106_127_360, 8_000_000_000))) == (None, None)   # an iGPU: sysmem only
+    # an older kernel fills ``used`` only for a CAP_PERFMON caller: 0 there means unknown, not an empty card
+    assert M.parse_mem_regions(xe_reply((1, VRAM_TOTAL, 0))) == (None, VRAM_TOTAL)
+    assert M.parse_mem_regions(xe_reply((1, VRAM_TOTAL, VRAM_USED))[:40]) == (None, None)       # truncated reply
+    assert M.parse_mem_regions(b"") == (None, None)
+
+
+def test_vram_is_read_from_the_render_node_and_not_at_all_when_suspended(tmp_path):
+    calls = []
+
+    def query(node):
+        calls.append(node)
+        return xe_reply((1, VRAM_TOTAL, VRAM_USED))
+
+    d = xe_card(tmp_path, 2)
+    w(d, "drm/renderD128", "")                                   # sysfs links the render node off the card's dir
+    w(d, "drm/conn1", "")                                        # a drm entry that is not a render node
+    assert M.xe_vram(d, query) == (VRAM_USED, VRAM_TOTAL)
+    assert calls == ["/dev/dri/renderD128"]                      # exactly that node, once
+
+    w(d, "power/runtime_status", "suspended\n")                  # the card is asleep between samples
+    calls.clear()
+    assert M.xe_vram(d, query) == (None, None) and calls == []   # asking would wake it, so nothing is asked
+
+    calls.clear()
+    assert M.xe_vram(tmp_path / "sys/class/drm/card9/device", query) == (None, None) and calls == []
+
+
+def test_a_card_whose_query_fails_says_nothing_about_its_memory(tmp_path):
+    def boom(node):
+        raise OSError("render group missing")
+    d = xe_card(tmp_path, 2)
+    w(d, "drm/renderD128", "")
+    assert M.xe_vram(d, boom) == (None, None)
+    (g,) = M.IntelSampler(tmp_path / "sys", _Clock(), vram=lambda dev: M.xe_vram(dev, boom)).sample()
+    assert g["mem_used"] is None and g["mem_total"] is None
+
+
+def test_the_intel_card_s_reports_its_vram_as_bytes(tmp_path):
+    xe_card(tmp_path, 2)
+    (g,) = M.IntelSampler(tmp_path / "sys", _Clock(), vram=lambda dev: (3, 16)).sample()
+    assert g["mem_used"] == 3 and g["mem_total"] == 16
 
 
 # -- the loop that posts it ----------------------------------------------------------------------------------------

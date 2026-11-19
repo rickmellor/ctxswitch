@@ -5,17 +5,22 @@ Read the way btop reads it: ``/proc/stat``'s **delta** between two calls (its co
 says nothing), the k10temp / coretemp hwmon for temperature, the cpufreq knobs for clock, and either ``nvidia-smi``
 or the amdgpu sysfs for each card. An Intel card on the xe driver has no busy percent at all, so it is read the same
 way the CPU is: the GT's idle residency and the hwmon's energy counter, both as the delta between two calls, so a
-card's first sample says nothing for util and power. NVIDIA first, then AMD by DRM card number, then Intel by the same
-number, re-indexed 0..n-1, so GPU0..GPU7 on the board read like btop's.
+card's first sample says nothing for util and power. Its VRAM comes from no sysfs file but from the xe device-query
+ioctl on the card's render node, which an unprivileged user in the ``render`` group can ask; it is null when the card
+is runtime-suspended or the query fails. NVIDIA first, then AMD by DRM card number, then Intel by the same number,
+re-indexed 0..n-1, so GPU0..GPU7 on the board read like btop's.
 
 A value that can't be read is null, never a guess: a panel showing 0 °C or 0 % for a sensor it couldn't open is
 worse than one showing nothing. A host with no GPUs sends ``"gpus": []``.
 """
 from __future__ import annotations
 
+import ctypes
+import fcntl
 import re
 import os
 import shutil
+import struct
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -26,6 +31,12 @@ NVIDIA_QUERY = ("index", "name", "utilization.gpu", "memory.used", "memory.total
 NVIDIA_TIMEOUT_S = 3                         # a hung nvidia-smi must not hold the sample loop
 NA = ("[N/A]", "[Not Supported]", "[Unknown Error]", "N/A")
 _CARD = re.compile(r"^card(\d+)$")
+# DRM_IOWR(DRM_COMMAND_BASE + DRM_XE_DEVICE_QUERY, struct drm_xe_device_query) — the one ioctl that asks an xe card
+# what memory it has and how much of it is in use. No sysfs file says this.
+XE_DEVICE_QUERY = (3 << 30) | (40 << 16) | (ord("d") << 8) | 0x40
+XE_QUERY_MEM_REGIONS = 1                     # the query whose reply is the card's memory regions
+XE_MEM_CLASS_VRAM = 1                        # 0 is sysmem, which isn't the card's own memory
+_XE_REGION_SIZE = 88                         # sizeof(struct drm_xe_mem_region)
 
 
 def _text(p: Path) -> str:
@@ -224,15 +235,70 @@ def amd_gpus(sys: str | Path = "/sys") -> list[dict[str, Any]]:
     return out
 
 
+def xe_mem_regions(node: str) -> bytes:
+    """The reply of ``DRM_XE_DEVICE_QUERY_MEM_REGIONS`` on a render node, as raw bytes: the query struct's own ``size``
+    field is read back first (asking with 0 makes the kernel fill it in), then the reply is fetched into a buffer of
+    that size. Needs the ``render`` group, not root. Raises OSError — no such node, no permission, an old driver
+    without the query — and the caller says nothing for that card."""
+    fd = os.open(node, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        q = bytearray(struct.pack("QIIQQQ", 0, XE_QUERY_MEM_REGIONS, 0, 0, 0, 0))
+        fcntl.ioctl(fd, XE_DEVICE_QUERY, q)
+        size = struct.unpack_from("QIIQ", q)[2]
+        buf = ctypes.create_string_buffer(size)
+        q = bytearray(struct.pack("QIIQQQ", 0, XE_QUERY_MEM_REGIONS, size, ctypes.addressof(buf), 0, 0))
+        fcntl.ioctl(fd, XE_DEVICE_QUERY, q)
+        return buf.raw
+    finally:
+        os.close(fd)
+
+
+def parse_mem_regions(raw: bytes) -> tuple[int | None, int | None]:
+    """(used, total) bytes over every VRAM region of a ``xe_mem_regions`` reply — summed, because a multi-tile card
+    reports vram0 and vram1 separately. (None, None) when it names no VRAM at all (an iGPU, sysmem only) or is shorter
+    than its own count says. A VRAM region that reports 0 used says None rather than 0: some kernels only fill ``used``
+    for a CAP_PERFMON caller and leave it 0 for everyone else, so 0 is "unknown", not "empty"."""
+    try:
+        n, = struct.unpack_from("I", raw, 0)
+        regions = [struct.unpack_from("HHIQQQQ", raw, 8 + i * _XE_REGION_SIZE) for i in range(n)]
+    except (struct.error, IndexError):
+        return None, None
+    vram = [r for r in regions if r[0] == XE_MEM_CLASS_VRAM]     # r = (class, instance, page size, total, used, …)
+    total = sum(r[3] for r in vram)
+    if not vram or total <= 0:
+        return None, None
+    used = sum(r[4] for r in vram)
+    return (used if used > 0 else None), total
+
+
+def xe_vram(dev: Path, query: Callable[[str], bytes] = xe_mem_regions) -> tuple[int | None, int | None]:
+    """A card's own VRAM, (used, total) bytes, from the device query on its render node — ``/dev/dri/renderD*`` is
+    linked off the card's ``device`` dir. None, None when the card is runtime-suspended: every xe ioctl takes a
+    runtime-PM reference, so polling a suspended card would wake it on every sample. Also None when the card has no
+    render node yet or the query fails."""
+    if _text(dev / "power" / "runtime_status").strip() == "suspended":
+        return None, None
+    nodes = sorted(d.name for d in (dev / "drm").glob("renderD*")) if (dev / "drm").is_dir() else []
+    if not nodes:
+        return None, None
+    try:
+        return parse_mem_regions(query("/dev/dri/" + nodes[0]))
+    except OSError:
+        return None, None
+
+
 class IntelSampler:
     """Every Intel card the ``xe`` driver drives, as the ``gpus`` entries. Like CpuSampler it has to be called twice
     before it can say anything about load or watts: xe publishes no busy percent and no power reading, only two
     counters that add up since the card came up, each GT's ``gtidle/idle_residency_ms`` and a hwmon ``energyN_input``.
     So util is the share of the interval a GT was *not* idling, and power the joules it spent over it. The first
-    sample of a card says null for both; a card that vanishes between two samples simply drops out of the list."""
+    sample of a card says null for both; a card that vanishes between two samples simply drops out of the list. Its
+    VRAM is not a delta but a state, read from the xe device-query ioctl on the render node (unprivileged, in the
+    ``render`` group), and null when the card is runtime-suspended or the query fails."""
 
-    def __init__(self, sys: str | Path = "/sys", clock: Callable[[], float] = time.monotonic):
-        self.sys, self.clock = Path(sys), clock
+    def __init__(self, sys: str | Path = "/sys", clock: Callable[[], float] = time.monotonic,
+                 vram: Callable[[Path], tuple[int | None, int | None]] = xe_vram):
+        self.sys, self.clock, self.vram = Path(sys), clock, vram
         self._prev: dict[str, dict[str, Any]] = {}     # by DRM card directory name, "card2"
 
     def sample(self) -> list[dict[str, Any]]:
@@ -247,9 +313,10 @@ class IntelSampler:
             now, prev = self.clock(), self._prev.get(name)
             cur = {"now": now, "idles": idles, "uj": self._energy(dev)}
             self._prev[name] = cur
+            used, total = self.vram(dev)
             out.append({"index": len(out), "vendor": "intel",
                 "name": _text(dev / "product_name").strip() or _pci_name(dev) or "Intel GPU",
-                "util": self._util(prev, cur, now), "mem_used": None, "mem_total": None,
+                "util": self._util(prev, cur, now), "mem_used": used, "mem_total": total,
                 "temp_c": self._temp(dev), "power_w": self._watts(prev, cur, now)})
         return out
 
