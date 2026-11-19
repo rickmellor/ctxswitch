@@ -20,14 +20,31 @@ AT = "@1.%7"                                # "<session>:<window_id>.<pane_id>"
 class Cmd:
     """A tmux server that answers what it's told. ``fails`` names the subcommand that returns non-zero;
     ``command`` is what the pane runs."""
-    def __init__(self, command="agy", fails=()):
+    def __init__(self, command="agy", fails=(), screen=None):
         self.command, self.fails, self.calls = command, list(fails), []
+        self.screen = IDLE_SCREEN if screen is None else screen
 
     def __call__(self, argv, **kw):
         self.calls.append((argv, kw))
         bad = next((f for f in self.fails if f in argv), None)
-        out = self.command + "\n" if any("pane_current_command" in a for a in argv) else ""
+        out = (self.command + "\n" if any("pane_current_command" in a for a in argv)
+               else self.screen if "capture-pane" in argv else "")
         return _R(1 if bad else 0, out, "" if bad is None else f"{bad} failed")
+
+
+# agy 1.5.12's screens, as the spike captured them: waiting at an empty input box, and its trust dialog
+IDLE_SCREEN = """  MANGO
+────────────────────────────────────────
+>
+────────────────────────────────────────
+? for shortcuts                       auto · Gemini 4 Hydrogen · medium
+"""
+DIALOG_SCREEN = """Do you trust the contents of this project?
+> Yes, I trust this folder
+  No, exit
+  ↑/↓ Navigate · enter Confirm
+"""
+DRAFT_SCREEN = IDLE_SCREEN.replace("\n>\n", "\n> half a thought of the operator's\n")
 
 
 class _R:
@@ -49,10 +66,11 @@ async def test_idle_in_tmux_is_typed_into_its_pane(tmp_path, monkeypatch):
     assert await deliver.deliver_agy(Liveness(KEY, "idle", pid=99, tmux_at=AT), SID, "run the tests", 7, run=run,
                                      inbox_dir=inbox) is None
     assert _argv(run) == [["tmux", "display-message", "-p", "-t", "%7", "#{pane_current_command}"],
+                          ["tmux", "capture-pane", "-p", "-t", "%7"],
                           ["tmux", "load-buffer", "-b", "ctx-7", "-"],
                           ["tmux", "paste-buffer", "-p", "-d", "-b", "ctx-7", "-t", "%7"],
                           ["tmux", "send-keys", "-t", "%7", "Enter"]]
-    assert run.calls[1][1].get("input") == deliver.HEADER + "run the tests"      # the text goes in on stdin
+    assert run.calls[2][1].get("input") == deliver.HEADER + "run the tests"      # the text goes in on stdin
     assert all(kw.get("timeout") == deliver.TMUX_TIMEOUT for _, kw in run.calls)  # every call has its own 3 s
     assert slept == [deliver.PASTE_SETTLE_S] and 0.5 <= deliver.PASTE_SETTLE_S <= 2   # Enter only once it landed
     assert not inbox.exists()                                                    # the pane took it: nothing queued
@@ -151,3 +169,15 @@ def test_the_outbox_now_offers_agy_messages(tmp_path):
     a, b, c = (store.add_message(k, "hi") for k in keys)
     assert [m["id"] for m in store.outbox("laptop")] == [a]           # the agy one goes out; the other two can't take one
     assert store.outbox("laptop")[0]["harness"] == "agy"
+
+
+async def test_a_dialog_or_a_half_typed_prompt_is_never_typed_into(tmp_path):
+    """Enter on a permission or trust dialog would pick its highlighted option, and typing over the operator's own
+    draft would send it: either way the message waits in the inbox for the hooks."""
+    for screen in (DIALOG_SCREEN, DRAFT_SCREEN):
+        inbox = tmp_path / f"inbox{len(screen)}"
+        run = Cmd(screen=screen)
+        assert await deliver.deliver_agy(Liveness(KEY, "idle", pid=99, tmux_at=AT), SID, "x", 3, run=run,
+                                         inbox_dir=inbox) is None
+        assert [a[1] for a in _argv(run)] == ["display-message", "capture-pane"]      # nothing typed, no Enter
+        assert json.loads((inbox / f"{SID}.jsonl").read_text())["msg_id"] == 3

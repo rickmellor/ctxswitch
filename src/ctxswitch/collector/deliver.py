@@ -110,6 +110,22 @@ async def _tmux(run: Callable[..., Any], *argv: str, stdin: str | None = None) -
     return r, None
 
 
+# What agy shows while it waits on a choice (a permission or trust dialog): typing a message and Enter into one
+# could pick its highlighted option. The trust dialog of agy 1.5.12 reads "↑/↓ Navigate · enter Confirm".
+DIALOG_MARKS = ("Navigate", "enter Confirm", "trust this folder", "Allow", "Deny")
+
+
+def _not_at_prompt(screen: str) -> str | None:
+    """None when the pane shows agy waiting at an EMPTY input box (a line that is just ">") and no dialog; else why
+    not. An empty box also means the operator isn't halfway through typing something of their own."""
+    lines = [ln.strip() for ln in screen.splitlines() if ln.strip()][-15:]
+    if any(m in ln for ln in lines for m in DIALOG_MARKS):
+        return "agy is showing a dialog"
+    if ">" not in lines:
+        return "agy's input box isn't empty (or isn't on screen)"
+    return None
+
+
 async def _type_into_pane(pane: str, text: str, msg_id: int, run: Callable[..., Any]) -> str | None:
     """The message into a pane sitting at agy's prompt: a bracketed paste (plain newlines would submit a
     multi-line message line by line) and Enter once it has landed. None when it took it, else why not."""
@@ -118,6 +134,12 @@ async def _type_into_pane(pane: str, text: str, msg_id: int, run: Callable[..., 
         return why
     if str(getattr(r, "stdout", "") or "").strip() != "agy":
         return "that pane no longer runs agy"                 # it exited into a shell: don't type into someone's terminal
+    r, why = await _tmux(run, "capture-pane", "-p", "-t", pane)
+    if why:
+        return why
+    why = _not_at_prompt(str(getattr(r, "stdout", "") or ""))
+    if why:
+        return why
     buf = f"ctx-{msg_id}"
     _, why = await _tmux(run, "load-buffer", "-b", buf, "-", stdin=text)
     if why:
