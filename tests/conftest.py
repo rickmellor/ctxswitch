@@ -24,6 +24,14 @@ def _no_real_tmux_or_popup_log(tmp_path, monkeypatch):
     monkeypatch.setenv("CTXSWITCH_NO_SOUND", "1")             # and never plays a sound on their speakers
 
 
+@pytest.fixture(autouse=True)
+def _no_real_board_state(tmp_path, monkeypatch):
+    """No test reads or writes the operator's own board state: a [ ] list cap they set on their board (list-rows)
+    made a row-overflow test see 5 rows where it expected 10. A test that wants a cap writes its own."""
+    from ctxswitch.client.tui import app as tui
+    monkeypatch.setattr(tui, "LIST_FILE", tmp_path / "list-rows")
+
+
 @pytest.fixture
 def jsonl(tmp_path: Path):
     """Write dict rows as a JSONL file; returns (path, offsets-after-each-line)."""
