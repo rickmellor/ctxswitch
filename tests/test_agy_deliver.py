@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import httpx
+import pytest
 from test_messages import Hub2, _collector
 
 from ctxswitch.collector import deliver
@@ -17,6 +18,21 @@ KEY = f"laptop/agy/{SID}"
 AT = "@1.%7"                                # "<session>:<window_id>.<pane_id>"
 
 
+TTY = "/dev/pts/9"                          # the pane's terminal
+
+
+@pytest.fixture(autouse=True)
+def _proc(tmp_path, monkeypatch):
+    """A /proc where pid 99 is agy on the pane's terminal (ctx's launcher runs it under `sh -c`, so the pane's own
+    command is "sh"), and pid 98 is a bash that took the terminal over after agy exited."""
+    for pid, comm in ((99, "agy"), (98, "bash")):
+        d = tmp_path / "proc" / str(pid)
+        (d / "fd").mkdir(parents=True)
+        (d / "comm").write_text(comm + "\n")
+        os.symlink(TTY, d / "fd" / "0")
+    monkeypatch.setattr(deliver, "PROC", str(tmp_path / "proc"))
+
+
 class Cmd:
     """A tmux server that answers what it's told. ``fails`` names the subcommand that returns non-zero;
     ``command`` is what the pane runs."""
@@ -27,7 +43,7 @@ class Cmd:
     def __call__(self, argv, **kw):
         self.calls.append((argv, kw))
         bad = next((f for f in self.fails if f in argv), None)
-        out = (self.command + "\n" if any("pane_current_command" in a for a in argv)
+        out = (TTY + "\n" if any("pane_tty" in a for a in argv)
                else self.screen if "capture-pane" in argv else "")
         return _R(1 if bad else 0, out, "" if bad is None else f"{bad} failed")
 
@@ -65,7 +81,7 @@ async def test_idle_in_tmux_is_typed_into_its_pane(tmp_path, monkeypatch):
     run = Cmd()
     assert await deliver.deliver_agy(Liveness(KEY, "idle", pid=99, tmux_at=AT), SID, "run the tests", 7, run=run,
                                      inbox_dir=inbox) is None
-    assert _argv(run) == [["tmux", "display-message", "-p", "-t", "%7", "#{pane_current_command}"],
+    assert _argv(run) == [["tmux", "display-message", "-p", "-t", "%7", "#{pane_tty}"],
                           ["tmux", "capture-pane", "-p", "-t", "%7"],
                           ["tmux", "load-buffer", "-b", "ctx-7", "-"],
                           ["tmux", "paste-buffer", "-p", "-d", "-b", "ctx-7", "-t", "%7"],
@@ -78,10 +94,10 @@ async def test_idle_in_tmux_is_typed_into_its_pane(tmp_path, monkeypatch):
 
 async def test_a_pane_that_no_longer_runs_agy_falls_back_to_the_inbox(tmp_path):
     inbox = tmp_path / "inbox"
-    run = Cmd(command="bash")
-    assert await deliver.deliver_agy(Liveness(KEY, "idle", pid=99, tmux_at=AT), SID, "x", 1, run=run,
+    run = Cmd()
+    assert await deliver.deliver_agy(Liveness(KEY, "idle", pid=98, tmux_at=AT), SID, "x", 1, run=run,
                                      inbox_dir=inbox) is None
-    assert _argv(run) == [["tmux", "display-message", "-p", "-t", "%7", "#{pane_current_command}"]]
+    assert _argv(run) == [["tmux", "display-message", "-p", "-t", "%7", "#{pane_tty}"]]
     assert [json.loads(l) for l in (inbox / f"{SID}.jsonl").read_text().splitlines()] == [
         {"msg_id": 1, "text": deliver.HEADER + "x"}]
 
@@ -181,3 +197,12 @@ async def test_a_dialog_or_a_half_typed_prompt_is_never_typed_into(tmp_path):
                                          inbox_dir=inbox) is None
         assert [a[1] for a in _argv(run)] == ["display-message", "capture-pane"]      # nothing typed, no Enter
         assert json.loads((inbox / f"{SID}.jsonl").read_text())["msg_id"] == 3
+
+
+def test_agy_under_ctx_s_sh_launcher_is_still_found_on_its_pane(tmp_path):
+    """The pane says "sh" (ctx runs agents as `sh -c "…; ctx tmux-exit"`): what counts is that the session's own pid
+    is agy on the pane's terminal. A pid that's gone, another program, or another terminal is not."""
+    assert deliver._agy_on_tty(99, TTY) is True
+    assert deliver._agy_on_tty(98, TTY) is False                       # bash on the terminal now
+    assert deliver._agy_on_tty(99, "/dev/pts/3") is False              # agy, but on another terminal
+    assert deliver._agy_on_tty(12345, TTY) is False and deliver._agy_on_tty(None, TTY) is False

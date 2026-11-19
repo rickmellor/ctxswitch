@@ -26,6 +26,7 @@ from ctxswitch.common.schema import Liveness
 log = logging.getLogger("ctxswitch.collector.deliver")
 
 TIMEOUT = 5.0
+PROC = "/proc"                             # where a session's pid is looked up (tests point it elsewhere)
 TMUX_TIMEOUT = 3.0                         # a tmux call that hangs must not hold the inbox loop
 PASTE_SETTLE_S = 1.0                       # let a multi-line paste land in the input box before Enter
 HEADER = "Message from the operator (sent with ctxswitch):\n\n"
@@ -126,14 +127,30 @@ def _not_at_prompt(screen: str) -> str | None:
     return None
 
 
-async def _type_into_pane(pane: str, text: str, msg_id: int, run: Callable[..., Any]) -> str | None:
+def _agy_on_tty(pid: int | None, tty: str, proc: str | None = None) -> bool:
+    """The process is agy and its stdin is ``tty`` (the pane's terminal)."""
+    if not pid or not tty:
+        return False
+    proc = proc or PROC
+    try:
+        comm = Path(proc, str(pid), "comm").read_text().strip()
+        return comm == "agy" and os.readlink(Path(proc, str(pid), "fd", "0")) == tty
+    except OSError:
+        return False
+
+
+async def _type_into_pane(pane: str, text: str, msg_id: int, run: Callable[..., Any], pid: int | None,
+                          proc: str | None = None) -> str | None:
     """The message into a pane sitting at agy's prompt: a bracketed paste (plain newlines would submit a
     multi-line message line by line) and Enter once it has landed. None when it took it, else why not."""
-    r, why = await _tmux(run, "display-message", "-p", "-t", pane, "#{pane_current_command}")
+    # Is agy still on that pane's terminal? Not by the pane's command name: ctx launches agents under
+    # `sh -c "…; ctx tmux-exit"`, so tmux names the pane "sh" while agy runs in it. The session's own pid must be an
+    # agy process whose terminal is the pane's (it exited into a shell: don't type into someone's terminal).
+    r, why = await _tmux(run, "display-message", "-p", "-t", pane, "#{pane_tty}")
     if why:
         return why
-    if str(getattr(r, "stdout", "") or "").strip() != "agy":
-        return "that pane no longer runs agy"                 # it exited into a shell: don't type into someone's terminal
+    if not _agy_on_tty(pid, str(getattr(r, "stdout", "") or "").strip(), proc):
+        return "agy isn't running on that pane's terminal"
     r, why = await _tmux(run, "capture-pane", "-p", "-t", pane)
     if why:
         return why
@@ -154,7 +171,7 @@ async def _type_into_pane(pane: str, text: str, msg_id: int, run: Callable[..., 
 
 async def deliver_agy(live: Liveness, session_id: str, body: str, msg_id: int, from_key: str | None = None,
                       from_title: str | None = None, run: Callable[..., Any] = subprocess.run,
-                      inbox_dir: Path | None = None) -> str | None:
+                      inbox_dir: Path | None = None, proc: str | None = None) -> str | None:
     """None once an idle agy took the message through its pane or it reached the inbox, else why neither worked.
     A busy session's PreInvocation hook injects it mid-turn, Stop catches what is left at the turn's end; an idle
     one outside tmux takes it with its next turn."""
@@ -162,7 +179,7 @@ async def deliver_agy(live: Liveness, session_id: str, body: str, msg_id: int, f
     at = live.tmux_at or ""
     pane = at.rsplit(".", 1)[-1] if "." in at else None      # "<session>:<window_id>.<pane_id>"
     if live.status == "idle" and pane:
-        why = await _type_into_pane(pane, text, msg_id, run)
+        why = await _type_into_pane(pane, text, msg_id, run, live.pid, proc)
         if why is None:
             return None
         log.info("message %d -> agy %s: %s, so the inbox", msg_id, session_id, why)
