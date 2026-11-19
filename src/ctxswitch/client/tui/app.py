@@ -715,7 +715,9 @@ class CtxApp(App):
     CSS = """
     #summary { height: 2; padding: 0 1; background: $panel; }
     #body { height: 1fr; }
-    #table { height: auto; max-height: 50%; }
+    /* never sideways: rows are sized to the pane, and a horizontal scrollbar would take one of the list's own
+       lines (then a vertical one appears and squeezes the rows further) */
+    #table { height: auto; max-height: 50%; overflow-x: hidden; }
     #detail { height: 1fr; border-top: solid $surface; padding: 0 1; }
     #filter { display: none; }                 /* in the flow above the footer, so the footer never covers it */
     #filter.visible { display: block; }
