@@ -62,7 +62,7 @@ async def test_two_presses_of_the_right_bracket_remember_five_lines(monkeypatch,
         await pilot.press("right_square_bracket"); await pilot.pause()
         await pilot.press("right_square_bracket"); await pilot.pause()
         assert _file(tmp_path) == "5"
-        assert app.said[-1] == "session list 5 lines"
+        assert app.said[-1] == "session list up to 5 lines"
         assert _cap(_table(app)) == 5
         assert _table(app).size.height == 3                           # three rows still take only three lines
 

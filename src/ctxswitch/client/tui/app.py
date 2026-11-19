@@ -1088,7 +1088,7 @@ class CtxApp(App):
         self.list_rows = n
         _save_list_rows(n)
         self.render_table()
-        self.notify(f"session list {n} lines", timeout=2)
+        self.notify(f"session list up to {n} lines", timeout=2)
 
     def action_list_shorter(self) -> None:
         self._step_list_rows(-1)
