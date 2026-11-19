@@ -87,6 +87,10 @@ class CollectorConfig:
     # CPU/GPU samples for the board's metrics panel (collector/metrics.py): every metrics_every seconds one sample
     # goes straight to the hub's POST /v1/metrics (0 disables it — a box whose fans you can hear needs no panel).
     metrics_every: float = 0.0              # off unless set: only hosts with local GPUs/LLMs need it (2.0 = btop's pace)
+    # vLLM seats on this host (collector/metrics.py): a seat's name -> its /metrics URL, as a [collector.llm_seats]
+    # table (`worker1 = "http://127.0.0.1:8002/metrics"`). Scraped with each CPU/GPU sample, so they need metrics_every.
+    llm_seats: dict[str, str] = field(default_factory=dict)
+    llm_window_s: float = 600.0             # how far back a seat's min/avg/max and duty cycle look
 
 
 @dataclass

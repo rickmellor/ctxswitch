@@ -47,7 +47,7 @@ from ctxswitch.collector.liveness import (fill_tmux_at, read_agy_presence, read_
                                           read_pi_registry, read_shell_registry, runtime_dir, tmux_panes)
 from ctxswitch.common.wsl import windows_pids
 from ctxswitch.collector.state import CollectorState
-from ctxswitch.collector.metrics import Sampler
+from ctxswitch.collector.metrics import LlmSampler, Sampler
 from ctxswitch.common.config import Config, data_dir, load
 
 log = logging.getLogger("ctxswitch.collector")
@@ -168,7 +168,9 @@ class Collector:
         self.headers = {"Authorization": f"Bearer {cfg.hub.token}"} if cfg.hub.token else {}
         self.urls = {"ingest": base + "/v1/ingest", "outbox": base + "/v1/outbox", "messages": base + "/v1/messages",
                      "metrics": base + "/v1/metrics"}
-        self.sampler = Sampler()                       # this host's CPU/GPU (collector/metrics.py)
+        c = cfg.collector
+        self.sampler = Sampler(llm=LlmSampler(c.llm_seats, c.llm_window_s) if c.llm_seats else None)
+        # this host's CPU/GPU, plus its vLLM seats when configured (collector/metrics.py)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         self.state.enqueue(kind, payload)

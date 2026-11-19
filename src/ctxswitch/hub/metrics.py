@@ -4,6 +4,10 @@ A metrics sample is a few seconds of a machine's life — it says nothing a minu
 it has no row in SQLite and no migration. The hub is the only place a board can see every host at once, so it holds
 the last 60 samples per host (60 × ``metrics_every`` = two minutes of curve) and forgets the rest. A hub restart
 loses it; the next sample fills it back in.
+
+An LLM host's sample adds the tokens per second of each of its vLLM seats and their total, kept the same way as the
+CPU and GPU curves — one line per seat, by the name the collector's config gave it. A host that sends no ``llm``
+gets no ``llm`` in its history either, so a board can tell "not an LLM host" from "idle".
 """
 from __future__ import annotations
 
@@ -45,6 +49,15 @@ class Metrics:
                 if i not in gpus:
                     gpus[i] = deque(maxlen=self.keep)
                 gpus[i].append(_num(g.get("util")))
+            llm = d.get("llm")
+            if isinstance(llm, dict):        # an LLM host: one line per seat, by its configured name, plus their total
+                seats = h["hist"].setdefault("llm", {})
+                for s in llm.get("seats") or []:
+                    if isinstance(s, dict) and isinstance(s.get("name"), str):
+                        seats.setdefault(s["name"], deque(maxlen=self.keep)).append(_num(s.get("tok_s")))
+                total = llm.get("total")
+                h["hist"].setdefault("llm_total", deque(maxlen=self.keep)).append(
+                    _num(total.get("tok_s")) if isinstance(total, dict) else None)
 
     def get(self, host: str | None = None, now: float | None = None) -> dict[str, Any]:
         """The GET /v1/metrics body: each host's latest sample, how long ago the hub received it, and the history.
@@ -58,9 +71,12 @@ class Metrics:
                 if h is None:
                     continue
                 hist = h["hist"]
-                out[name] = {"latest": h["sample"], "age_s": round(max(0.0, now - h["at"]), 3),
-                             "history": {"cpu": list(hist["cpu"]),
-                                         "gpus": {i: list(dq) for i, dq in sorted(hist["gpus"].items(), key=lambda x: _idx(x[0]))}}}
+                history = {"cpu": list(hist["cpu"]),
+                           "gpus": {i: list(dq) for i, dq in sorted(hist["gpus"].items(), key=lambda x: _idx(x[0]))}}
+                if "llm" in hist:            # only an LLM host has these keys at all
+                    history["llm"] = {n: list(dq) for n, dq in hist["llm"].items()}
+                    history["llm_total"] = list(hist["llm_total"])
+                out[name] = {"latest": h["sample"], "age_s": round(max(0.0, now - h["at"]), 3), "history": history}
             return {"hosts": out}
 
 

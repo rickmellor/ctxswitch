@@ -25,8 +25,9 @@
                                      target_key, target_title, target_where, why}. A hook's fast question before the
                                      agent sees the prompt: deterministic (hub/misplace.py), no seat, < 100 ms.
   POST /v1/misplaced/{id}/state      {state: kept|moved|resent|dropped} -> {ok}   the operator's word on a flagged prompt
-  POST /v1/metrics                 one host's CPU/GPU sample {host_id, at, cpu, mem, gpus} -> {ok}   in memory only
+  POST /v1/metrics                 one host's CPU/GPU sample {host_id, at, cpu, mem, gpus, llm?} -> {ok}  in memory only
   GET  /v1/metrics?host=             the latest sample per host, its age at this hub, the last 60 samples' curves
+                                     (per vLLM seat tok/s too, on a host that has seats)
   GET  /v1/health
   WS   /v1/ws                      server pushes {"change": N} whenever the store changes
 Auth: ``Authorization: Bearer <token>`` when hub.token is set (collectors and clients share it).

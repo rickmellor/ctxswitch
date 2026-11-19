@@ -12,6 +12,13 @@ re-indexed 0..n-1, so #0..#7 on the board read like btop's.
 
 A value that can't be read is null, never a guess: a panel showing 0 °C or 0 % for a sensor it couldn't open is
 worse than one showing nothing. A host with no GPUs sends ``"gpus": []``.
+
+An LLM host adds ``"llm"``: every vLLM seat named in ``[collector.llm_seats]`` is scraped at the same pace, and its
+counters are read the way ``/proc/stat`` is — as the delta since the last scrape, so a seat's first sample says
+nothing. Each interval is then classed: **active** (a request running at either end, or tokens generated) counts
+toward the duty cycle, and **steady** (requests running at both ends *and* tokens generated) toward min/avg/max, so
+idle time, ramp-up/ramp-down and token-less prefill never look like a slow generation rate. Both come out of a
+window of the last ``llm_window_s`` seconds, dropped entry by entry as it ages.
 """
 from __future__ import annotations
 
@@ -23,6 +30,8 @@ import shutil
 import struct
 import subprocess
 import time
+import urllib.request
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -420,17 +429,161 @@ def nvidia_gpus(run: Callable[..., Any] = subprocess.run) -> list[dict[str, Any]
     return out
 
 
-class Sampler:
-    """A whole metrics sample for one host, per the collector→hub contract. Sampling is blocking (sysfs, a subprocess)
-    so the collector runs it in a thread; the object itself only remembers its roots."""
+# What a vLLM seat says that this panel wants: a seat may publish several label sets (one engine and model each),
+# so each name is the SUM over them. vLLM prefixes its own metrics with "vllm:", which is dropped before matching.
+VLLM_KEYS = ("generation_tokens_total", "num_requests_running", "num_requests_waiting")
+_VLLM_LINE = re.compile(r"^([A-Za-z_:][\w:]*)(\{[^}]*\})?\s+(\S+)")
 
-    def __init__(self, proc: str | Path = "/proc", sys: str | Path = "/sys", run: Callable[..., Any] = subprocess.run):
-        self.cpu, self.sys, self.run = CpuSampler(proc, sys), Path(sys), run
+
+def parse_vllm(text: str) -> dict[str, float]:
+    """Prometheus text -> {name: value}, summing a name's label sets and keeping only VLLM_KEYS. Comments and blank
+    lines are skipped, an unparseable value drops that line, and a name that isn't there isn't in the result — which
+    is how a seat that answers with something else entirely reads as down."""
+    out: dict[str, float] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _VLLM_LINE.match(line)
+        if m is None:
+            continue
+        name = m.group(1)
+        name = name[len("vllm:"):] if name.startswith("vllm:") else name
+        if name not in VLLM_KEYS:
+            continue
+        try:
+            v = float(m.group(3))
+        except ValueError:
+            continue
+        out[name] = out.get(name, 0.0) + v
+    return out
+
+
+def fetch_text(url: str, timeout: float = 1.0) -> str:
+    """One scrape of a seat's /metrics. Raises on any failure — that is how LlmSampler learns the seat is down."""
+    with urllib.request.urlopen(url, timeout=timeout) as r:   # noqa: S310 - a URL from this host's own config
+        return r.read().decode("utf-8", errors="replace")
+
+
+def _r1(v: float | None) -> float | None:
+    return round(v, 1) if v is not None else None
+
+
+class LlmSampler:
+    """The vLLM seats of one host: the ``llm`` object of a metrics sample, or None on a host that names none. Like
+    the CPU and the xe cards it can only speak in deltas — vLLM counts tokens generated since the seat came up, so one
+    scrape says nothing about rate — and it keeps a window of intervals per seat to answer "what is this seat
+    *capable of*", which a single interval never does.
+
+    An interval is **active** when a request was running at either end of it or it generated tokens, and **steady**
+    when requests ran at both ends and it generated tokens. Duty comes from the active ones; min, max and the
+    time-weighted avg from the steady ones alone, so an idle seat, a ramp-up and a token-less prefill interval don't
+    read as a slow generation rate. A seat that can't be scraped is down: nulls this sample, its window kept, so it
+    comes back with the stats it had rather than a window wiped by a slow scrape.
+
+    The total is not the seats' numbers added up — two seats generating in the same interval are the same wall-clock
+    seconds — so it has its own window of per-call ticks over the whole host."""
+
+    def __init__(self, seats: dict[str, str], window_s: float = 600.0, clock: Callable[[], float] = time.monotonic,
+                 fetch: Callable[[str], str] = fetch_text):
+        self.seats, self.window_s, self.clock, self.fetch = dict(seats), float(window_s), clock, fetch
+        self._prev: dict[str, tuple[float, float, float]] = {}        # seat -> (now, tokens generated, running)
+        self._win: dict[str, deque[tuple[float, float, float, bool, bool]]] = {n: deque() for n in self.seats}
+        self._ticks: deque[tuple[float, float, float, bool]] = deque()    # (now, seconds, tokens, any steady)
+        self._tick_t: float | None = None
+
+    def sample(self) -> dict[str, Any] | None:
+        """Scrape every seat once and say what they did since the last call. None on a host with no seats, which is
+        how the caller leaves "llm" out of the sample entirely."""
+        if not self.seats:
+            return None
+        now = self.clock()
+        rows: list[dict[str, Any]] = []
+        dgen_sum, any_interval, any_steady = 0.0, False, False
+        for name, url in self.seats.items():
+            prev, win = self._prev.get(name), self._win.setdefault(name, deque())
+            try:
+                cur = parse_vllm(self.fetch(url))
+                gen = cur["generation_tokens_total"]
+            except Exception:                # noqa: BLE001 - down, dead, or not a vLLM at all: this sample says nothing
+                self._prev.pop(name, None)   # ... and the next good one starts fresh, with tok_s null
+                self._prune(win, now)        # the window keeps aging while the seat is away
+                rows.append({"name": name, "up": False, "tok_s": None, "running": None, "waiting": None,
+                             **{k: _r1(v) for k, v in self._stats(win).items()}})
+                continue
+            running, waiting = cur.get("num_requests_running"), cur.get("num_requests_waiting")
+            busy = running or 0.0                # a seat without the gauge is judged by its tokens alone
+            tok_s, dgen, steady = None, 0.0, False
+            if prev is not None and gen >= prev[1] and now > prev[0]:
+                dt, dgen = now - prev[0], gen - prev[1]
+                active = dgen > 0 or prev[2] > 0 or busy > 0
+                steady = prev[2] > 0 and busy > 0 and dgen > 0
+                win.append((now, dt, dgen, active, steady))
+                tok_s, any_interval, any_steady = dgen / dt, True, any_steady or steady
+            self._prev[name] = (now, gen, busy)
+            self._prune(win, now)
+            rows.append({"name": name, "up": True, "tok_s": _r1(tok_s),
+                         "running": None if running is None else int(running),
+                         "waiting": None if waiting is None else int(waiting),
+                         **{k: _r1(v) for k, v in self._stats(win).items()}})
+            dgen_sum += dgen
+        if any_interval and self._tick_t is not None and now > self._tick_t:
+            self._ticks.append((now, now - self._tick_t, dgen_sum, any_steady))
+        self._tick_t = now
+        self._prune(self._ticks, now)
+        return {"window_s": self.window_s, "seats": rows,
+                "total": {k: _r1(v) for k, v in self._total(rows).items()}}
+
+    def _prune(self, win: deque, now: float) -> None:
+        """Drop what has aged out of the window — from the front, which is oldest first."""
+        while win and win[0][0] < now - self.window_s:
+            win.popleft()
+
+    @staticmethod
+    def _stats(win: deque) -> dict[str, float | None]:
+        """min / time-weighted avg / max over the window's steady intervals, and the share of its time that was
+        active. Nothing to compute from is null, never a 0 that reads as an idle seat."""
+        rates = [dgen / dt for _, dt, dgen, _, steady in win if steady and dt > 0]
+        sd = [(dt, dgen) for _, dt, dgen, _, steady in win if steady and dt > 0]
+        seen = sum(dt for _, dt, _, _, _ in win if dt > 0)
+        return {"min": min(rates) if rates else None,
+                "avg": (sum(g for _, g in sd) / sum(dt for dt, _ in sd)) if sd else None,
+                "max": max(rates) if rates else None,
+                "duty": (100.0 * sum(dt for _, dt, _, active, _ in win if active and dt > 0) / seen) if seen else None}
+
+    def _total(self, rows: list[dict[str, Any]]) -> dict[str, float | None]:
+        """The host's own numbers. tok_s is the seats' current rates added up; min/avg/max come from the tick window,
+        where two seats busy in the same interval count as one interval of wall clock; duty is seat-time weighted —
+        of all the seat-seconds the window watched, how many had something running."""
+        rates = [r["tok_s"] for r in rows if r["up"] and r["tok_s"] is not None]
+        st = [(dt, g) for _, dt, g, s in self._ticks if s and dt > 0]
+        seen = sum(dt for _, dt, _, _ in self._ticks if dt > 0)
+        act = sum(sum(dt for _, dt, _, a, _ in win if a and dt > 0) for win in self._win.values())
+        obs = sum(sum(dt for _, dt, _, _, _ in win if dt > 0) for win in self._win.values())
+        return {"tok_s": sum(rates) if rates else None,
+                "min": min((g / dt for dt, g in st), default=None),
+                "avg": (sum(g for _, g in st) / sum(dt for dt, _ in st)) if st else None,
+                "max": max((g / dt for dt, g in st), default=None),
+                "duty": (100.0 * act / obs) if obs else None}
+
+
+class Sampler:
+    """A whole metrics sample for one host, per the collector→hub contract. Sampling is blocking (sysfs, a subprocess,
+    an HTTP scrape) so the collector runs it in a thread; the object itself only remembers its roots. ``llm`` is set
+    only on a host that configures seats: a host without them sends no "llm" key at all, the same shape as before."""
+
+    def __init__(self, proc: str | Path = "/proc", sys: str | Path = "/sys", run: Callable[..., Any] = subprocess.run,
+                 llm: "LlmSampler | None" = None):
+        self.cpu, self.sys, self.run, self.llm = CpuSampler(proc, sys), Path(sys), run, llm
         self.intel = IntelSampler(sys)
 
     def sample(self, host_id: str) -> dict[str, Any]:
         gpus = nvidia_gpus(self.run) + amd_gpus(self.sys) + self.intel.sample()
         for i, g in enumerate(gpus):         # one numbering across the vendors, btop's order
             g["index"] = i
-        return {"host_id": host_id, "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "cpu": self.cpu.sample(), "mem": mem(self.cpu.proc), "gpus": gpus}
+        d = {"host_id": host_id, "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "cpu": self.cpu.sample(), "mem": mem(self.cpu.proc), "gpus": gpus}
+        seats = self.llm.sample() if self.llm is not None else None
+        if seats is not None:
+            d["llm"] = seats
+        return d

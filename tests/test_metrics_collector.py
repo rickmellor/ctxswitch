@@ -536,6 +536,220 @@ def test_no_topology_means_no_grouping_rather_than_a_guess(tmp_path):
     assert "core_of" not in M.CpuSampler(proc, sys).sample()
 
 
+# -- the vLLM seats of an LLM host -----------------------------------------------------------------------------------
+
+def vtext(gen=1000.0, running=0.0, waiting=0.0, extra=()):
+    """A seat's ``/metrics``: vLLM's own shape — a HELP/TYPE pair per metric, one labelled line per engine and model —
+    plus any extra lines a test wants ignored."""
+    lines = [
+        "# HELP vllm:generation_tokens_total Number of generation tokens processed.",
+        "# TYPE vllm:generation_tokens_total counter",
+        f'vllm:generation_tokens_total{{engine="0",model_name="m"}} {gen}',
+        "# HELP vllm:num_requests_running Number of requests currently running on GPU.",
+        "# TYPE vllm:num_requests_running gauge",
+        f'vllm:num_requests_running{{engine="0",model_name="m"}} {running}',
+        f'vllm:num_requests_waiting{{engine="0",model_name="m"}} {waiting}',
+        "# TYPE http_requests_total counter",
+        'http_requests_total{handler="/v1/completions"} 12.0',
+    ]
+    return "\n".join(lines + list(extra)) + "\n"
+
+
+def _sampler(seats, clock, texts, window_s=600.0):
+    """An LlmSampler whose seats answer from a list of texts (the last one for ever), or raise when an entry is an
+    exception — a scrape that fails is the only way a seat can be down."""
+
+    def fetch(url):
+        t = texts[url].pop(0) if len(texts[url]) > 1 else texts[url][0]
+        if isinstance(t, Exception):
+            raise t
+        return t
+    return M.LlmSampler(seats, window_s, clock, fetch)
+
+
+def test_the_vllm_metrics_a_panel_wants_are_summed_over_label_sets():
+    """One vLLM process can serve several engines and models; the tokens it generated are the sum of them all."""
+    d = M.parse_vllm(vtext(gen=1000.0, running=2.0, extra=['vllm:generation_tokens_total{engine="1",model_name="m"} 250.0',
+                                             'vllm:num_requests_running{engine="1",model_name="m"} 1.0']))
+    assert d == {"generation_tokens_total": 1250.0, "num_requests_running": 3.0, "num_requests_waiting": 0.0}
+    # a comment and a metric this panel doesn't read never get in, and a line that isn't a number drops out alone
+    assert M.parse_vllm(vtext("not-a-number", 0.0, 0.0, ['vllm:num_requests_running{engine="1"} 2.0'])) \
+        == {"num_requests_running": 2.0, "num_requests_waiting": 0.0}
+    assert M.parse_vllm("# HELP vllm:generation_tokens_total x\n") == {}
+    assert M.parse_vllm("vllm:generation_tokens_total 7\n") == {"generation_tokens_total": 7.0}   # no labels at all
+
+
+def test_a_seat_s_nothing_until_its_second_scrape():
+    clk = _Clock()
+    s = _sampler({"worker1": "http://127.0.0.1:8002/metrics"}, clk, {"http://127.0.0.1:8002/metrics": [vtext()]})
+    d = s.sample()
+    assert set(d) == {"window_s", "seats", "total"} and d["window_s"] == 600.0
+    (seat,) = d["seats"]
+    assert seat["name"] == "worker1" and seat["up"] is True
+    assert seat["tok_s"] is None and seat["running"] == 0 and seat["waiting"] == 0  # the gauges read; no interval yet
+    assert all(seat[k] is None for k in ("min", "avg", "max", "duty"))
+    assert d["total"]["tok_s"] is None and d["total"]["duty"] is None
+
+
+def test_a_steady_interval_is_the_tokens_over_its_seconds():
+    clk = _Clock()
+    url = "http://127.0.0.1:8002/metrics"
+    s = _sampler({"worker1": url}, clk, {url: [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0)]})
+    s.sample()
+    clk.t = 2.0
+    (seat,) = s.sample()["seats"]
+    assert set(seat) == {"name", "up", "tok_s", "running", "waiting", "min", "avg", "max", "duty"}
+    assert seat["tok_s"] == 200.0 and seat["running"] == 2 and seat["waiting"] == 0
+    assert (seat["min"], seat["avg"], seat["max"], seat["duty"]) == (200.0, 200.0, 200.0, 100.0)
+
+
+def test_only_an_interval_with_requests_at_both_ends_and_tokens_counts_toward_min_and_avg():
+    """One steady interval, then a ramp-down that was still working, then three idle ones: the idle time is half the
+    window's duty but none of its throughput, so the seat reads at the speed it actually generated at."""
+    clk = _Clock()
+    url = "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0), vtext(gen=1400.0, running=0.0),
+             vtext(gen=1400.0, running=0.0), vtext(gen=1400.0, running=0.0)]
+    s = _sampler({"worker1": url}, clk, {url: steps})
+    for t in (0.0, 2.0, 4.0, 6.0):
+        clk.t = t
+        s.sample()
+    clk.t = 8.0
+    (seat,) = s.sample()["seats"]                             # nothing generated since t=4: idle, not unknown
+    assert seat["tok_s"] == 0.0
+    assert (seat["min"], seat["avg"], seat["max"]) == (200.0, 200.0, 200.0)
+    assert seat["duty"] == 50.0                               # 4 of the 8 s it has watched
+
+
+def test_a_ramp_up_and_a_token_less_prefill_interval_are_active_but_not_steady():
+    clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=0.0, running=0.0), vtext(gen=100.0, running=1.0), vtext(gen=100.0, running=1.0),
+             vtext(gen=100.0, running=0.0)]
+    s = _sampler({"worker1": url}, clk, {url: steps})
+    for t in (0.0, 2.0, 4.0, 6.0):
+        clk.t = t
+        s.sample()
+    clk.t = 8.0
+    (seat,) = s.sample()["seats"]
+    assert (seat["min"], seat["avg"], seat["max"]) == (None, None, None)   # neither generated while requests ran
+    assert seat["duty"] == 75.0                                          # ... but 6 of its 8 s were busy time
+
+
+def test_the_average_is_weighted_by_time_and_not_by_how_many_intervals_there_were():
+    clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=0.0, running=2.0), vtext(gen=200.0, running=2.0), vtext(gen=2000.0, running=2.0)]
+    s = _sampler({"worker1": url}, clk, {url: steps})
+    for t in (0.0, 2.0, 8.0):
+        clk.t = t
+        s.sample()
+    (seat,) = s.sample()["seats"]
+    assert (seat["min"], seat["avg"], seat["max"]) == (100.0, 250.0, 300.0)   # 2 s at 100, 6 s at 300
+
+
+def test_a_seat_without_the_running_gauge_is_judged_by_its_tokens_and_never_raises():
+    """A seat whose /metrics has no num_requests_running (another server, an older vLLM) must not break the sample —
+    an exception here would cost the whole host its CPU and GPU sample too. Tokens alone say it was active."""
+    clk = _Clock()
+    url = "http://127.0.0.1:8002/metrics"
+    bare = lambda gen: f"vllm:generation_tokens_total {gen}\n"           # noqa: E731
+    s = _sampler({"worker1": url}, clk, {url: [bare(1000.0), bare(1400.0), bare(1400.0)]})
+    s.sample()
+    clk.t = 2.0
+    (seat,) = s.sample()["seats"]
+    assert seat["up"] is True and seat["running"] is None and seat["tok_s"] == 200.0
+    assert seat["duty"] == 100.0 and seat["min"] is None          # active, but never "steady" without the gauge
+    clk.t = 4.0
+    (seat,) = s.sample()["seats"]
+    assert seat["tok_s"] == 0.0 and seat["duty"] == 50.0
+
+
+def test_a_seat_that_restarted_says_nothing_for_that_interval_and_measures_from_the_new_counter():
+    clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=5000.0, running=2.0), vtext(gen=300.0, running=2.0), vtext(gen=700.0, running=2.0)]
+    s = _sampler({"worker1": url}, clk, {url: steps})
+    for t in (0.0, 2.0):
+        clk.t = t
+        assert s.sample()["seats"][0]["tok_s"] is None        # the counter went backwards: no interval, no rate
+    clk.t = 4.0
+    (seat,) = s.sample()["seats"]
+    assert seat["tok_s"] == 200.0 and (seat["min"], seat["avg"], seat["max"]) == (200.0, 200.0, 200.0)
+
+
+def test_a_seat_that_stops_answering_is_down_and_keeps_the_window_it_had():
+    clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0), OSError("connection refused")]
+    s = _sampler({"worker1": url}, clk, {url: steps})
+    for t in (0.0, 2.0):
+        clk.t = t
+        s.sample()
+    clk.t = 4.0
+    (seat,) = s.sample()["seats"]
+    assert seat["up"] is False and seat["tok_s"] is None
+    assert seat["running"] is None and seat["waiting"] is None
+    assert (seat["min"], seat["avg"], seat["max"], seat["duty"]) == (200.0, 200.0, 200.0, 100.0)
+    assert s.sample()["seats"][0]["tok_s"] is None            # it came back: no interval across the gap
+
+
+def test_a_window_that_aged_out_leaves_the_stats_and_the_duty_behind():
+    clk, url = _Clock(), "http://127.0.0.1:8002/metrics"
+    steps = [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0), vtext(gen=1400.0, running=0.0)]
+    s = _sampler({"worker1": url}, clk, {url: steps}, window_s=10.0)
+    for t in (0.0, 2.0, 4.0, 6.0, 8.0):
+        clk.t = t
+        s.sample()
+    clk.t = 20.0
+    (seat,) = s.sample()["seats"]                             # everything before t=10 has aged out
+    assert (seat["min"], seat["avg"], seat["max"]) == (None, None, None)   # the steady interval is gone from the window
+    assert seat["duty"] == 0.0 and seat["tok_s"] == 0.0       # the seat is still watched, and still idle
+
+
+def test_the_total_is_the_seats_at_once_not_their_numbers_added_up():
+    clk, a, b = _Clock(), "http://127.0.0.1:8002/metrics", "http://127.0.0.1:8003/metrics"
+    texts = {a: [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0)],
+             b: [vtext(gen=0.0, running=0.0), vtext(gen=200.0, running=0.0)]}   # the same 2 s at 100 tok/s
+    s = _sampler({"worker1": a, "worker2": b}, clk, texts)
+    for t in (0.0, 2.0):
+        clk.t = t
+        d = s.sample()
+    assert [x["name"] for x in d["seats"]] == ["worker1", "worker2"]      # config order
+    assert d["seats"][0]["tok_s"] == 200.0 and d["seats"][1]["tok_s"] == 100.0
+    assert d["total"]["tok_s"] == 300.0 and (d["total"]["min"], d["total"]["avg"], d["total"]["max"]) == (300.0,) * 3
+
+
+def test_the_total_duty_is_seat_time_weighted_over_every_seat_it_watched():
+    clk, a, b = _Clock(), "http://127.0.0.1:8002/metrics", "http://127.0.0.1:8003/metrics"
+    texts = {a: [vtext(gen=1000.0, running=2.0), vtext(gen=1400.0, running=2.0)],
+             b: [vtext(gen=0.0, running=0.0), vtext(gen=0.0, running=0.0)]}    # worker2 never woke up
+    s = _sampler({"worker1": a, "worker2": b}, clk, texts)
+    for t in (0.0, 2.0):
+        clk.t = t
+        d = s.sample()
+    assert d["seats"][1]["duty"] == 0.0 and d["total"]["duty"] == 50.0    # 2 of the 4 seat-seconds
+    assert d["total"]["tok_s"] == 200.0                                    # only one seat was generating
+
+
+def test_a_host_with_no_seats_sends_no_llm_key_at_all(tmp_path):
+    proc, sys = cpu_tree(tmp_path)
+    card(tmp_path, 0)
+    s = M.Sampler(proc, sys, run=_run())
+    assert set(s.sample("gpu-box")) == {"host_id", "at", "cpu", "mem", "gpus"}
+    assert M.LlmSampler({}).sample() is None                   # an empty table says nothing, so the key stays out
+    clk = _Clock()
+    s.llm = _sampler({"worker1": "http://127.0.0.1:8002/metrics"}, clk,
+                     {"http://127.0.0.1:8002/metrics": [vtext()]})
+    d = s.sample("gpu-box")
+    assert set(d) == {"host_id", "at", "cpu", "mem", "gpus", "llm"}
+    assert set(d["llm"]) == {"window_s", "seats", "total"}
+
+
+def test_the_seats_are_configured_as_a_table_of_urls(tmp_path):
+    cfg = C.load(_cfg(tmp_path, '[collector]\nmetrics_every = 2\n[collector.llm_seats]\n'
+                                'worker1 = "http://127.0.0.1:8002/metrics"\n'))
+    assert cfg.collector.llm_seats == {"worker1": "http://127.0.0.1:8002/metrics"}
+    assert cfg.collector.llm_window_s == 600.0
+    assert C.Config().collector.llm_seats == {}                # opt-in, like the interval it rides on
+
+
 def test_a_device_id_shared_by_several_models_is_named_by_its_revision(tmp_path):
     # 1002:7550 is the RX 9070, 9070 XT and 9070 GRE: only rev c0 (devbox's 9070 XT) is listed
     xt = card(tmp_path, 0)
