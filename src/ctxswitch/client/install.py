@@ -9,7 +9,8 @@
              surgically; the extension link and (with --collector) the unit removed.
   --mcp      (opt-in, not part of the default) `ctx mcp` registered with Claude Code for this user, through
              `claude mcp add/remove -s user` (~/.claude.json is Claude's own and rewritten constantly, so no edits to it),
-             and the skill that says when to use it linked at ~/.claude/skills/ctxswitch.
+             the skill that says when to use it linked at ~/.claude/skills/ctxswitch, the same server in pi's and
+             Antigravity's JSON server lists, and the skill linked at ~/.gemini/config/skills/ctxswitch.
   doctor     one line per check (✓ ok, ! warning, ✗ broken, with the fix); exit 1 on any ✗.
 """
 from __future__ import annotations
@@ -57,6 +58,20 @@ def pi_ext_dir() -> Path:
 def pi_mcp_json() -> Path:
     """pi-mcp-adapter's server list (pi has no MCP of its own)."""
     return pi_agent_dir() / "mcp.json"
+
+
+def agy_config_dir() -> Path:
+    """Antigravity's config dir; its presence is how we know agy has been run here."""
+    return Path(os.environ.get("AGY_CONFIG_DIR") or Path.home() / ".gemini" / "config")
+
+
+def agy_mcp_json() -> Path:
+    """Antigravity's server list (it has MCP of its own; the file is created empty on first run)."""
+    return agy_config_dir() / "mcp_config.json"
+
+
+def agy_skill_link() -> Path:
+    return agy_config_dir() / "skills" / MCP_NAME
 
 
 def unit_path() -> Path:
@@ -294,29 +309,46 @@ def install_mcp(st: State, dry: bool, log, run=subprocess.run) -> None:
     log(f"mcp: {MCP_NAME} registered -> {ctx_exe()} mcp (new Claude sessions get it)")
 
 
-def install_skill(st: State, dry: bool, log) -> None:
+def _install_skill(link: Path, label: str, dry: bool, log) -> None:
     """The skill that says when to use the tools, linked like the pi extension (a real directory there is left alone)."""
-    link, src = skill_link(), skill_source()
+    src = skill_source()
     if link.is_symlink() and link.resolve() == src.resolve():
-        log(f"skill: already linked at {link}"); return
+        log(f"{label}: already linked at {link}"); return
     if link.exists() and not link.is_symlink():
-        log(f"skill: {link} exists and is not our link; left alone"); return
+        log(f"{label}: {link} exists and is not our link; left alone"); return
     if dry:
-        log(f"skill: would link {link} -> {src}"); return
+        log(f"{label}: would link {link} -> {src}"); return
     _mkdir(link.parent)
     if link.is_symlink():
         link.unlink()
     link.symlink_to(src); _own(link)
-    log(f"skill: linked {link} -> {src}")
+    log(f"{label}: linked {link} -> {src}")
+
+
+def _uninstall_skill(link: Path, label: str, dry: bool, log) -> None:
+    if not link.is_symlink() or link.resolve() != skill_source().resolve():
+        log(f"{label}: no link of ours at {link}"); return
+    if dry:
+        log(f"{label}: would remove {link}"); return
+    link.unlink(); log(f"{label}: removed {link}")
+
+
+def install_skill(st: State, dry: bool, log) -> None:
+    _install_skill(skill_link(), "skill", dry, log)
 
 
 def uninstall_skill(st: State, dry: bool, log) -> None:
-    link = skill_link()
-    if not link.is_symlink() or link.resolve() != skill_source().resolve():
-        log(f"skill: no link of ours at {link}"); return
-    if dry:
-        log(f"skill: would remove {link}"); return
-    link.unlink(); log(f"skill: removed {link}")
+    _uninstall_skill(skill_link(), "skill", dry, log)
+
+
+def install_agy_skill(st: State, dry: bool, log) -> None:
+    if not agy_config_dir().is_dir():
+        log("agy skill: ~/.gemini/config not found; skipped"); return
+    _install_skill(agy_skill_link(), "agy skill", dry, log)
+
+
+def uninstall_agy_skill(st: State, dry: bool, log) -> None:
+    _uninstall_skill(agy_skill_link(), "agy skill", dry, log)
 
 
 def uninstall_mcp(st: State, dry: bool, log, run=subprocess.run) -> None:
@@ -334,8 +366,11 @@ def uninstall_mcp(st: State, dry: bool, log, run=subprocess.run) -> None:
     st.d.pop("mcp", None); st.save()
 
 
-def pi_mcp_entry() -> dict[str, Any]:
+def mcp_entry() -> dict[str, Any]:
     return {"command": str(ctx_exe()), "args": ["mcp"]}
+
+
+pi_mcp_entry = mcp_entry                                      # kept for callers that know it by pi's name
 
 
 def _pi_adapter() -> bool:
@@ -347,12 +382,15 @@ def _pi_adapter() -> bool:
     return pi_mcp_json().exists() or any("pi-mcp-adapter" in str(x) for x in pkgs)
 
 
-def _read_pi_mcp() -> tuple[dict[str, Any] | None, bytes | None]:
-    """(the parsed file, its bytes); ({}, None) when absent; (None, bytes) when it isn't a JSON object."""
-    p = pi_mcp_json()
+def _read_mcp_json(p: Path) -> tuple[dict[str, Any] | None, bytes | None]:
+    """(the parsed file, its bytes) for a JSON `mcpServers` file; ({}, None) when absent, ({}, bytes) when it's
+    empty (Antigravity creates a 0-byte mcp_config.json before it's ever written), (None, bytes) when it isn't
+    a JSON object with an mcpServers object."""
     if not p.exists():
         return {}, None
     raw = p.read_bytes()
+    if raw.strip() == b"":
+        return {}, raw
     try:
         d = json.loads(raw)
     except ValueError:
@@ -360,43 +398,59 @@ def _read_pi_mcp() -> tuple[dict[str, Any] | None, bytes | None]:
     return (d, raw) if isinstance(d, dict) and isinstance(d.get("mcpServers", {}), dict) else (None, raw)
 
 
-def install_pi_mcp(st: State, dry: bool, log) -> None:
-    """Our server in pi-mcp-adapter's mcp.json, the rest kept as it was. The file holds other servers' keys: it's
+def _add_mcp_entry(st: State, p: Path, label: str, key: str, prefix: str, note: str, dry: bool, log) -> None:
+    """Our server in a harness's JSON server list, the rest kept as it was. The file holds other servers' keys: it's
     never printed, keeps its mode (0600 when new), and the original is backed up 0600."""
-    p = pi_mcp_json()
-    if not _pi_adapter():
-        log("pi mcp: pi-mcp-adapter not installed here; pi agents don't get the ctxswitch tools"); return
-    d, raw = _read_pi_mcp()
+    d, raw = _read_mcp_json(p)
     if d is None:
-        log(f"pi mcp: {p} isn't a JSON object with an mcpServers object; left alone"); return
-    if (d.get("mcpServers") or {}).get(MCP_NAME) == pi_mcp_entry():
-        log(f"pi mcp: {MCP_NAME} already in {p}"); return
+        log(f"{label}: {p} isn't a JSON object with an mcpServers object; left alone"); return
+    if (d.get("mcpServers") or {}).get(MCP_NAME) == mcp_entry():
+        log(f"{label}: {MCP_NAME} already in {p}"); return
     if dry:
-        log(f"pi mcp: would add {MCP_NAME} -> {ctx_exe()} mcp to {p}"); return
+        log(f"{label}: would add {MCP_NAME} -> {ctx_exe()} mcp to {p}"); return
     backup = None
     if raw is not None:
-        backup = state_dir() / "backup" / f"pi-mcp.json.{time.strftime('%Y%m%d-%H%M%S')}"
+        backup = state_dir() / "backup" / f"{prefix}.{time.strftime('%Y%m%d-%H%M%S')}"
         _write(backup, raw, 0o600)
-    d.setdefault("mcpServers", {})[MCP_NAME] = pi_mcp_entry()
+    d.setdefault("mcpServers", {})[MCP_NAME] = mcp_entry()
     _write(p, (json.dumps(d, indent=2) + "\n").encode(), 0o600)
-    st.d["pi_mcp"] = {"file": str(p), "backup": str(backup) if backup else None}; st.save()
-    log(f"pi mcp: {MCP_NAME} added to {p} (new pi sessions get it)" + (f"; backup {backup}" if backup else ""))
+    st.d[key] = {"file": str(p), "backup": str(backup) if backup else None}; st.save()
+    log(f"{label}: {MCP_NAME} added to {p}{note}" + (f"; backup {backup}" if backup else ""))
 
 
-def uninstall_pi_mcp(st: State, dry: bool, log) -> None:
-    p = pi_mcp_json()
-    d, _ = _read_pi_mcp()
+def _drop_mcp_entry(st: State, p: Path, label: str, key: str, dry: bool, log) -> None:
+    d, _ = _read_mcp_json(p)
     if not d or MCP_NAME not in (d.get("mcpServers") or {}):
-        log(f"pi mcp: {MCP_NAME} not in {p}")
-        if not dry and st.d.pop("pi_mcp", None):
+        log(f"{label}: {MCP_NAME} not in {p}")
+        if not dry and st.d.pop(key, None):
             st.save()
         return
     if dry:
-        log(f"pi mcp: would remove {MCP_NAME} from {p}"); return
+        log(f"{label}: would remove {MCP_NAME} from {p}"); return
     del d["mcpServers"][MCP_NAME]
     _write(p, (json.dumps(d, indent=2) + "\n").encode())
-    st.d.pop("pi_mcp", None); st.save()
-    log(f"pi mcp: {MCP_NAME} removed from {p}")
+    st.d.pop(key, None); st.save()
+    log(f"{label}: {MCP_NAME} removed from {p}")
+
+
+def install_pi_mcp(st: State, dry: bool, log) -> None:
+    if not _pi_adapter():
+        log("pi mcp: pi-mcp-adapter not installed here; pi agents don't get the ctxswitch tools"); return
+    _add_mcp_entry(st, pi_mcp_json(), "pi mcp", "pi_mcp", "pi-mcp.json", " (new pi sessions get it)", dry, log)
+
+
+def uninstall_pi_mcp(st: State, dry: bool, log) -> None:
+    _drop_mcp_entry(st, pi_mcp_json(), "pi mcp", "pi_mcp", dry, log)
+
+
+def install_agy_mcp(st: State, dry: bool, log) -> None:
+    if not agy_config_dir().is_dir():
+        log("agy mcp: ~/.gemini/config not found; Antigravity agents don't get the ctxswitch tools"); return
+    _add_mcp_entry(st, agy_mcp_json(), "agy mcp", "agy_mcp", "agy-mcp.json", " (new Antigravity sessions get it)", dry, log)
+
+
+def uninstall_agy_mcp(st: State, dry: bool, log) -> None:
+    _drop_mcp_entry(st, agy_mcp_json(), "agy mcp", "agy_mcp", dry, log)
 
 
 # -- pi extension -----------------------------------------------------------------------------------------------
@@ -635,10 +689,16 @@ def doctor(cfg: Config | None = None) -> list[Check]:
                    Check("!", "mcp", f"{MCP_NAME} not registered for this install" if ok is False else "claude not on PATH",
                          "ctx install --mcp"))
     if State().d.get("pi_mcp"):
-        d, _ = _read_pi_mcp()
-        ok = bool(d) and (d.get("mcpServers") or {}).get(MCP_NAME) == pi_mcp_entry()
+        d, _ = _read_mcp_json(pi_mcp_json())
+        ok = bool(d) and (d.get("mcpServers") or {}).get(MCP_NAME) == mcp_entry()
         out.append(Check("✓", "pi mcp", f"{MCP_NAME} in {pi_mcp_json()}") if ok else
                    Check("!", "pi mcp", f"{MCP_NAME} missing from {pi_mcp_json()} or another command", "ctx install --mcp"))
+    if State().d.get("agy_mcp"):
+        p = agy_mcp_json()
+        d, _ = _read_mcp_json(p)
+        ok = bool(d) and (d.get("mcpServers") or {}).get(MCP_NAME) == mcp_entry()
+        out.append(Check("✓", "agy mcp", f"{MCP_NAME} in {p}") if ok else
+                   Check("!", "agy mcp", f"{MCP_NAME} missing from {p} or another command", "ctx install --mcp"))
     out.append(Check("✓", "tmux", shutil.which("tmux")) if shutil.which("tmux") else
                Check("!", "tmux", "not installed: `ctx tmux` (the manager) won't work"))
     return out
@@ -713,6 +773,8 @@ def cmd_install(a) -> int:
         install_mcp(st, a.dry_run, log)
         install_skill(st, a.dry_run, log)
         install_pi_mcp(st, a.dry_run, log)
+        install_agy_mcp(st, a.dry_run, log)
+        install_agy_skill(st, a.dry_run, log)
     if not a.dry_run:
         log("next: `ctx doctor`")
     return 0
@@ -735,6 +797,8 @@ def cmd_uninstall(a) -> int:
         uninstall_mcp(st, a.dry_run, log)
         uninstall_skill(st, a.dry_run, log)
         uninstall_pi_mcp(st, a.dry_run, log)
+        uninstall_agy_mcp(st, a.dry_run, log)
+        uninstall_agy_skill(st, a.dry_run, log)
     return 0
 
 
@@ -752,7 +816,8 @@ def add_parsers(sub) -> None:
         p.set_defaults(fn=fn)
         p.add_argument("--claude", action="store_true"); p.add_argument("--pi", action="store_true")
         p.add_argument("--collector", action="store_true", help="(uninstall: only removed when given)")
-        p.add_argument("--mcp", action="store_true", help="`ctx mcp` registered with Claude Code (only when given)")
+        p.add_argument("--mcp", action="store_true",
+                       help="`ctx mcp` registered with Claude Code, pi and Antigravity (only when given)")
         p.add_argument("--dry-run", action="store_true")
         if name == "install":
             p.add_argument("--hub", help="hub url for the config"); p.add_argument("--token", help="hub token for the config")

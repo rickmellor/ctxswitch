@@ -2,9 +2,9 @@
 for, what it was told, what it asked and what was answered, and message another session as itself.
 
 An agent's message is sent as the session this server runs under, found by walking up its parent processes to a
-Claude or pi registry entry on this host (own_session), so the agent can't say it is someone else, and outside a
-session there is no sending at all. It arrives headed with that session's key, title and host, never "from the
-operator", and its turn is recorded as a peer's (hub/store.py).
+Claude or pi registry entry, or an Antigravity presence lock, on this host (own_session), so the agent can't say it
+is someone else, and outside a session there is no sending at all. It arrives headed with that session's key, title
+and host, never "from the operator", and its turn is recorded as a peer's (hub/store.py).
 
 The protocol by hand (newline-delimited JSON-RPC 2.0 over stdin/stdout, tools only) rather than the SDK: four
 methods, and no new dependency on every host. Only protocol goes to stdout; anything else to stderr.
@@ -22,6 +22,7 @@ from typing import Any, Callable
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
 from ctxswitch.collector.liveness import (
+    read_agy_presence,
     read_claude_registry,
     read_pi_registry,
     runtime_dir,
@@ -59,12 +60,14 @@ def _ppid(pid: int, proc: str) -> int | None:
 
 
 def own_session(cfg: Config, proc: str = "/proc", pid: int | None = None) -> str | None:
-    """The key of the Claude or pi session this process runs under: the nearest ancestor with a live registry entry
-    on this host. Read on every send, so a /clear or resume (a new session id, same process) is followed."""
+    """The key of the Claude, pi or Antigravity session this process runs under: the nearest ancestor with a live
+    registry entry on this host. Read on every send, so a /clear or resume (a new session id, same process) is followed."""
     host = cfg.host_id
     live = read_pi_registry(runtime_dir(), host, proc)
     for d in cfg.claude_sessions_dirs():
         live |= read_claude_registry(d, host, proc)
+    for r in cfg.collector.agy_roots:                        # agy has no registry: the pid holding its presence lock
+        live |= read_agy_presence(Path(os.path.expanduser(r)), host, proc)
     by_pid = {lv.pid: k for k, lv in live.items()}
     pid = os.getppid() if pid is None else pid
     for _ in range(64):                                              # a cycle or a deep tree: give up
@@ -146,7 +149,7 @@ class Server:
     def send_message(self, session: str, text: str) -> str:
         me = self.whoami()
         if me is None:
-            raise ToolError("can't tell which session this is (this server isn't running under a Claude or pi session "
+            raise ToolError("can't tell which session this is (this server isn't running under a Claude, pi or agy session "
                             "on this host), so it can't send as one")
         key = self._key(session)
         if key == me:

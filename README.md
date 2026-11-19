@@ -133,7 +133,7 @@ Put `.venv/bin` on your `PATH` (or symlink `ctx` into `~/.local/bin`) so plain `
 | collector | writes `~/.config/systemd/user/ctx-collector.service` pointing at this venv, enables and restarts it | `ctx uninstall --collector` |
 | Claude Code | adds one `async` hook per event to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`), keeping your other hooks; backs the original up to `~/.local/state/ctxswitch/backup/` | `ctx uninstall --claude` restores the original byte-for-byte, or removes just our entries if the file changed since |
 | pi | symlinks `~/.pi/agent/extensions/ctxswitch.ts` to the extension in this repo | `ctx uninstall --pi` |
-| MCP (only with `--mcp`) | `claude mcp add -s user ctxswitch -- <venv>/bin/ctx mcp` (replacing one that points at another venv), and symlinks `~/.claude/skills/ctxswitch` to the skill in this repo | `ctx uninstall --mcp` |
+| MCP (only with `--mcp`) | `claude mcp add -s user ctxswitch -- <venv>/bin/ctx mcp` (replacing one that points at another venv), and symlinks `~/.claude/skills/ctxswitch` to the skill in this repo; the same entry under `mcpServers` in `~/.pi/agent/mcp.json` (pi-mcp-adapter) and `~/.gemini/config/mcp_config.json` (Antigravity) where those exist, plus `~/.gemini/config/skills/ctxswitch` | `ctx uninstall --mcp` |
 
 Pick parts with `--claude`, `--pi`, `--collector` (`--mcp` is never part of the default: see Agents); `--dry-run` shows what would change. Running it again is
 safe. New pi sessions load the extension; restart running Claude sessions to be sure they have the hooks.
@@ -559,8 +559,8 @@ messages another session, and a skill that tells the agent when to use them:
 
 So "what did we decide about the docs layout?" in one session finds the answer you gave in another, on any machine.
 An agent's message is sent as its own session: the MCP server finds which session it runs under (its parent
-processes, against the Claude and pi registries on that host), so the agent can't pick a name, and outside a session
-it can't send at all. It's delivered like yours (Messages, above) but headed
+processes, against the Claude and pi registries, or the Antigravity presence lock, on that host), so the agent can't
+pick a name, and outside a session it can't send at all. It's delivered like yours (Messages, above) but headed
 
     Message from another agent session, not from the operator (sent with ctxswitch).
     From: session laptop/claude/1f0c… "docs layout" on host laptop
@@ -579,6 +579,14 @@ pi has no MCP of its own. Where [pi-mcp-adapter](https://github.com/nicobailon/p
 `~/.pi/agent/mcp.json`, leaving the other servers as they were (it never prints the file: other servers' keys live
 there; the original is backed up 0600 under `~/.local/state/ctxswitch/backup/`). `ctx uninstall --mcp` removes just
 that entry. Any other MCP client works the same way.
+
+Antigravity (`agy`) has MCP of its own: where `~/.gemini/config` exists (it's created the first time agy runs),
+`ctx install --mcp` adds the same entry under `mcpServers` in `~/.gemini/config/mcp_config.json` — the file agy
+creates empty, so an empty one is filled in rather than skipped — leaving any other servers as they were, keeping the
+file's mode (600 when written new) and backing the original up 0600; and it links the same skill at
+`~/.gemini/config/skills/ctxswitch`. An agy session running `ctx mcp` is recognized through the presence lock agy
+holds on its conversation, so it sends as `host/agy/<conversation id>`. `ctx uninstall --mcp` removes the entry and
+the link. `ctx doctor` checks both once installed.
 
 ## 9. Spend
 The header's second line says what today costs: `today $12.40 · cloud 11.10 · local 1.30`. With more than one

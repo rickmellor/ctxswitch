@@ -6,9 +6,11 @@ import json
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from ctxswitch.client import mcp_server
 from ctxswitch.client.hubclient import HubClient
-from ctxswitch.client.mcp_server import PROTOCOLS, Server, serve
+from ctxswitch.client.mcp_server import PROTOCOLS, Server, own_session, serve
 from ctxswitch.common.config import Config
+from ctxswitch.common.schema import Liveness
 from ctxswitch.hub.api import Hub
 from ctxswitch.hub.store import Store
 
@@ -187,3 +189,22 @@ def test_a_full_key_wins_over_part_of_another(tmp_path):
     s = _server(tmp_path, store)
     assert s._key(A) == A and s._key("devbox/claude/new") == "devbox/claude/new"
     assert _call(s, "get_session", session="devbox/claude/new")[0] is False
+
+
+def test_own_session_follows_an_antigravity_presence_holder(tmp_path, monkeypatch):
+    proc = tmp_path / "proc"
+    (proc / "40").mkdir(parents=True)
+    (proc / "40" / "stat").write_text("40 (ctx mcp) S 30 " + "0 " * 18 + "100 0\n")   # our parent is pid 30
+    cfg = Config(); cfg.collector.host_id = "laptop"
+    cfg.collector.agy_roots = [str(tmp_path / ".gemini" / "antigravity-cli" / "conversations")]
+    seen = []
+
+    def fake(root, host_id, p="/proc"):
+        seen.append((root, host_id, p))
+        return {"laptop/agy/c7": Liveness(key="laptop/agy/c7", status="idle", pid=30)}
+
+    monkeypatch.setattr(mcp_server, "read_agy_presence", fake)
+    assert own_session(cfg, str(proc), pid=40) == "laptop/agy/c7"      # the agy process holding the lock is our ancestor
+    assert seen == [(tmp_path / ".gemini" / "antigravity-cli" / "conversations", "laptop", str(proc))]
+    monkeypatch.setattr(mcp_server, "read_agy_presence", lambda root, host_id, p="/proc": {})
+    assert own_session(cfg, str(proc), pid=40) is None                 # no conversation holds it: not under a session

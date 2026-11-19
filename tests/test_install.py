@@ -1,6 +1,7 @@
 """ctx install / uninstall against a throwaway HOME: merge, idempotence, byte-for-byte restore, surgical removal."""
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +15,8 @@ ORIGINAL = '{\n    "model": "opus",\n    "hooks": {"SessionStart": [' + json.dum
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    for v in ("CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "CTXSWITCH_SPOOL", "CTXSWITCH_CONFIG"):
+    for v in ("CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "AGY_CONFIG_DIR", "XDG_CONFIG_HOME",
+              "CTXSWITCH_SPOOL", "CTXSWITCH_CONFIG"):
         monkeypatch.delenv(v, raising=False)
     (tmp_path / ".claude").mkdir()
     monkeypatch.setattr(ins, "windows_claude_root", lambda: None)               # not this laptop's real Windows home
@@ -212,14 +214,15 @@ def test_mcp_registration_is_opt_in_idempotent_and_repoints(home, monkeypatch):
 
 def test_install_without_flags_leaves_mcp_alone(home, monkeypatch):
     seen = []
-    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_mcp", "install_skill", "install_pi_mcp"):
+    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_mcp", "install_skill",
+                 "install_pi_mcp", "install_agy_mcp", "install_agy_skill"):
         monkeypatch.setattr(ins, name, lambda *a, _n=name, **k: seen.append(_n))
     args = dict(claude=False, pi=False, collector=False, mcp=False, dry_run=False, hub=None, token=None, no_start=True, force=False)
     ins.cmd_install(type("A", (), args)())
     assert seen == ["write_config", "install_collector", "install_claude", "install_pi"]
     seen.clear()
     ins.cmd_install(type("A", (), args | {"mcp": True})())
-    assert seen == ["install_mcp", "install_skill", "install_pi_mcp"]   # --mcp alone: only that
+    assert seen == ["install_mcp", "install_skill", "install_pi_mcp", "install_agy_mcp", "install_agy_skill"]   # --mcp alone: only that
 
 
 def test_doctor_checks_mcp_only_once_installed(home, monkeypatch):
@@ -308,3 +311,70 @@ def test_doctor_checks_pi_mcp_once_installed(home, monkeypatch):
     assert [c.status for c in ins.doctor(cfg) if c.name == "pi mcp"] == ["✓"]
     (home / ".pi/agent/mcp.json").write_text(json.dumps({"mcpServers": {"ctxswitch": {"command": "/old/ctx", "args": ["mcp"]}}}))
     assert [c.status for c in ins.doctor(cfg) if c.name == "pi mcp"] == ["!"]
+
+
+def test_agy_mcp_entry_is_added_beside_other_servers_and_removed_alone(home):
+    cfg_dir = home / ".gemini" / "config"
+    assert ins.agy_mcp_json() == cfg_dir / "mcp_config.json" and ins.agy_skill_link() == cfg_dir / "skills" / "ctxswitch"
+    assert "not found" in _run(ins.install_agy_mcp)[0] and not cfg_dir.exists()      # agy never run here: nothing
+    cfg_dir.mkdir(parents=True)
+    p = ins.agy_mcp_json()
+    p.write_bytes(b""); os.chmod(p, 0o644)                                            # agy's own 0-byte default file
+    _run(ins.install_agy_mcp)
+    assert json.loads(p.read_text()) == {"mcpServers": {"ctxswitch": ins.mcp_entry()}}
+    assert oct(p.stat().st_mode & 0o777) == "0o644"                                   # the file's mode kept
+    backup = Path(ins.State().d["agy_mcp"]["backup"])
+    assert ins.State().d["agy_mcp"]["file"] == str(p) and backup.read_bytes() == b"" and \
+        oct(backup.stat().st_mode & 0o777) == "0o600"
+    p.unlink(); _run(ins.install_agy_mcp)
+    assert oct(p.stat().st_mode & 0o777) == "0o600"                                   # written fresh: not world-readable
+    other = {"mcpServers": {"github": {"command": "npx", "env": {"TOKEN": "s3cret"}}}, "settings": {"x": 1}}
+    p.write_text(json.dumps(other)); os.chmod(p, 0o640)
+    lines = _run(ins.install_agy_mcp)
+    assert not any("s3cret" in ln for ln in lines)                                    # other servers' keys are never printed
+    d = json.loads(p.read_text())
+    assert d["mcpServers"]["github"] == other["mcpServers"]["github"] and d["settings"] == {"x": 1}
+    assert d["mcpServers"]["ctxswitch"] == {"command": str(ins.ctx_exe()), "args": ["mcp"]}
+    assert oct(p.stat().st_mode & 0o777) == "0o640"                                   # its mode kept
+    backup = Path(ins.State().d["agy_mcp"]["backup"])
+    assert json.loads(backup.read_text()) == other and oct(backup.stat().st_mode & 0o777) == "0o600"
+    before = p.read_bytes()
+    assert "already" in _run(ins.install_agy_mcp)[0] and p.read_bytes() == before
+    _run(ins.uninstall_agy_mcp)
+    assert json.loads(p.read_text()) == other and "agy_mcp" not in ins.State().d
+    assert "not in" in _run(ins.uninstall_agy_mcp)[0]
+    p.write_text(json.dumps({"mcpServers": {"ctxswitch": {"command": "/old/venv/bin/ctx", "args": ["mcp"]}}}))
+    assert "added" in _run(ins.install_agy_mcp)[0]                                    # another venv's ctx: re-pointed
+    assert json.loads(p.read_text())["mcpServers"]["ctxswitch"] == ins.mcp_entry()
+    for bad in ("[1, 2]", '{"mcpServers": []}', "{not json"):
+        p.write_text(bad)
+        assert "left alone" in _run(ins.install_agy_mcp)[0] and p.read_text() == bad
+
+
+def test_doctor_checks_agy_mcp_once_installed(home, monkeypatch):
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: None)
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    from ctxswitch.common.config import Config
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    assert "agy mcp" not in {c.name for c in ins.doctor(cfg)}
+    (home / ".gemini" / "config").mkdir(parents=True)
+    _run(ins.install_agy_mcp)
+    assert [c.status for c in ins.doctor(cfg) if c.name == "agy mcp"] == ["✓"]
+    ins.agy_mcp_json().write_text(json.dumps({"mcpServers": {"ctxswitch": {"command": "/old/ctx", "args": ["mcp"]}}}))
+    (c,) = [c for c in ins.doctor(cfg) if c.name == "agy mcp"]
+    assert c.status == "!" and c.fix == "ctx install --mcp"
+
+
+def test_agy_skill_is_linked_and_only_our_link_removed(home):
+    link = ins.agy_skill_link()
+    assert "not found" in _run(ins.install_agy_skill)[0] and not link.exists()
+    (home / ".gemini" / "config").mkdir(parents=True)
+    assert _run(ins.install_agy_skill, dry=True)[0].startswith("agy skill: would link") and not link.is_symlink()
+    _run(ins.install_agy_skill)
+    assert link.resolve() == ins.skill_source().resolve()
+    assert "already linked" in _run(ins.install_agy_skill)[0]
+    _run(ins.uninstall_agy_skill)
+    assert not link.is_symlink()
+    link.mkdir(parents=True)                                                          # the user's own skill by that name
+    assert "not our link" in _run(ins.install_agy_skill)[0]
+    assert "no link of ours" in _run(ins.uninstall_agy_skill)[0] and link.is_dir()
