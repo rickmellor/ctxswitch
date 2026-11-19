@@ -664,6 +664,15 @@ def test_a_rate_the_collector_has_no_answer_for_prints_a_dash_and_a_down_seat_sa
     assert _style_of(panel_text("gpu-host", entry, 62), 5, "down") == "yellow"
 
 
+def test_an_idle_seat_says_0_tok_s_and_duty_0_percent_not_a_dash():
+    """0 is an answer: a seat that ran nothing in the window has a duty of 0 %, and only the rates it never had are
+    dashes. A dash would say the collector couldn't tell."""
+    entry = _with_llm(_sample(), seats=[_seat("worker1", tok_s=0.0, mn=None, avg=None, mx=None, duty=0.0)],
+                      total=_total(tok_s=0.0, mn=None, avg=None, mx=None, duty=0.0))
+    for row in _llm_rows(entry):
+        assert row.rstrip().endswith("duty   0%") and " 0 tok/s" in row and row.count("—") == 3, row
+
+
 def test_a_seats_history_is_its_own_whatever_its_neighbours_are_called():
     """A seat name longer than the CPU label is cut to it, so "worker12" and "worker13" can print the same word —
     the hub's history is still keyed by the whole name, so each row keeps its own run, scaled to its own fastest

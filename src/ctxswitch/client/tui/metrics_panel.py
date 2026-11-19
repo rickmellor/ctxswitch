@@ -261,9 +261,9 @@ def _llm_line(label: str, stats: dict | None, hist: list | None, nspark: int, wi
                                                               "bold" if _f(stats.get("tok_s")) else "dim"))
     # fixed widths, so every LLM row is as long as the next and the history, the three rates and the duty all sit in
     # one column. Listed in the order they give ground: a narrow pane loses the min/avg/max before it loses the duty.
-    tail = [Text(f" {DASH:>4}/{DASH:>4}/{DASH:>4}", "dim") if not any(_f(stats.get(k)) for k in ("min", "avg", "max"))
+    tail = [Text(f" {DASH:>4}/{DASH:>4}/{DASH:>4}", "dim") if all(_f(stats.get(k)) is None for k in ("min", "avg", "max"))
             else Text(f" {_num(stats.get('min'), 4)}/{_num(stats.get('avg'), 4)}/{_num(stats.get('max'), 4)}", "dim"),
-            Text(f" duty {DASH.rjust(3)}%", "dim") if not _f(stats.get("duty"))
+            Text(f" duty {DASH.rjust(3)}%", "dim") if _f(stats.get("duty")) is None
             else Text(f" duty {_num(stats.get('duty'), 3)}%", style=level_style(_f(stats.get("duty"))))]
     for drop in range(3):                                   # the spark shortens first, then min/avg/max, duty last
         for n in range(nspark, 0, -1):
