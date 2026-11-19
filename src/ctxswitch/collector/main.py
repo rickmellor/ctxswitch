@@ -169,8 +169,10 @@ class Collector:
         self.urls = {"ingest": base + "/v1/ingest", "outbox": base + "/v1/outbox", "messages": base + "/v1/messages",
                      "metrics": base + "/v1/metrics"}
         c = cfg.collector
-        self.sampler = Sampler(llm=LlmSampler(c.llm_seats, c.llm_window_s) if c.llm_seats else None)
-        # this host's CPU/GPU, plus its vLLM seats when configured (collector/metrics.py)
+        self.sampler = Sampler(llm=LlmSampler(c.llm_seats, c.llm_window_s) if c.llm_seats else None,
+                               calls=self.ix.drain_calls)
+        # this host's CPU/GPU, its vLLM seats when configured, and the agent API replies the indexer read since the
+        # last sample (collector/metrics.py)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         self.state.enqueue(kind, payload)
@@ -396,7 +398,9 @@ class Collector:
         r.raise_for_status()
 
     async def metrics_loop(self, sampler=None, post=None) -> None:
-        """This host's CPU and GPUs, posted straight to the hub every ``metrics_every`` seconds.
+        """This host's CPU and GPUs, posted straight to the hub every ``metrics_every`` seconds, along with the agent
+        API replies the indexer read since the last sample — so with ``metrics_every = 0`` the hub gets no call
+        records at all, and no agent rows.
 
         Deliberately not through the outbox: a sample is worth seconds, so a hub that's down loses samples rather
         than collecting a backlog of stale ones — and one slow sample must never hold up a session event. The read

@@ -165,3 +165,37 @@ def test_the_picker_offers_each_claude_account_then_pi_and_antigravity():
                                                   ("pi", "pi", None), ("antigravity", "agy", None)]
     assert new_session_options(Config(), {"claude": "x"}.get) == [("claude", "claude", None)]
     assert new_session_options(Config(), {}.get) == []
+
+
+# -- one planner response as a call record -------------------------------------------------------------------------
+
+def call_step(body: str, req: int, last: int, out: int, first: int | None = None) -> tuple[bytes, bytes]:
+    """A step-15 row with the timings and usage: metadata f1 the request went out, f6 first token, f7 last token,
+    f9 the usage (f2 in, f3 out, f5 cache-read)."""
+    meta = TS(1, req) + TS(6, first if first is not None else req + 1) + TS(7, last) + S(9, V(2, 1000) + V(3, out) + V(5, 20))
+    return meta, V(1, PLANNER_RESPONSE) + S(20, S(1, body) + S(8, body))
+
+
+def test_a_planner_response_is_one_call_from_request_to_last_token():
+    p = AgyParser()
+    meta, payload = call_step("the tour is short", 1793384970, 1793384986, 1427)
+    p.feed({"idx": 0, "step_type": USER_INPUT, "status": 3, "metadata": TS(1, 1793384968), "step_payload": b""}, 1)
+    p.feed({"idx": 1, "step_type": PLANNER_RESPONSE, "status": 3, "metadata": meta, "step_payload": payload}, 2)
+    calls = p.drain_calls()
+    assert [(c["end"], c["dur_s"], c["out"], c["model"]) for c in calls] == [("2026-10-30T18:29:46Z", 16.0, 1427, "")]
+    assert "agent" not in calls[0] and p.drain_calls() == []     # drained once, never twice
+
+
+def test_a_response_without_usage_or_timings_is_no_call():
+    p = AgyParser()
+    for i, meta in enumerate([S(9, V(3, 0)), TS(1, 1793384970) + S(9, V(3, 500)), TS(1, 1793384970)]):
+        p.feed({"idx": i, "step_type": PLANNER_RESPONSE, "status": 3, "metadata": meta, "step_payload": b""}, i + 1)
+    assert p.drain_calls() == []
+
+
+def test_a_response_s_sub_second_span_is_not_rounded_away():
+    p = AgyParser()
+    meta = S(1, V(1, 1793384970) + V(2, 500_000_000)) + S(7, V(1, 1793384971)) + S(9, V(3, 40))
+    p.feed({"idx": 0, "step_type": PLANNER_RESPONSE, "status": 3, "metadata": meta, "step_payload": b""}, 1)
+    (c,) = p.drain_calls()
+    assert c["dur_s"] == 0.5 and c["out"] == 40 and c["end"] == "2026-10-30T18:29:31Z"

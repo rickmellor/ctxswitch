@@ -29,6 +29,7 @@ from ctxswitch.common.schema import SessionMeta, session_key
 log = logging.getLogger("ctxswitch.indexer")
 Emit = Callable[[str, dict[str, Any]], None]
 ENDED_AFTER_S = 15 * 60          # a non-live transcript untouched this long counts as ended
+CALL_FRESH_S = 600               # a call record this old is history, not throughput: the hub's whole window
 
 
 def _mtime(p: Path, harness: str) -> float:
@@ -43,6 +44,14 @@ def _mtime(p: Path, harness: str) -> float:
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _call_epoch(c: dict[str, Any]) -> float | None:
+    """When a call record's reply finished, as epoch seconds; None when it carries no usable instant."""
+    try:
+        return datetime.fromisoformat(str(c["end"]).replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def session_id_from_path(path: Path, harness: str) -> str:
@@ -70,6 +79,7 @@ class Indexer:
         self.live_keys: set[str] = set()         # updated by the liveness poller
         self._meta_sent: dict[str, dict] = {}
         self.jobs = Jobs()                       # saint-agent pool jobs: which Claude sessions are one (collector/jobs.py)
+        self.calls: list[dict[str, Any]] = []    # agent call records awaiting the metrics sample (drain_calls)
 
     # -- discovery ----------------------------------------------------------------------------------------------
     def harness_for(self, path: Path) -> str | None:
@@ -192,6 +202,8 @@ class Indexer:
         if ended:
             parser.finish()
         turns = parser.drain()
+        if harness in ("claude", "claude-win"):
+            self._collect_calls(parser, harness, path)
         meta = self._meta(parser.meta, key, path, harness, st)
         if meta != self._meta_sent.get(key) or rec is None:
             # rec None = this collector state has never seen the file: a fresh index. Ask the hub to drop the turns it
@@ -244,6 +256,7 @@ class Indexer:
         elif not live and parser.current is not None and not summ.get("busy") and summ.get("status", "").endswith("IDLE"):
             parser.finish()                              # agy says the turn is over (idle); the next prompt opens a new one
         turns = parser.drain()
+        self._collect_calls(parser, "agy", path)
         meta = self._meta(parser.meta | self._agy_meta(summ, sid), key, path, "agy", st)
         emitted = False
         if meta != self._meta_sent.get(key) or rec is None:
@@ -291,6 +304,24 @@ class Indexer:
                 m.job, m.job_status, m.job_brief = job["job"], job["job_status"], job["job_brief"]
                 m.job_dur_s, m.job_turns, m.job_tokens = job["job_dur_s"], job["job_turns"], job["job_tokens"]
         return m.to_dict()
+
+    def _collect_calls(self, parser: Any, harness: str, path: Path) -> None:
+        """What the transcripts of this file just told us about cloud throughput: the API replies that completed in
+        the part just read, labelled by the account that made them — the session's Claude profile, or "claude" where
+        the host's profiles don't matter; every Antigravity call is "agy". A reply older than the hub's window is
+        dropped: the first-ever pass over 30 days of transcripts would otherwise hand the hub a day of stale calls."""
+        agent = "agy" if harness == "agy" else (self._profile("claude", path) or "claude")
+        cutoff = time.time() - CALL_FRESH_S
+        for c in parser.drain_calls():
+            if (_call_epoch(c) or 0) >= cutoff:
+                self.calls.append({"agent": agent, **c})
+        # ... and what aged out since the last file was read: a collector whose metrics loop is off never asks
+        self.calls = [c for c in self.calls if (_call_epoch(c) or 0) >= cutoff]
+
+    def drain_calls(self) -> list[dict[str, Any]]:
+        """The call records collected since this was last asked — the metrics sample's ``calls`` list."""
+        out, self.calls = self.calls, []
+        return out
 
     def _profile(self, harness: str, path: Path) -> str:
         """The account a Claude transcript belongs to, by this host's own profiles (a viewer elsewhere can't tell)."""

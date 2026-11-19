@@ -12,10 +12,15 @@ Entry types that matter (surveyed across 2.1.128–2.1.312 files, see DESIGN.md)
               local Qwen pool (meta pool / pool_at / pool_how).
   everything else (attachment of other kinds, atis-latch, last-prompt, mode, pr-link, queue-operation,
   file-history-*, cost-state, api-request*, tools-used)   ignored.
+
+One API reply is also the host's cloud throughput: the same lines say when the request was triggered, when its last
+block arrived, and how many tokens it produced, so ``drain_calls`` reports them as call records (end/dur_s/out/model,
+without the agent label — only the indexer knows which profile ran the session).
 """
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from ctxswitch.common.schema import PLAN_ASK, USAGE_KEYS, Ask, ToolTally, Turn, add_usage, question_text, trim
@@ -41,6 +46,20 @@ _POOL_CMD = (("unreachable", re.compile(r"^saint-pool: ON \(.*(UNREACHABLE|not r
 
 _USAGE_MAP = (("input", "input_tokens"), ("output", "output_tokens"), ("cache_read", "cache_read_input_tokens"),
               ("cache_creation", "cache_creation_input_tokens"))
+
+
+def _epoch(ts: Any) -> float | None:
+    """An entry's ISO instant as epoch seconds, None when it isn't one."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _result_text(r: dict) -> str:
@@ -76,12 +95,16 @@ class ClaudeParser:
         self._tools: dict[str, str] = {}        # pending tool_use id -> tool name
         self._pending_events: list[str] = []    # events seen before the next turn opens
         self._usage_ids: dict[str, dict[str, int]] = {}   # this turn's API replies (message.id) -> the usage counted
+        self._reply: dict[str, Any] | None = None    # the API reply still streaming: {id, start, end, out, model}
+        self._trigger: float | None = None           # epoch of the last entry that could start a reply
+        self._calls: list[dict[str, Any]] = []       # completed replies awaiting drain_calls()
         self.bad_lines = 0
 
     # -- persistence -------------------------------------------------------------------------------------------
     def state(self) -> dict[str, Any]:
         return {"meta": self.meta, "cur": self._cur.to_dict() if self._cur else None, "n": self._n,
-                "tools": self._tools, "pending": self._pending_events, "bad": self.bad_lines, "usage_ids": self._usage_ids}
+                "tools": self._tools, "pending": self._pending_events, "bad": self.bad_lines, "usage_ids": self._usage_ids,
+                "reply": self._reply, "trigger": self._trigger}
 
     @classmethod
     def from_state(cls, st: dict[str, Any], max_text: int = 4000) -> "ClaudeParser":
@@ -91,6 +114,8 @@ class ClaudeParser:
             p.meta.pop("first_prompt")
         p.bad_lines = st["bad"]
         p._usage_ids = st.get("usage_ids") or {}
+        p._reply = st.get("reply")                     # a reply still streaming when the collector stopped, and
+        p._trigger = st.get("trigger")                 # the entry that triggered it (older states: nothing open)
         p._cur = Turn.from_dict(st["cur"]) if st["cur"] else None
         return p
 
@@ -104,10 +129,19 @@ class ClaudeParser:
     def current(self) -> Turn | None:
         return self._cur
 
+    def drain_calls(self) -> list[dict[str, Any]]:
+        """Call records for the API replies that completed since the last drain — ``end``/``dur_s``/``out``/``model``,
+        no ``agent`` key: the parser doesn't know which profile ran the session. The reply still streaming isn't one
+        yet and stays for the next drain."""
+        out, self._calls = self._calls, []
+        return out
+
     def finish(self) -> None:
-        """Session is over (file no longer live): close the open turn."""
+        """Session is over (file no longer live): close the open turn, and with it whatever reply it left open —
+        nothing else is coming to close it, and its last line's timestamp is when that reply stopped."""
         if self._cur is not None:
             self._close(self._cur.ended_at)
+        self._close_reply()
 
     # -- feeding -----------------------------------------------------------------------------------------------
     def feed(self, e: dict[str, Any], offset_end: int) -> None:
@@ -121,6 +155,12 @@ class ClaudeParser:
             v = e.get(k_src)
             if isinstance(v, str) and v and (k_dst == "git_branch" or k_dst not in self.meta):
                 self.meta[k_dst] = v
+        if t in ("user", "system") and isinstance(ts, str) and not e.get("isSidechain"):
+            # A prompt, a tool result or the harness closing the turn is what ended the reply before it, and what
+            # triggered the one after. Lines written beside the timeline (a title, cost state, a summary) are no such
+            # thing: one landing between an assistant's blocks would otherwise split that reply into two calls.
+            self._close_reply()
+            self._trigger = _epoch(ts)
         if t == "user":
             self._user(e, offset_end)
         elif t == "assistant":
@@ -167,6 +207,49 @@ class ClaudeParser:
             cur.asks.append(Ask("plain", trim(last, 400), f"{cur.idx}:plain"))
         self._done.append(cur)
         self._cur = None
+
+    def _close_reply(self) -> None:
+        """The open API reply ended (the entry after its last block arrived, or the session closed): keep it as a
+        call record when it actually produced tokens over a span of time."""
+        r = self._reply
+        self._reply = None
+        if not r:
+            return
+        start, end, out = r.get("start"), r.get("end"), r.get("out")
+        if not (isinstance(out, int) and out > 0 and isinstance(start, float) and isinstance(end, float)
+                and end > start):
+            return
+        self._calls.append({"end": _iso(end), "dur_s": round(end - start, 3), "out": out,
+                            "model": r.get("model") or ""})
+
+    def _reply_line(self, e: dict[str, Any]) -> None:
+        """Fold one assistant line into the API reply it belongs to. Every line of a reply repeats its usage and
+        ``output_tokens`` is final on the last one, so the reply's numbers are simply the latest line's."""
+        msg = e.get("message") or {}
+        ts = _epoch(e.get("timestamp"))
+        mid = msg.get("id")
+        mid = mid if isinstance(mid, str) else ""
+        if self._reply is not None and ((mid and self._reply["id"] and self._reply["id"] != mid)
+                                        or (ts is not None and ts < self._reply["end"])):
+            # a different message.id, or a line that predates the open reply (a resumed file replaying an older
+            # turn): the reply we were holding is over, and this one starts fresh from the last trigger we saw
+            self._close_reply()
+        if self._reply is None:
+            # the request went out when the entry before it arrived; a reply whose first line we found without one
+            # (resumed mid-file) starts at that line's own timestamp, and never later than it
+            start = min((t for t in (ts, self._trigger) if t is not None), default=None)
+            self._reply = {"id": mid, "start": start, "end": ts or 0.0, "out": 0, "model": ""}
+        r = self._reply
+        if mid:
+            r["id"] = mid
+        if ts is not None:
+            r["end"] = max(r["end"], ts)
+        u = msg.get("usage")
+        if isinstance(u, dict) and isinstance(u.get("output_tokens"), int):
+            r["out"] = u["output_tokens"]
+        model = msg.get("model")
+        if isinstance(model, str) and model:
+            r["model"] = model
 
     def _open(self, e: dict[str, Any], text: str, origin: str, offset_end: int) -> None:
         stripped = text.lstrip()
@@ -300,6 +383,7 @@ class ClaudeParser:
         model = msg.get("model")
         if isinstance(model, str) and model:
             self.meta["model"] = model
+        self._reply_line(e)
         if self._cur is None:
             # assistant output with no prompt we saw (resumed mid-file): open an anonymous turn
             self._open(e, "", "unknown", offset_end)

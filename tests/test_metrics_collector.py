@@ -761,3 +761,16 @@ def test_a_device_id_shared_by_several_models_is_named_by_its_revision(tmp_path)
     r9700 = card(tmp_path, 3)                                     # a two-part key matches whatever the revision
     w(r9700, "device/vendor", "0x1002\n"); w(r9700, "device/device", "0x7551\n"); w(r9700, "device/revision", "0xc0\n")
     assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["RX 9070 XT", "AMD GPU", "AMD GPU", "AI R9700"]
+
+
+# -- the agent call records a sample rides with --------------------------------------------------------------------
+
+def test_a_sample_carries_the_calls_only_when_the_indexer_has_some(tmp_path):
+    proc, sys = cpu_tree(tmp_path)
+    done = [{"agent": "bedrock", "end": "2026-11-18T18:28:37.120Z", "dur_s": 16.0, "out": 1427,
+             "model": "claude-opus-5-5"}]
+    s = M.Sampler(proc, sys, run=_run(), calls=lambda: list(done))
+    assert s.sample("gpu-box")["calls"] == done                        # the same records, unchanged
+    assert set(M.Sampler(proc, sys, run=_run(), calls=lambda: []).sample("gpu-box")) == \
+        {"host_id", "at", "cpu", "mem", "gpus"}                        # nothing completed: no key, not an empty list
+    assert "calls" not in M.Sampler(proc, sys, run=_run()).sample("gpu-box")   # no indexer at all, as before

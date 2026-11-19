@@ -180,3 +180,91 @@ def test_metrics_never_touch_the_database(tmp_path):
         _post(c, sample(pct=float(i)))
     c.get("/v1/metrics", headers=H)
     assert _rows(store.path) == before
+
+
+# -- the rig-wide agent rows ---------------------------------------------------------------------------------------
+
+import time
+from datetime import datetime, timezone
+
+from ctxswitch.hub.metrics import agent_rows
+
+NOW = 1_800_000_000.0
+
+
+def at(offset: float) -> str:
+    """An ISO instant ``offset`` seconds before NOW (the hub's clock in these tests)."""
+    return datetime.fromtimestamp(NOW + offset, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def calls_body(*records, host="laptop"):
+    """A sample carrying call records; a record missing a name is the sample's host."""
+    return sample(host=host, utils=()) | {"calls": [dict(r) for r in records]}
+
+
+def test_one_call_gives_its_rate_its_span_and_a_full_history_bucket():
+    rows = agent_rows([("bedrock", NOW - 10, 10.0, 1000)], NOW)
+    assert rows["window_s"] == 600
+    (r,) = rows["rows"]
+    assert r["name"] == "bedrock" and r["calls"] == 1
+    assert (r["tok_s"], r["min"], r["avg"], r["max"]) == (16.7, 100.0, 100.0, 100.0)   # 1000 over the last 60 s
+    assert r["duty"] == 1.7                                          # 10 of the window's 600 s
+    # the reply streamed over [now−20, now−10], so its 1000 tokens fill the second-to-last 10 s bucket and no other
+    assert len(r["history"]) == 60 and r["history"][-2] == 100.0 and sum(r["history"]) == 100.0
+
+
+def test_two_overlapping_calls_cover_the_window_once():
+    calls = [("bedrock", NOW - 50, 50.0, 5000), ("bedrock", NOW - 20, 50.0, 5000)]   # [now-100,now-50] + [now-70,now-20]
+    (r,) = agent_rows(calls, NOW)["rows"]
+    assert r["duty"] == 13.3 and r["calls"] == 2                     # 80 s of union, not 100 s of intervals
+
+
+def test_a_short_reply_moves_tokens_and_duty_but_not_min_avg_max():
+    calls = [("max", NOW - 10, 10.0, 1000), ("max", NOW - 5, 5.0, 150)]   # the 150-token reply is all time-to-first-token
+    (r,) = agent_rows(calls, NOW)["rows"]
+    assert r["tok_s"] == 19.2 and (r["min"], r["avg"], r["max"]) == (100.0, 100.0, 100.0)
+    assert r["duty"] == 2.5 and r["calls"] == 2                      # 15 s of one reply's span
+
+
+def test_a_call_outside_the_window_leaves_no_row_at_all():
+    assert agent_rows([("claude", NOW - 601, 10.0, 1000)], NOW) is None
+    assert agent_rows([], NOW) is None                              # nothing to say, so no "agents" key
+
+
+def test_every_label_is_its_own_row_sorted_by_name():
+    calls = [("max", NOW - 10, 10.0, 400), ("agy", NOW - 12, 12.0, 360), ("bedrock", NOW - 8, 8.0, 640)]
+    rows = agent_rows(calls, NOW)["rows"]
+    assert [r["name"] for r in rows] == ["agy", "bedrock", "max"]
+    assert [r["tok_s"] for r in rows] == [6.0, 10.7, 6.7]
+    assert [r["calls"] for r in rows] == [1, 1, 1]
+
+
+def test_the_hub_keeps_one_pile_so_a_label_across_hosts_is_one_row():
+    m = Metrics()
+    m.put(calls_body({"agent": "bedrock", "end": at(-30), "dur_s": 20.0, "out": 2000}, host="laptop"))
+    m.put(calls_body({"agent": "bedrock", "end": at(-20), "dur_s": 20.0, "out": 2000}, host="gpu-host"))
+    m.put(calls_body({"agent": "agy", "end": at(-15), "dur_s": 5.0, "out": 500}, host="devbox"))
+    rows = m.get(now=NOW)["agents"]["rows"]
+    assert [r["name"] for r in rows] == ["agy", "bedrock"]
+    assert rows[1]["calls"] == 2 and rows[1]["min"] == 100.0         # both hosts' bedrock calls, together
+    assert m.get(host="laptop", now=NOW)["agents"] == m.get(now=NOW)["agents"]   # ?host= filters hosts, never these
+
+
+def test_a_record_that_is_not_one_is_skipped_and_the_rest_still_count():
+    m = Metrics()
+    m.put(calls_body({"agent": "bedrock", "dur_s": 10.0, "out": 500},                    # no end
+                     {"agent": "bedrock", "end": at(-10), "dur_s": 0, "out": 500},       # no span
+                     {"agent": "bedrock", "end": at(-10), "dur_s": 10.0, "out": "x"},    # tokens aren't a number
+                     {"agent": "", "end": at(-10), "dur_s": 10.0, "out": 500},           # no label to row by
+                     {"agent": "bedrock", "end": at(-10), "dur_s": 10.0, "out": 500}))
+    (r,) = m.get(now=NOW)["agents"]["rows"]
+    assert r["name"] == "bedrock" and r["calls"] == 1
+
+
+def test_no_calls_means_no_agents_key_and_an_old_one_ages_out():
+    m = Metrics()
+    m.put(sample(host="laptop"))
+    assert "agents" not in m.get(now=NOW)
+    m.put(calls_body({"agent": "agy", "end": at(-30), "dur_s": 10.0, "out": 1000}))
+    assert "agents" in m.get(now=NOW)
+    assert "agents" not in m.get(now=NOW + 601)                      # the window moved past it

@@ -3,11 +3,13 @@
 agy keeps one SQLite "trajectory" per conversation at ~/.gemini/antigravity-cli/conversations/<id>.db (WAL mode),
 table ``steps(idx, step_type, status, metadata, step_payload, …)`` with protobuf blobs, and a summary row per
 conversation in ../conversation_summaries.db (title, workspace_uris, status, step_count, last_user_input_time).
-There is no public schema for the blobs, so this reads them as raw protobuf wire format and takes the fields that
-were verified on agy 1.4.11:
+There is no public schema for the blobs, so this reads them as raw protobuf wire format and takes the fields read off
+agy 1.4.11 — the step-15 timings and usage below are inferred from one conversation, not from documentation:
 
   step_type 14  USER_INPUT         payload f19.f2 = the prompt text; metadata f1 = {f1 seconds, f2 nanos}
-  step_type 15  PLANNER_RESPONSE   payload f20.f1 = the model's text (f8 the same, rendered)
+  step_type 15  PLANNER_RESPONSE   payload f20.f1 = the model's text (f8 the same, rendered); metadata f1 = the request
+                                   went out, f6 = first token, f7 = last token (each {f1 seconds, f2 nanos}), f9 = the
+                                   usage (f2 in, f3 out, f5 cache-read tokens) — so one step is one call record
   other         a tool call        metadata f4 = {f1 call id, f2 tool name, f3 json args}; step 132 = read/run
 
 The step index is the replay offset: ``feed`` takes rows in idx order and the collector stores how many it has
@@ -85,7 +87,7 @@ def text(v: Any) -> str:
 
 
 def stamp(v: Any) -> str | None:
-    """A {f1 seconds, f2 nanos} timestamp message as ISO."""
+    """A {f1 seconds, f2 nanos} timestamp message as ISO (whole seconds; a reply's span wants ``stamp_epoch``)."""
     if not isinstance(v, (bytes, bytearray)):
         return None
     f = fields(v)
@@ -93,6 +95,23 @@ def stamp(v: Any) -> str | None:
     if not isinstance(s, int) or s < 10 ** 9:
         return None
     return datetime.fromtimestamp(s, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def stamp_epoch(v: Any) -> float | None:
+    """The same {f1 seconds, f2 nanos} message as epoch seconds, nanos included — a reply's span is a few seconds, so
+    dropping the fraction would round away a real part of it."""
+    if not isinstance(v, (bytes, bytearray)):
+        return None
+    f = fields(v)
+    s = f.get(1, [None])[0]
+    if not isinstance(s, int) or s < 10 ** 9:
+        return None
+    ns = f.get(2, [0])[0]
+    return s + (ns / 10 ** 9 if isinstance(ns, int) else 0.0)
+
+
+def iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # -- the parser ----------------------------------------------------------------------------------------------------
@@ -103,6 +122,7 @@ class AgyParser:
         self._done: list[Turn] = []
         self._cur: Turn | None = None
         self._n = 0
+        self._calls: list[dict[str, Any]] = []       # completed model calls awaiting drain_calls()
         self.bad_lines = 0
 
     def state(self) -> dict[str, Any]:
@@ -117,6 +137,12 @@ class AgyParser:
 
     def drain(self) -> list[Turn]:
         out, self._done = self._done, []
+        return out
+
+    def drain_calls(self) -> list[dict[str, Any]]:
+        """Call records for the model replies completed since the last drain — ``end``/``dur_s``/``out``/``model``, no
+        ``agent`` key. A step row is written whole, so nothing here is still open and nothing needs persisting."""
+        out, self._calls = self._calls, []
         return out
 
     @property
@@ -142,8 +168,18 @@ class AgyParser:
             cur = self._turn(ts, offset_end)
             if body.strip():
                 cur.assistant_text = trim(body, self.max_text)
+            self._call(meta)
         else:
             self._tool(meta, ts, offset_end)
+
+    def _call(self, meta: bytes) -> None:
+        """One planner response as a call record: request sent at metadata f1, its last token at f7, its output
+        tokens at f9.f3. The model's name isn't in the step, so it stays empty."""
+        start, end = stamp_epoch(path(meta, 1)), stamp_epoch(path(meta, 7))
+        out = path(meta, 9, 3)
+        if not isinstance(out, int) or out <= 0 or start is None or end is None or end <= start:
+            return
+        self._calls.append({"end": iso(end), "dur_s": round(end - start, 3), "out": out, "model": ""})
 
     def _turn(self, ts: str | None, offset_end: int) -> Turn:
         """The open turn, or one with no prompt when the trajectory starts mid-way (a resumed export)."""

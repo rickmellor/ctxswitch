@@ -19,6 +19,10 @@ nothing. Each interval is then classed: **active** (a request running at either 
 toward the duty cycle, and **steady** (requests running at both ends *and* tokens generated) toward min/avg/max, so
 idle time, ramp-up/ramp-down and token-less prefill never look like a slow generation rate. Both come out of a
 window of the last ``llm_window_s`` seconds, dropped entry by entry as it ages.
+
+A sample also carries ``"calls"`` when the indexer has agent API replies that finished since the last one (Claude Code
+and Antigravity, read out of their own transcripts): the hub turns those into the board's per-agent rows. Nothing
+else about the sample changes.
 """
 from __future__ import annotations
 
@@ -570,12 +574,17 @@ class LlmSampler:
 class Sampler:
     """A whole metrics sample for one host, per the collector→hub contract. Sampling is blocking (sysfs, a subprocess,
     an HTTP scrape) so the collector runs it in a thread; the object itself only remembers its roots. ``llm`` is set
-    only on a host that configures seats: a host without them sends no "llm" key at all, the same shape as before."""
+    only on a host that configures seats: a host without them sends no "llm" key at all, the same shape as before.
+
+    ``calls`` is the indexer's ``drain_calls``: the agent API replies that completed since the last sample ride along
+    as ``"calls"``, and only when there are some — the hub needs them in order, so a sample that finds none sends no
+    key rather than an empty list."""
 
     def __init__(self, proc: str | Path = "/proc", sys: str | Path = "/sys", run: Callable[..., Any] = subprocess.run,
-                 llm: "LlmSampler | None" = None):
+                 llm: "LlmSampler | None" = None, calls: Callable[[], list[dict[str, Any]]] | None = None):
         self.cpu, self.sys, self.run, self.llm = CpuSampler(proc, sys), Path(sys), run, llm
         self.intel = IntelSampler(sys)
+        self.calls = calls
 
     def sample(self, host_id: str) -> dict[str, Any]:
         gpus = nvidia_gpus(self.run) + amd_gpus(self.sys) + self.intel.sample()
@@ -586,4 +595,8 @@ class Sampler:
         seats = self.llm.sample() if self.llm is not None else None
         if seats is not None:
             d["llm"] = seats
+        if self.calls is not None:
+            done = self.calls()
+            if done:
+                d["calls"] = done
         return d
