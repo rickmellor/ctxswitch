@@ -214,15 +214,23 @@ def test_mcp_registration_is_opt_in_idempotent_and_repoints(home, monkeypatch):
 
 def test_install_without_flags_leaves_mcp_alone(home, monkeypatch):
     seen = []
-    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_mcp", "install_skill",
-                 "install_pi_mcp", "install_agy_mcp", "install_agy_skill"):
+    for name in ("write_config", "install_collector", "install_claude", "install_pi", "install_agy_hooks",
+                 "install_mcp", "install_skill", "install_pi_mcp", "install_agy_mcp", "install_agy_skill"):
         monkeypatch.setattr(ins, name, lambda *a, _n=name, **k: seen.append(_n))
     args = dict(claude=False, pi=False, collector=False, mcp=False, dry_run=False, hub=None, token=None, no_start=True, force=False)
     ins.cmd_install(type("A", (), args)())
-    assert seen == ["write_config", "install_collector", "install_claude", "install_pi"]
+    assert seen == ["write_config", "install_collector", "install_claude", "install_pi", "install_agy_hooks"]
     seen.clear()
     ins.cmd_install(type("A", (), args | {"mcp": True})())
     assert seen == ["install_mcp", "install_skill", "install_pi_mcp", "install_agy_mcp", "install_agy_skill"]   # --mcp alone: only that
+
+
+def test_uninstall_without_flags_takes_the_agy_hooks_back_too(home, monkeypatch):
+    seen = []
+    for name in ("uninstall_claude", "uninstall_pi", "uninstall_collector", "uninstall_agy_hooks", "uninstall_mcp"):
+        monkeypatch.setattr(ins, name, lambda *a, _n=name, **k: seen.append(_n))
+    ins.cmd_uninstall(type("A", (), dict(claude=True, pi=True, collector=False, mcp=False, dry_run=False, force=False))())
+    assert seen == ["uninstall_claude", "uninstall_pi", "uninstall_agy_hooks"]          # the unit only when asked
 
 
 def test_doctor_checks_mcp_only_once_installed(home, monkeypatch):
@@ -378,3 +386,147 @@ def test_agy_skill_is_linked_and_only_our_link_removed(home):
     link.mkdir(parents=True)                                                          # the user's own skill by that name
     assert "not our link" in _run(ins.install_agy_skill)[0]
     assert "no link of ours" in _run(ins.uninstall_agy_skill)[0] and link.is_dir()
+
+
+# -- Antigravity's global hooks.json ----------------------------------------------------------------------------
+# agy's format (measured): each NAMED hook is a top-level key; flat events hold handlers, tool events matcher groups.
+# saint-pool's real entry is a flat SessionStart; "other-plugin" stands in for anyone else's hook.
+SAINT_HOOKS = {"saint-pool": {"SessionStart": [{"type": "command", "command": "/x/saint-pool --hook", "timeout": 5}]}}
+OTHER = {"PostToolUse": [{"matcher": "run_command", "hooks": [{"type": "command", "command": "/x/lint.sh"}]}]}
+THEIRS = {**SAINT_HOOKS, "other-plugin": OTHER}
+
+
+def _gemini(home, body=None):
+    """~/.gemini/config with a hooks.json holding ``body`` (absent when None)."""
+    (home / ".gemini" / "config").mkdir(parents=True, exist_ok=True)
+    p = ins.agy_hooks_json()
+    if body is not None:
+        p.write_text(json.dumps(body))
+    return p
+
+
+def _entry(home):
+    return json.loads(ins.agy_hooks_json().read_text())[ins.AGY_HOOK_NAME]
+
+
+def _cmds(entry, ev):
+    return [h["command"] for g in entry[ev] for h in (g["hooks"] if isinstance(g, dict) and "hooks" in g else [g])]
+
+
+def test_agy_hooks_need_agy_to_have_run_here(home):
+    assert ins.agy_hooks_json() == home / ".gemini" / "config" / "hooks.json"
+    assert "not found" in _run(ins.install_agy_hooks)[0] and not (home / ".gemini").exists()
+    assert "missing, nothing to do" in _run(ins.uninstall_agy_hooks)[0]
+
+
+def test_agy_hooks_add_one_named_hook_beside_everyone_else_s(home):
+    p = _gemini(home, THEIRS)
+    _run(ins.install_agy_hooks)
+    d = json.loads(p.read_text())
+    assert sorted(d) == ["ctxswitch", "other-plugin", "saint-pool"]                          # a top-level named hook
+    assert d["saint-pool"] == SAINT_HOOKS["saint-pool"] and d["other-plugin"] == OTHER        # theirs untouched
+    e = _entry(home)
+    for ev in ins.AGY_FLAT:                                                                   # flat: handlers directly
+        assert e[ev] == [{"type": "command", "command": f"{ins.hook_exe()} agy {ev}", "timeout": 5}]
+    for ev in ins.AGY_MATCHED:                                                                # never "*": one tool only
+        assert e[ev] == [{"matcher": ins.AGY_ASK_TOOL,
+                          "hooks": [{"type": "command", "command": ins.agy_event_command(f"{ins.hook_exe()} agy", ev),
+                                     "timeout": 5}]}]
+    assert oct(p.stat().st_mode & 0o777) == "0o644"                                           # agy's own mode kept
+    assert ins.State().d["agy_hooks"]["file"] == str(p)
+    assert json.loads(Path(ins.State().d["agy_hooks"]["backup"]).read_text()) == THEIRS
+    before = p.read_bytes()
+    assert "already" in _run(ins.install_agy_hooks)[0] and p.read_bytes() == before           # idempotent
+
+
+def test_agy_hooks_keep_everyone_else_s_groups_and_back_up_the_original(home):
+    theirs = {"type": "command", "command": "/x/saint-pool --agy Stop", "timeout": 5}
+    body = {"saint-pool": SAINT_HOOKS["saint-pool"],
+            "ctxswitch": {"Stop": [theirs, {"type": "command", "command": "/old/venv/bin/ctx-hook agy Stop"}]}}
+    p = _gemini(home, body)
+    os.chmod(p, 0o640)
+    _run(ins.install_agy_hooks)
+    e = _entry(home)
+    assert e["Stop"][0] == theirs                                                         # theirs, kept in front
+    assert _cmds(e, "Stop") == ["/x/saint-pool --agy Stop", f"{ins.hook_exe()} agy Stop"]  # ours re-pointed, not doubled
+    assert oct(p.stat().st_mode & 0o777) == "0o640"                                       # its mode kept
+    assert oct(Path(ins.State().d["agy_hooks"]["backup"]).stat().st_mode & 0o777) == "0o600"
+    assert json.loads(Path(ins.State().d["agy_hooks"]["backup"]).read_text()) == body
+    before = p.read_bytes()
+    assert "already" in _run(ins.install_agy_hooks)[0] and p.read_bytes() == before
+
+
+def test_agy_hooks_a_moved_venv_repoints_without_duplicates(home, monkeypatch):
+    _gemini(home)
+    _run(ins.install_agy_hooks)
+    monkeypatch.setattr(ins, "hook_exe", lambda: Path("/new/venv/bin/ctx-hook"))
+    _run(ins.install_agy_hooks)
+    e = _entry(home)
+    assert _cmds(e, "PreInvocation") == [f"/new/venv/bin/ctx-hook agy PreInvocation"]
+    assert len(e["PreInvocation"]) == 1 and len(e["PreToolUse"]) == 1
+
+
+def test_agy_hooks_uninstall_removes_only_ours(home):
+    p = _gemini(home, THEIRS)
+    before = p.read_text()
+    _run(ins.install_agy_hooks)
+    assert "byte-for-byte" in _run(ins.uninstall_agy_hooks)[0]
+    assert p.read_text() == before and "agy_hooks" not in ins.State().d
+    _run(ins.install_agy_hooks)                                                           # now with an edit of theirs
+    d = json.loads(p.read_text()); d["saint-pool"]["Stop"] = [{"type": "command", "command": "/x/y"}]
+    p.write_text(json.dumps(d))
+    assert "removed from" in _run(ins.uninstall_agy_hooks)[0]
+    d = json.loads(p.read_text())
+    assert sorted(d) == ["other-plugin", "saint-pool"] and d["saint-pool"]["Stop"] == [{"type": "command", "command": "/x/y"}]
+    assert "not in" in _run(ins.uninstall_agy_hooks)[0]
+
+
+def test_agy_hooks_uninstall_removes_a_file_we_created(home):
+    p = _gemini(home)                                                                   # agy's dir, no hooks.json yet
+    _run(ins.install_agy_hooks)
+    assert p.exists() and ins.State().d["agy_hooks"]["backup"] is None
+    assert oct(p.stat().st_mode & 0o777) == "0o600"                                         # written fresh: not readable-by-all
+    assert "removed" in _run(ins.uninstall_agy_hooks)[0] and not p.exists()              # it didn't exist before
+    p.write_text(json.dumps(SAINT_HOOKS))                                               # theirs alone
+    _run(ins.install_agy_hooks)
+    assert "ctxswitch" in json.loads(p.read_text())
+    s = json.loads(p.read_text()); s["other-plugin"] = OTHER; p.write_text(json.dumps(s))   # agy changed it since
+    _run(ins.uninstall_agy_hooks)
+    assert json.loads(p.read_text()) == THEIRS                                         # ours gone, their edit kept
+
+
+def test_agy_hooks_a_file_we_cant_read_is_left_alone(home):
+    for bad in ("[1, 2]", "{not json", '"just a string"'):
+        p = _gemini(home)
+        p.write_text(bad)
+        assert "isn't a JSON object" in _run(ins.install_agy_hooks)[0] and p.read_text() == bad
+        assert "isn't a JSON object" in _run(ins.uninstall_agy_hooks)[0] and p.read_text() == bad
+
+
+def test_agy_hooks_dry_run_changes_nothing(home):
+    p = _gemini(home, SAINT_HOOKS)
+    before = p.read_text()
+    assert "would add" in _run(ins.install_agy_hooks, dry=True)[0]
+    assert p.read_text() == before and not (home / ".local").exists()
+    _run(ins.install_agy_hooks)
+    assert "restore" in _run(ins.uninstall_agy_hooks, dry=True)[0] and p.read_text() != before
+
+
+def test_doctor_checks_agy_hooks(home, monkeypatch):
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: None)
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    from ctxswitch.common.config import Config
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    assert "agy hooks" not in {c.name for c in ins.doctor(cfg)}                            # agy never ran here
+    _gemini(home)
+    assert [c.status for c in ins.doctor(cfg) if c.name == "agy hooks"] == ["!"]
+    _run(ins.install_agy_hooks)
+    assert [c.status for c in ins.doctor(cfg) if c.name == "agy hooks"] == ["✓"]
+    d = json.loads(ins.agy_hooks_json().read_text())
+    d[ins.AGY_HOOK_NAME]["Stop"] = []
+    ins.agy_hooks_json().write_text(json.dumps(d))
+    (c,) = [c for c in ins.doctor(cfg) if c.name == "agy hooks"]
+    assert c.status == "!" and c.detail.endswith("missing for Stop") and c.fix == "ctx install"
+    ins.agy_hooks_json().write_text("{not json")
+    (c,) = [c for c in ins.doctor(cfg) if c.name == "agy hooks"]
+    assert c.status == "!" and "not valid JSON" in c.detail

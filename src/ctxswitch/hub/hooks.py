@@ -14,6 +14,8 @@ A collector forwards each spool record as an ingest event of kind "hook":
   claude elicitation_complete/response resolves the oldest open elicitation ask
   claude Stop / UserPromptSubmit / SessionEnd, SessionStart(startup|resume|clear) close every open hook ask
   pi ui_prompt_start / ui_prompt_end   open / resolve a "prompt" ask; session_start / session_shutdown close all
+  agy  PreToolUse ask_question         opens a "question" ask (the question comes with the call: agy's transcript
+                                       adapter only knows a turn ending in "?"), PostToolUse / Stop / SessionStart close it
 
 Every event is applied once: (host, name) is recorded, so a replayed batch can't resolve a later ask.
 The transcript answers the question and plan asks; their PermissionRequest/PostToolUse are skipped here.
@@ -29,6 +31,8 @@ from ctxswitch.hub.store import Store
 
 DEDUPE_S = 30
 TRANSCRIPT_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+AGY_QUESTION_TOOL = "ask_question"                          # Antigravity's AskUserQuestion; the only hooked agy tool
+AGY_CLOSES = ("Stop", "SessionStart")
 SUMMARY_KEYS = ("command", "file_path", "path", "url", "pattern", "query", "description", "prompt")
 CLOSE_TEXT = {"Stop": "closed: turn ended", "UserPromptSubmit": "closed: new prompt", "SessionEnd": "closed: session ended",
               "SessionStart": "closed: session restarted", "session_start": "closed: session restarted",
@@ -73,7 +77,7 @@ class HookApplier:
     def apply(self, host: str, p: dict[str, Any]) -> bool:
         """Apply one hook event; False when it was already applied or is not usable."""
         harness, sid, name, event = p.get("harness"), p.get("session_id"), p.get("name"), p.get("event")
-        if harness not in ("claude", "pi") or not all(isinstance(x, str) and x for x in (sid, name, event)):
+        if harness not in ("claude", "pi", "agy") or not all(isinstance(x, str) and x for x in (sid, name, event)):
             return False
         db = self.store.db
         with self.store._lock:
@@ -82,7 +86,7 @@ class HookApplier:
             if db.execute("SELECT changes()").fetchone()[0] == 0:
                 return False
             key, ts, data = session_key(host, harness, sid), p.get("ts") or "", p.get("data") or {}
-            (self._claude if harness == "claude" else self._pi)(key, name, event, ts, data)
+            (self._claude if harness == "claude" else self._pi if harness == "pi" else self._agy)(key, name, event, ts, data)
             self._applied += 1
             if self._applied % 500 == 0:
                 db.execute("DELETE FROM hook_seen WHERE at<?", (now - SEEN_DAYS * 86400,))
@@ -159,6 +163,20 @@ class HookApplier:
                 self._resolve(key, "hook:notif:%", answer, ts)
         elif event in ("Stop", "UserPromptSubmit", "SessionEnd") or (
                 event == "SessionStart" and d.get("source") in ("startup", "resume", "clear")):
+            self._close_all(key, CLOSE_TEXT[event], ts)
+
+    def _agy(self, key: str, name: str, event: str, ts: str, d: dict[str, Any]) -> None:
+        """Antigravity: only the question tool's calls reach us (hook.AGY_SPOOL), so this is that ask's whole life. Its
+        transcript adapter records no question asks, so PostToolUse resolves it and Stop / SessionStart clear one
+        that never got an answer."""
+        tool = d.get("tool_name") if isinstance(d.get("tool_name"), str) else ""
+        if event == "PreToolUse" and tool == AGY_QUESTION_TOOL:
+            ref = d.get("tool_use_id") if isinstance(d.get("tool_use_id"), str) and d["tool_use_id"] else name
+            self._open(key, f"hook:ask:{ref}", "question", question_text(d.get("questions")), ts)
+        elif event == "PostToolUse":                        # the answer came back: the ask is done
+            ref = d.get("tool_use_id") if isinstance(d.get("tool_use_id"), str) and d["tool_use_id"] else ""
+            self._resolve(key, f"hook:ask:{_like(ref)}" if ref else "hook:ask:%", "answered", ts)
+        elif event in AGY_CLOSES:
             self._close_all(key, CLOSE_TEXT[event], ts)
 
     def _pi(self, key: str, name: str, event: str, ts: str, d: dict[str, Any]) -> None:

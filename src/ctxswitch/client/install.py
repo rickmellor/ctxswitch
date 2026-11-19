@@ -3,10 +3,13 @@
   install    Claude hooks merged into settings.json (ctx-hook, async; other hooks untouched) plus two synchronous
              ones: SessionStart(resume) for the resume briefing and UserPromptSubmit for the misplaced-prompt check,
              the pi extension symlinked into pi's extensions dir (it finds ctx-hook through <state>/install.json),
-             a config stub, the collector's systemd --user unit (re)started.
+             a config stub, the collector's systemd --user unit (re)started. Antigravity, when it has been run here,
+             gets our one named hook in its GLOBAL hooks.json (~/.gemini/config/), which fires for every agy session
+             on this host.
              Idempotent. The first install backs settings.json up; state is kept in <state>/install.json.
   uninstall  settings.json restored byte-for-byte when nothing else changed it since, else our hooks removed
-             surgically; the extension link and (with --collector) the unit removed.
+             surgically; agy's named hook removed with the same care; the extension link and (with --collector)
+             the unit removed.
   --mcp      (opt-in, not part of the default) `ctx mcp` registered with Claude Code for this user, through
              `claude mcp add/remove -s user` (~/.claude.json is Claude's own and rewritten constantly, so no edits to it),
              the skill that says when to use it linked at ~/.claude/skills/ctxswitch, the same server in pi's and
@@ -33,6 +36,7 @@ from ctxswitch.common.config import Config, default_path, load
 
 VALIDATED = {"claude": "2.1.280", "pi": "1.2.0", "agy": "1.4.11"}   # versions whose hook/extension/store payloads were checked
 MARK = "ctx-hook"                                           # identifies our hook entries in settings.json
+AGY_ASK_TOOL = hook.AGY_ASK_TOOL                            # the one agy tool whose calls go through us
 UNIT = "ctx-collector.service"
 EXT_NAME = "ctxswitch.ts"
 MCP_NAME = "ctxswitch"
@@ -63,6 +67,11 @@ def pi_mcp_json() -> Path:
 def agy_config_dir() -> Path:
     """Antigravity's config dir; its presence is how we know agy has been run here."""
     return Path(os.environ.get("AGY_CONFIG_DIR") or Path.home() / ".gemini" / "config")
+
+
+def agy_hooks_json() -> Path:
+    """agy's GLOBAL hook file (~/.gemini/config/hooks.json): it fires for every agy session on this host."""
+    return agy_config_dir() / "hooks.json"
 
 
 def agy_mcp_json() -> Path:
@@ -453,6 +462,160 @@ def uninstall_agy_mcp(st: State, dry: bool, log) -> None:
     _drop_mcp_entry(st, agy_mcp_json(), "agy mcp", "agy_mcp", dry, log)
 
 
+# -- Antigravity hooks ------------------------------------------------------------------------------------------
+AGY_HOOK_NAME = "ctxswitch"                                 # our one entry in agy's global hooks.json
+AGY_FLAT = ("SessionStart", "PreInvocation", "Stop")        # these fire for every session/turn, matcher would do nothing
+AGY_MATCHED = ("PreToolUse", "PostToolUse")                 # only these go through a matcher, and only for one tool
+AGY_EVENTS = (*AGY_FLAT, *AGY_MATCHED)
+
+
+def agy_hook_groups(command: str) -> dict[str, list[dict[str, Any]]]:
+    """Our handlers per event: a flat list where agy fires it for everything, ``{"matcher": …, "hooks": […]}`` for
+    the tool events, where ``"*"`` would put every tool call through us. Synchronous with a short timeout: agy's
+    hooks block its loop and run for EVERY session on this host."""
+    h = {"type": "command", "timeout": 5}
+    return {ev: ([h | {"command": agy_event_command(command, ev)}] if ev in AGY_FLAT          # flat: the handlers
+                 else [{"matcher": AGY_ASK_TOOL, "hooks": [h | {"command": agy_event_command(command, ev)}]}])
+            for ev in AGY_EVENTS}
+
+
+def agy_event_command(command: str, ev: str) -> str:
+    """The shell line for one event. PreToolUse gets a fallback in the shell itself: agy DENIES a tool when the hook
+    prints nothing, so even a ctx-hook that can't start (a broken venv) must leave {"decision":"ask"} behind."""
+    if ev != "PreToolUse":
+        return f"{command} {ev}"
+    return (f"out=$({command} {ev}); if [ -n \"$out\" ]; then printf '%s\\n' \"$out\"; "
+            f"else echo '{{\"decision\":\"ask\"}}'; fi")
+
+
+def agy_hook_command() -> str:
+    return f"{hook_exe()} agy"
+
+
+def _read_json_obj(p: Path) -> tuple[dict[str, Any] | None, bytes | None]:
+    """(the parsed file, its bytes) for a JSON object file; ({}, None) when absent, ({}, bytes) when it's empty (agy
+    creates a 0-byte file before it's ever written), (None, bytes) when it isn't a JSON object."""
+    if not p.exists():
+        return {}, None
+    raw = p.read_bytes()
+    if raw.strip() == b"":
+        return {}, raw
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return None, raw
+    return (d, raw) if isinstance(d, dict) else (None, raw)
+
+
+def _hook_cmd(x: Any, event: str) -> bool:
+    """Whether one of agy's handlers for ``event`` is one of ours (its own trailing event name included, so a moved
+    venv's path still reads as ours and gets re-pointed instead of left beside ours)."""
+    return isinstance(x, dict) and f"{MARK} agy {event}" in str(x.get("command", ""))
+
+
+def _agy_ours(x: Any, event: str) -> bool:
+    """Whether one of agy's groups for ``event`` is ours: a handler of ours in it, or (a flat list) is it."""
+    if isinstance(x, dict) and isinstance(x.get("hooks"), list):          # a matcher group
+        return any(_hook_cmd(h, event) for h in x["hooks"] if isinstance(h, dict))
+    return _hook_cmd(x, event)                                             # a flat handler
+
+
+def _agy_groups(entry: Any, event: str) -> list[Any]:
+    """The event's groups (flat handlers or matcher groups, as they're written) with ours dropped, the rest untouched.
+    Anything that is neither (agy couldn't run it for these events) is dropped."""
+    v = entry.get(event) if isinstance(entry, dict) else None
+    if isinstance(v, dict):                                 # a single group written on its own
+        v = [v]
+    elif not isinstance(v, list):
+        return []
+    return [g for g in v if not _agy_ours(g, event)]
+
+
+def _agy_entry(entry: Any, want: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """What our named hook's entry should hold: our handlers for every event, every group of anyone else's kept in
+    front, and any other key the entry already carried."""
+    out = dict(entry) if isinstance(entry, dict) else {}
+    for ev in AGY_EVENTS:
+        out[ev] = _agy_groups(entry, ev) + want[ev]
+    return out
+
+
+def install_agy_hooks(st: State, dry: bool, log, path: Path | None = None) -> None:
+    """Our one named hook in agy's GLOBAL hooks.json, which fires for every agy session on this host. Every other
+    named hook is kept as it was; a file that isn't a JSON object is left alone."""
+    p = path or agy_hooks_json()
+    if not agy_config_dir().is_dir():
+        log("agy hooks: ~/.gemini/config not found; skipped"); return
+    d, raw = _read_json_obj(p)
+    if d is None:                                           # agy's format: each named hook is a top-level key
+        log(f"agy hooks: {p} isn't a JSON object; left alone"); return
+    entry = d.get(AGY_HOOK_NAME)
+    want = _agy_entry(entry, agy_hook_groups(agy_hook_command()))
+    if entry == want:
+        log(f"agy hooks: hooks already in {p}"); return
+    if dry:
+        log(f"agy hooks: would add {AGY_HOOK_NAME} for {', '.join(AGY_EVENTS)} to {p}"); return
+    backup = None
+    if raw is not None:
+        backup = state_dir() / "backup" / f"agy-hooks.json.{time.strftime('%Y%m%d-%H%M%S')}"
+        _write(backup, raw, 0o600)
+    d[AGY_HOOK_NAME] = want
+    data = _dump(d)
+    _write(p, data, mode=0o600)
+    st.d["agy_hooks"] = {"file": str(p), "backup": str(backup) if backup else None, "sha": _sha(data)}
+    st.save()
+    log(f"agy hooks: {AGY_HOOK_NAME} added to {p} (every agy session on this host)" + (f"; backup {backup}" if backup else ""))
+
+
+def _agy_drop(p: Path, raw: bytes) -> bool:
+    """Take our named hook out of the file as it stands (every other named hook, group and key as it was).
+    False when it holds nothing of ours or isn't a JSON object."""
+    try:
+        d = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        return False
+    if not isinstance(d, dict):
+        return False
+    if AGY_HOOK_NAME not in d:
+        return False
+    del d[AGY_HOOK_NAME]
+    _write(p, _dump(d))
+    return True
+
+
+def uninstall_agy_hooks(st: State, dry: bool, log, path: Path | None = None) -> None:
+    """Remove only our named hook; agy's own and every other one stay, and so does everything else in the file.
+    Nothing changed it since we wrote it: the original comes back byte-for-byte."""
+    rec = st.d.get("agy_hooks") or {}
+    p = path or Path(rec.get("file") or agy_hooks_json())
+    if not p.exists():
+        log(f"agy hooks: {p} missing, nothing to do"); return
+    raw = p.read_bytes()
+    if rec and rec.get("sha") == _sha(raw):                  # untouched since we wrote it
+        if dry:
+            log(f"agy hooks: would {'restore' if rec.get('backup') else 'remove'} {p}"); return
+        if rec.get("backup") and Path(rec["backup"]).exists():
+            _write(p, Path(rec["backup"]).read_bytes())
+            log(f"agy hooks: restored {p} byte-for-byte from {rec['backup']}")
+        elif not rec.get("backup"):
+            p.unlink(); log(f"agy hooks: removed {p} (hooks.json didn't exist before install)")
+        else:
+            log(f"agy hooks: backup {rec['backup']} is gone; removing our hook instead")
+            _agy_drop(p, raw)
+        st.d.pop("agy_hooks", None); st.save()
+        return
+    d, _ = _read_json_obj(p)
+    if d is None:
+        log(f"agy hooks: {p} isn't a JSON object; left alone"); return
+    if dry:
+        log(f"agy hooks: would remove {AGY_HOOK_NAME} from {p}"); return
+    if _agy_drop(p, raw):
+        log(f"agy hooks: {AGY_HOOK_NAME} removed from {p} (other hooks kept)")
+    else:
+        log(f"agy hooks: {AGY_HOOK_NAME} not in {p}")
+    st.d.pop("agy_hooks", None); st.save()
+
+
 # -- pi extension -----------------------------------------------------------------------------------------------
 def install_pi(st: State, dry: bool, force: bool, log) -> None:
     link, src = pi_ext_dir() / EXT_NAME, ext_source()
@@ -681,6 +844,8 @@ def doctor(cfg: Config | None = None) -> list[Check]:
                 out.append(_check_claude(sp_, f"claude hooks [{name}]" if name else "claude hooks"))
         else:
             out.append(check())
+    if agy_config_dir().is_dir():                           # agy has run here: its hooks are ours to check
+        out.append(_check_agy_hooks())
     for root in cfg.collector.claude_win_roots:
         out.append(_check_claude_win(Path(os.path.expanduser(root))))
     if State().d.get("mcp"):                                # opt-in: only checked once installed
@@ -733,6 +898,27 @@ def _check_agy(cfg: Config) -> Check:
     return Check("✓", "agy store", ", ".join(f"{n} conversation{'s' if n != 1 else ''} in {r}" for r, n in found))
 
 
+def _check_agy_hooks() -> Check:
+    """Our named hook in agy's global hooks.json: ! when it's missing or another install's (never ✗ — agy works
+    without us, and a file we can't read is agy's own to fix)."""
+    p = agy_hooks_json()
+    if not agy_config_dir().is_dir():
+        return Check("!", "agy hooks", f"{agy_config_dir()} missing: agy has never run here", "ctx install")
+    d, _ = _read_json_obj(p)
+    if d is None:
+        return Check("!", "agy hooks", f"{p} is not valid JSON; left alone", "fix it, then ctx install")
+    command = agy_hook_command()
+    entry = d.get(AGY_HOOK_NAME)
+    want = _agy_entry(entry, agy_hook_groups(command))
+    if not isinstance(entry, dict) or entry != want:        # absent, another venv's, or an event was edited away
+        miss = list(AGY_EVENTS) if not isinstance(entry, dict) else [ev for ev in AGY_EVENTS if entry.get(ev) != want[ev]]
+        return Check("!", "agy hooks", f"{p}: {AGY_HOOK_NAME} missing for {', '.join(miss)}", "ctx install")
+    exe = command.split()[0]
+    if not os.access(exe, os.X_OK):
+        return Check("!", "agy hooks", f"{exe} not executable", "ctx install (re-points the hooks)")
+    return Check("✓", "agy hooks", f"{len(AGY_EVENTS)} events -> {command} … (fires for every agy session here)")
+
+
 def _check_claude_win(root: Path) -> Check:
     if not root.is_dir():
         return Check("✗", "claude (windows)", f"{root} missing", "fix [collector] claude_win_roots")
@@ -769,6 +955,8 @@ def cmd_install(a) -> int:
             install_claude(st, a.dry_run, log, p, key)
     if pi:
         install_pi(st, a.dry_run, a.force, log)
+    if claude or pi:                                        # the harness wiring, --mcp alone doesn't touch it
+        install_agy_hooks(st, a.dry_run, log)
     if a.mcp:
         install_mcp(st, a.dry_run, log)
         install_skill(st, a.dry_run, log)
@@ -791,6 +979,8 @@ def cmd_uninstall(a) -> int:
             uninstall_claude(st, a.dry_run, log, None, key)
     if pi:
         uninstall_pi(st, a.dry_run, log)
+    if claude or pi:                                        # the harness wiring, not `--mcp` on its own
+        uninstall_agy_hooks(st, a.dry_run, log)
     if a.collector:                                         # only when asked: it also serves transcripts
         uninstall_collector(a.dry_run, log)
     if a.mcp:
