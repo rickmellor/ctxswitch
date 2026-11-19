@@ -194,7 +194,7 @@ def mem(proc: str | Path = "/proc") -> dict[str, Any]:
 PCI_NAMES: dict[tuple[int, ...], str] = {
     (0x1002, 0x7551): "AI R9700",              # Navi 48, lspci: Radeon AI PRO R9700 (gpu-host)
     (0x1002, 0x7550, 0xC0): "RX 9070 XT",      # Navi 48 rev c0 (devbox)
-    (0x8086, 0xE212): "Arc Pro B50",           # Battlemage G21, lspci: Arc Pro B50 (gpu-host)
+    (0x8086, 0xE212): "Arc B50",               # Battlemage G21, lspci: Arc Pro B50 (gpu-host)
 }
 
 

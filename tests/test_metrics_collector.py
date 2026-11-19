@@ -246,7 +246,7 @@ class _Clock:
 def test_the_first_sample_of_an_xe_card_names_it_and_says_nothing_about_load_or_watts(tmp_path):
     xe_card(tmp_path, 2)
     (g,) = M.IntelSampler(tmp_path / "sys", _Clock(), vram=lambda dev: (None, None)).sample()
-    assert g["index"] == 0 and g["vendor"] == "intel" and g["name"] == "Arc Pro B50"
+    assert g["index"] == 0 and g["vendor"] == "intel" and g["name"] == "Arc B50"
     assert g["util"] is None and g["power_w"] is None          # both are deltas: no interval, nothing to say
     assert g["temp_c"] == 55.0 and g["mem_used"] is None and g["mem_total"] is None
 
@@ -319,7 +319,7 @@ def test_the_intel_reader_takes_only_intel_cards_and_the_amd_reader_only_amd(tmp
     xe_card(tmp_path, 2)
     assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["AMD GPU"]
     intel = M.IntelSampler(tmp_path / "sys", _Clock(), vram=lambda dev: (None, None))
-    assert [x["name"] for x in intel.sample()] == ["Arc Pro B50"]
+    assert [x["name"] for x in intel.sample()] == ["Arc B50"]
 
 
 def test_a_sample_lists_nvidia_then_amd_then_intel_and_numbers_them_like_btop(tmp_path, monkeypatch):
@@ -332,7 +332,7 @@ def test_a_sample_lists_nvidia_then_amd_then_intel_and_numbers_them_like_btop(tm
     s = M.Sampler(proc, sys, run=_run()).sample("gpu-box")
     assert [g["vendor"] for g in s["gpus"]] == ["nvidia", "nvidia", "amd", "intel"]
     assert [g["index"] for g in s["gpus"]] == [0, 1, 2, 3]
-    assert s["gpus"][3]["name"] == "Arc Pro B50" and s["gpus"][3]["util"] is None
+    assert s["gpus"][3]["name"] == "Arc B50" and s["gpus"][3]["util"] is None
     assert s["gpus"][3]["mem_used"] is None and s["gpus"][3]["mem_total"] is None
 
 
