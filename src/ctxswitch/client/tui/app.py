@@ -59,6 +59,7 @@ REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "attach": "bold mage
                "remote": "blue", "none": "dim"}
 SLOTS = 9                                          # Alt+1…9 open the session with that number
 METRICS_FILE = Path.home() / ".local/state/ctxswitch/metrics-panel"   # whether g's panel starts shown, and which hosts
+LIST_FILE = Path.home() / ".local/state/ctxswitch/list-rows"          # the session list's tallest it may be, in lines
 METRICS_EVERY = 2                          # seconds between panel fetches (each host's collector samples just as fast)
 
 
@@ -269,6 +270,27 @@ def _metrics_save(shown: bool, hosts: list[str]) -> None:
         pass
 
 
+def _list_rows() -> int | None:
+    """The line [ ] left in LIST_FILE: the session list's maximum height in lines. None — no file, or one this code
+    never wrote — means automatic: today's cap of half the body."""
+    try:
+        return int(LIST_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _save_list_rows(n: int | None) -> None:
+    """The list's cap, as one integer; None hands the height back to the automatic half, by removing the file."""
+    try:
+        if n is None:
+            LIST_FILE.unlink(missing_ok=True)
+            return
+        LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LIST_FILE.write_text(f"{n}\n")
+    except OSError:
+        pass
+
+
 def split_profile(value: str, names: list[str]) -> tuple[str | None, str]:
     """``"max: ~/repos/x"`` -> ("max", "~/repos/x") when ``max`` is a profile name; else (None, value). A bare
     profile name (no directory) keeps the directory empty, which new_agent turns into ``~``."""
@@ -305,6 +327,8 @@ HELP_KEYS = [
     (("i",), "i", "retire one of YOUR INSTRUCTIONS that no longer holds: type its number"),
     (("w",), "w", "group the list by workstream (repo@branch across hosts), or back to a flat list"),
     (("less_than_sign", "greater_than_sign"), "< >", "wider / narrower board (5 columns a press; remembered for the next ctx tmux)"),
+    (("left_square_bracket", "right_square_bracket", "backslash"), "[ ] \\", "shorter / taller session list "
+     "(a line a press; remembered); \\ back to automatic"),
     (("h",), "h", "host filter: this host, all hosts, each other host"),
     (("slash", "escape"), "/  Esc", "filter by text (title, repo, key, last prompt); Esc clears it, or cancels an input"),
     (("e",), "e", "show or hide ended sessions"),
@@ -742,6 +766,9 @@ class CtxApp(App):
         Binding("G", "metrics_host", show=False),                      # G: pick the hosts the CPU/GPU panel stacks
         Binding("W", "message_work", "msg work", show=False),
         Binding("less_than_sign", "wider", show=False), Binding("greater_than_sign", "narrower", show=False),   # the edge moves the arrow's way
+        Binding("left_square_bracket", "list_shorter", show=False),      # [ ]: the session list one line shorter /
+        Binding("right_square_bracket", "list_taller", show=False),      # taller, a press at a time, remembered
+        Binding("backslash", "list_auto", show=False),                   # \: the list's height back to automatic
         Binding("escape", "clear_filter", show=False),
         *(Binding(f"{slot_key(n)},alt+{n}", f"slot({n})", show=False) for n in range(1, SLOTS + 1)),
         *(Binding(str(n), f"select_slot({n})", show=False) for n in range(1, SLOTS + 1)),   # a plain digit only selects
@@ -785,6 +812,7 @@ class CtxApp(App):
         self.metrics_counts: dict[str, int] = {}     # host -> cards in its last sample: what G counts after its name
         self.metrics_agents: dict | None = None      # the hub's rig-wide agent rows ({"window_s", "rows"}), or None
         self.metrics_picking = False                 # G pressed before the hub had answered: open the picker on it
+        self.list_rows: int | None = _list_rows()    # [ ]: how tall the session list may get, or None for half the body
 
     def compose(self) -> ComposeResult:
         yield Static("", id="summary")
@@ -1049,6 +1077,32 @@ class CtxApp(App):
     def action_wider(self) -> None:
         self._step_width(tmux.WIDTH_STEP)
 
+    def _step_list_rows(self, delta: int) -> None:
+        """[ ]: the session list one line shorter or taller, from the height it shows right now. The cap lands in
+        LIST_FILE, so the next `ctx tmux` starts the list the height you left it; below the cap the list still
+        shrinks to fit fewer rows, and above it the rows scroll."""
+        t = self.query_one("#table", DataTable)
+        start = self.list_rows or max(1, t.size.height)
+        body_height = self.query_one("#body").size.height
+        n = max(2, start - 1) if delta < 0 else min(max(2, body_height - 3), start + 1)
+        self.list_rows = n
+        _save_list_rows(n)
+        self.render_table()
+        self.notify(f"session list {n} lines", timeout=2)
+
+    def action_list_shorter(self) -> None:
+        self._step_list_rows(-1)
+
+    def action_list_taller(self) -> None:
+        self._step_list_rows(1)
+
+    def action_list_auto(self) -> None:
+        """\\: the list's height back to the automatic half of the body, and the remembered cap dropped."""
+        self.list_rows = None
+        _save_list_rows(None)
+        self.render_table()
+        self.notify("session list automatic", timeout=2)
+
     def status_popup(self, msg: str, ids: list[str]) -> None:
         shown = tmux.in_tmux() and tmux_popup(msg)
         if shown:
@@ -1194,6 +1248,8 @@ class CtxApp(App):
             rows += 1 if on else 0
             rows += 1
         t.styles.height = max(1, rows)                # grow with the list, up to the max-height cap
+        # [ ]'s cap when there is one (so more rows than it scroll the list instead of growing it); else the CSS half
+        t.styles.max_height = self.list_rows if self.list_rows else "50%"
         if prev and (prev in [s["key"] for s in visible] or prev.startswith("ws:")):
             try:
                 t.move_cursor(row=t.get_row_index(prev))

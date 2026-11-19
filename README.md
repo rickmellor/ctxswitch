@@ -336,6 +336,7 @@ only this one.
 | `d` | drop the `↯` prompt: a mistake that goes nowhere. If the agent already has it, it gets Escape and is told to disregard it; a blocked one was never seen, so nothing is sent |
 | `w` | group the list by workstream (repo@branch across hosts), or back to a flat list |
 | `<` `>` | make the board wider / narrower (its left edge moves the arrow's way), 5 columns a press; remembered (in ~/.local/state/ctxswitch/board-width) for the next `ctx tmux` |
+| `[` `]` | make the session list shorter / taller, one line a press; remembered (in ~/.local/state/ctxswitch/list-rows) for the next `ctx tmux`. `list-rows` holding a line count caps the list: fewer rows still shrink it, more scroll inside it. `\` puts the height back to automatic (half the space above the detail) |
 | `h` | host filter: this host → all → each other host |
 | `/` | filter by text (title, repo, key, last prompt). `Esc` clears |
 | `e` | show or hide ended sessions |
