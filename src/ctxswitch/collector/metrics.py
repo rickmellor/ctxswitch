@@ -8,7 +8,7 @@ way the CPU is: the GT's idle residency and the hwmon's energy counter, both as 
 card's first sample says nothing for util and power. Its VRAM comes from no sysfs file but from the xe device-query
 ioctl on the card's render node, which an unprivileged user in the ``render`` group can ask; it is null when the card
 is runtime-suspended or the query fails. NVIDIA first, then AMD by DRM card number, then Intel by the same number,
-re-indexed 0..n-1, so GPU0..GPU7 on the board read like btop's.
+re-indexed 0..n-1, so #0..#7 on the board read like btop's.
 
 A value that can't be read is null, never a guess: a panel showing 0 °C or 0 % for a sensor it couldn't open is
 worse than one showing nothing. A host with no GPUs sends ``"gpus": []``.
