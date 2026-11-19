@@ -290,7 +290,8 @@ class IntelSampler:
                     continue
                 if _text(label).strip().lower() == "card":
                     return v
-                n = int(label.stem[6:]) if label.stem[6:].isdigit() else 1 << 30
+                m = re.fullmatch(r"energy(\d+)_label", label.name)
+                n = int(m.group(1)) if m else 1 << 30
                 best = min(best, (n, v)) if best is not None else (n, v)
         return best[1] if best is not None else None
 

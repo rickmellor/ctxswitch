@@ -290,6 +290,18 @@ def test_an_energy_counter_without_a_card_label_is_still_the_card_s(tmp_path):
     assert s.sample()[0]["power_w"] == 10.0
 
 
+def test_with_no_card_label_the_lowest_numbered_counter_wins_not_the_smallest_reading(tmp_path):
+    d, clk = xe_card(tmp_path, 2, energy_label="pkg"), _Clock()
+    w(d, "hwmon/hwmon3/energy2_label", "other\n")
+    w(d, "hwmon/hwmon3/energy2_input", "100\n")                  # smaller than energy1, but numbered after it
+    s = M.IntelSampler(tmp_path / "sys", clk)
+    s.sample()
+    clk.t = 2.0
+    w(d, "hwmon/hwmon3/energy1_input", str(121_800_692_199 + 20_000_000) + "\n")
+    w(d, "hwmon/hwmon3/energy2_input", "100\n")
+    assert s.sample()[0]["power_w"] == 10.0
+
+
 def test_a_temperature_labelled_vram_is_not_the_gpu_temperature(tmp_path):
     xe_card(tmp_path, 2, temp_label="vram")                     # no "pkg" label: nothing to say about temperature
     assert M.IntelSampler(tmp_path / "sys", _Clock()).sample()[0]["temp_c"] is None
