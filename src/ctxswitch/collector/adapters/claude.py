@@ -48,6 +48,9 @@ _USAGE_MAP = (("input", "input_tokens"), ("output", "output_tokens"), ("cache_re
               ("cache_creation", "cache_creation_input_tokens"))
 
 
+COUNTED_KEEP = 64                    # a reply's lines never straddle more replies than this
+
+
 def _epoch(ts: Any) -> float | None:
     """An entry's ISO instant as epoch seconds, None when it isn't one."""
     if not isinstance(ts, str):
@@ -98,13 +101,14 @@ class ClaudeParser:
         self._reply: dict[str, Any] | None = None    # the API reply still streaming: {id, start, end, out, model}
         self._trigger: float | None = None           # epoch of the last entry that could start a reply
         self._calls: list[dict[str, Any]] = []       # completed replies awaiting drain_calls()
+        self._counted: list[str] = []                # message ids already made calls (the last COUNTED_KEEP)
         self.bad_lines = 0
 
     # -- persistence -------------------------------------------------------------------------------------------
     def state(self) -> dict[str, Any]:
         return {"meta": self.meta, "cur": self._cur.to_dict() if self._cur else None, "n": self._n,
                 "tools": self._tools, "pending": self._pending_events, "bad": self.bad_lines, "usage_ids": self._usage_ids,
-                "reply": self._reply, "trigger": self._trigger}
+                "reply": self._reply, "trigger": self._trigger, "counted": self._counted}
 
     @classmethod
     def from_state(cls, st: dict[str, Any], max_text: int = 4000) -> "ClaudeParser":
@@ -116,6 +120,7 @@ class ClaudeParser:
         p._usage_ids = st.get("usage_ids") or {}
         p._reply = st.get("reply")                     # a reply still streaming when the collector stopped, and
         p._trigger = st.get("trigger")                 # the entry that triggered it (older states: nothing open)
+        p._counted = list(st.get("counted") or [])
         p._cur = Turn.from_dict(st["cur"]) if st["cur"] else None
         return p
 
@@ -158,7 +163,9 @@ class ClaudeParser:
         if t in ("user", "system") and isinstance(ts, str) and not e.get("isSidechain"):
             # A prompt, a tool result or the harness closing the turn is what ended the reply before it, and what
             # triggered the one after. Lines written beside the timeline (a title, cost state, a summary) are no such
-            # thing: one landing between an assistant's blocks would otherwise split that reply into two calls.
+            # thing: one landing between an assistant's blocks would otherwise split that reply into two calls. (With
+            # parallel tool calls a tool result can land while the same reply is still streaming its next tool_use;
+            # that late line is dropped by the counted-ids guard in _reply_line rather than opening a phantom call.)
             self._close_reply()
             self._trigger = _epoch(ts)
         if t == "user":
@@ -215,6 +222,8 @@ class ClaudeParser:
         self._reply = None
         if not r:
             return
+        if r.get("id"):
+            self._counted = (self._counted + [r["id"]])[-COUNTED_KEEP:]
         start, end, out = r.get("start"), r.get("end"), r.get("out")
         if not (isinstance(out, int) and out > 0 and isinstance(start, float) and isinstance(end, float)
                 and end > start):
@@ -229,6 +238,8 @@ class ClaudeParser:
         ts = _epoch(e.get("timestamp"))
         mid = msg.get("id")
         mid = mid if isinstance(mid, str) else ""
+        if mid and mid in self._counted:
+            return     # already counted: a parallel tool call's late tool_use after a result, or a replayed line
         if self._reply is not None and ((mid and self._reply["id"] and self._reply["id"] != mid)
                                         or (ts is not None and ts < self._reply["end"])):
             # a different message.id, or a line that predates the open reply (a resumed file replaying an older

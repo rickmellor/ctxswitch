@@ -25,7 +25,7 @@ def epoch(s: str) -> float:
 
 def reply(blocks, ts, mid="msg_1", out=None, model="claude-opus-5-5"):
     """One line of an API reply: every line of it repeats the reply's usage, output_tokens final on the last."""
-    msg = {"role": "assistant", "model": model, "content": blocks, "stop_reason": "end_turn"}
+    msg = {"id": mid, "role": "assistant", "model": model, "content": blocks, "stop_reason": "end_turn"}
     if out is not None:
         msg["usage"] = {"input_tokens": 7, "output_tokens": out, "cache_read_input_tokens": 0}
     return dict(BASE, type="assistant", uuid=f"a{ts}{mid}", timestamp=ts, message=msg)
@@ -69,7 +69,7 @@ def test_two_replies_with_a_tool_result_between_are_two_calls_with_their_own_sta
     rows = [user("two steps", "2026-11-18T18:00:00.000Z"),                      # reply 1: 18:00:00 -> 18:00:02
             reply([tool_use("Read", "t1")], "2026-11-18T18:00:02.000Z", out=300),
             tool_result("t1", "contents", "2026-11-18T18:00:05.000Z"),           # reply 2 starts here
-            reply([text("Now I know.")], "2026-11-18T18:00:11.000Z", out=400),
+            reply([text("Now I know.")], "2026-11-18T18:00:11.000Z", mid="msg_2", out=400),   # its own API reply
             system("turn_duration", "2026-11-18T18:00:12.000Z")]
     calls = feed_all(ClaudeParser(), rows).drain_calls()
     assert [(round(c["dur_s"], 3), c["out"]) for c in calls] == [(2.0, 300), (6.0, 400)]
@@ -196,3 +196,42 @@ def test_a_line_written_beside_the_timeline_does_not_split_a_reply():
             user("nice", "2026-11-18T18:00:08.000Z")]
     calls = feed_all(ClaudeParser(), rows).drain_calls()
     assert [(round(c["dur_s"], 3), c["out"]) for c in calls] == [(7.0, 420)]
+
+
+def test_a_tool_result_written_mid_reply_does_not_split_it_into_a_phantom_call():
+    """Parallel tool calls: Claude Code writes each tool's result as it finishes, while the same reply is still
+    streaming its next tool_use. That reply is ONE call, from its trigger to the line before that first result — not a
+    real call plus a 0.2 s phantom carrying the same tokens (the real transcript that showed 26 100 tok/s)."""
+    rows = [tool_result("t0", "ok", "2026-11-19T04:04:12.022Z"),
+            reply([text("Two things to check.")], "2026-11-19T04:04:12.532Z", mid="msg_p", out=4698),
+            thinking("hm", "2026-11-19T04:04:34.511Z", mid="msg_p", out=4698),
+            reply([tool_use("Bash", "t1")], "2026-11-19T04:04:34.847Z", mid="msg_p", out=4698),
+            tool_result("t1", "a", "2026-11-19T04:04:34.918Z"),
+            reply([tool_use("Bash", "t2")], "2026-11-19T04:04:35.098Z", mid="msg_p", out=4698),
+            tool_result("t2", "b", "2026-11-19T04:04:35.173Z"),
+            reply([text("Both fine.")], "2026-11-19T04:04:40.173Z", mid="msg_q", out=300),
+            user("thanks", "2026-11-19T04:05:00.000Z")]
+    calls = feed_all(ClaudeParser(), rows).drain_calls()
+    assert [(c["out"], round(c["dur_s"], 3)) for c in calls] == [(4698, 22.825), (300, 5.0)]   # 12.022 → 34.847
+
+
+def test_a_reply_already_counted_never_counts_again_even_across_a_restart():
+    rows = [user("go", "2026-11-19T04:00:00.000Z"), reply([text("a")], "2026-11-19T04:00:05.000Z", mid="msg_r", out=500),
+            user("next", "2026-11-19T04:00:10.000Z")]
+    p = feed_all(ClaudeParser(), rows)
+    assert len(p.drain_calls()) == 1
+    p = ClaudeParser.from_state(json.loads(json.dumps(p.state())))           # the collector restarted
+    feed_all(p, [reply([text("a")], "2026-11-19T04:00:11.000Z", mid="msg_r", out=500),   # a stray line of msg_r
+                 user("more", "2026-11-19T04:00:20.000Z")])
+    assert p.drain_calls() == []
+
+
+def test_a_pool_worker_s_qwen_reply_is_not_a_claude_code_call(tmp_path):
+    """saint-agent's workers are headless Claude Code too, so they write the same transcripts under the same
+    profile — but their model is the local pool's, which the seat rows already count. Only Claude models count."""
+    f, ix = _setup(tmp_path)
+    _write(f, [user("go", ago(20)), reply([text("done")], ago(10), mid="msg_w", out=900, model="Qwen3.8-Flash-Next-MXFP4"),
+               user("ok", ago(8)), reply([text("done")], ago(4), mid="msg_c", out=700, model="claude-opus-5-5"),
+               user("ok", ago(1))])
+    ix.process(f)
+    assert [c["out"] for c in ix.drain_calls()] == [700]

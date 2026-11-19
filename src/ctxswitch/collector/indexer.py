@@ -313,6 +313,8 @@ class Indexer:
         agent = "agy" if harness == "agy" else (self._profile("claude", path) or "claude")
         cutoff = time.time() - CALL_FRESH_S
         for c in parser.drain_calls():
+            if harness != "agy" and "claude" not in str(c.get("model") or "").lower():
+                continue                             # a pool worker's Qwen reply: the seat rows already count it
             if (_call_epoch(c) or 0) >= cutoff:
                 self.calls.append({"agent": agent, **c})
         # ... and what aged out since the last file was read: a collector whose metrics loop is off never asks
