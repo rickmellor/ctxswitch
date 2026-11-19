@@ -358,3 +358,13 @@ def test_main_still_answers_agy_when_reading_stdin_itself_fails(monkeypatch, cap
     monkeypatch.setattr(hook.sys, "stdin", Broken())
     assert hook.main(["agy", "PreToolUse"]) == 0 and json.loads(capsys.readouterr().out) == {"decision": "ask"}
     assert hook.main(["agy", "Stop"]) == 0 and json.loads(capsys.readouterr().out) == {}
+
+
+def test_ask_question_s_real_args_become_the_board_s_question(tmp_path):
+    """agy 1.5.12's ask_question, as captured end to end: Claude's AskUserQuestion shape."""
+    from ctxswitch import hook
+    d = {"conversationId": "c1", "toolCall": {"name": "ask_question", "id": "call_1", "args": {"questions": [
+        {"is_multi_select": False, "options": ["Tea", "Coffee"], "question": "Do you prefer tea or coffee?"}]}}}
+    assert hook._agy_data(d)["questions"] == [{"question": "Do you prefer tea or coffee?", "options": ["Tea", "Coffee"]}]
+    from ctxswitch.common.schema import question_text
+    assert question_text(hook._agy_data(d)["questions"]) == "Do you prefer tea or coffee?"

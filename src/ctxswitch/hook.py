@@ -298,8 +298,20 @@ def _agy_data(d: dict) -> dict:
         if v is not None:
             out[dst] = _trim(v)
     if out.get("tool_name") == AGY_ASK_TOOL:                # the hub asks the question, not "allow ask_question: …"
-        out["questions"] = [_agy_question(_get(d, ("toolCall", "args")))]
+        out["questions"] = _agy_questions(_get(d, ("toolCall", "args")))
     return out
+
+
+def _agy_questions(args) -> list[dict]:
+    """ask_question's args as Claude-style question entries. agy 1.5.12 sends exactly Claude's AskUserQuestion shape
+    (measured): {"questions": [{"question", "options": [str, ...], "is_multi_select"}]}; anything else falls back to
+    the one-question guess below."""
+    qs = args.get("questions") if isinstance(args, dict) else None
+    out = []
+    for q in qs if isinstance(qs, list) else []:
+        if isinstance(q, dict) and isinstance(q.get("question"), str) and q["question"].strip():
+            out.append({"question": q["question"], **({"options": q["options"]} if isinstance(q.get("options"), list) else {})})
+    return out or [_agy_question(args)]
 
 
 def _agy_question(args) -> dict:
