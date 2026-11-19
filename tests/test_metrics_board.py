@@ -127,7 +127,7 @@ def test_a_sample_at_the_boards_usual_width_says_it_in_five_lines():
     assert "29°C" in lines[3] and "31°C" in lines[4] and "21.0W" in lines[4] and "3.5W" in lines[3]
     assert lines[1].startswith("CPU") and len(re.findall(r"[▁▂▃▄▅▆▇█]", lines[1])) == 24      # one char a core
     assert lines[2].startswith("MEM") and lines[2].rstrip().endswith("38/58G")              # memory on its own row
-    assert lines[3].split(" ")[-3].startswith("13.6/") and lines[3].rstrip().endswith("3.5W")   # 14.6e9 B = 13.6 GiB
+    assert lines[3].split()[-3].startswith("13.6/") and lines[3].rstrip().endswith("3.5W")   # 14.6e9 B = 13.6 GiB
 
 
 def test_every_width_the_board_comes_in_stays_inside_it():
@@ -594,3 +594,19 @@ def test_a_host_with_no_samples_gets_the_band_too():
     band = header_band(Text("devbox · no samples", "dim"), 40)
     assert len(band.plain) == 40 and _bg_cols(band) == set(range(40))
     assert len(header_band(Text("x" * 60), 40).plain) == 40                   # never wider than the pane
+
+
+def test_vram_temperature_and_power_sit_in_columns_whatever_their_digits():
+    """A 3.4 GiB card under a 29.6 GiB one, 9 W under 271 W, 8 °C under 86 °C, a card with a second of history under
+    ones with a minute, an unreadable VRAM: every line is as long as the next, so each field starts in one column."""
+    gpus = [_gpu(0, used=int(29.6 * GB), total=int(31.9 * GB), temp=86.0, power=271.0),
+            _gpu(1, used=int(3.4 * GB), total=int(15.9 * GB), temp=8.0, power=9.0),
+            _gpu(2, used=None, total=None, temp=None, power=None),
+            _gpu(10, vendor="intel", name="Arc B50", used=int(3.4 * GB), total=int(15.9 * GB), power=22.1)]
+    entry = _sample(gpus=gpus)
+    entry["history"]["gpus"]["10"] = [0.0]                                 # just came up: one sample of history
+    for width in (62, 69, 100):
+        lines = [ln for ln in panel_text("gpu-host", entry, width).plain.splitlines() if ln.startswith("#")]
+        assert len(lines) == 4 and len({len(ln) for ln in lines}) == 1, (width, lines)
+        for mark in ("G", "°C", "W"):
+            assert len({ln.rindex(mark) for ln in lines}) == 1, (width, mark, lines)

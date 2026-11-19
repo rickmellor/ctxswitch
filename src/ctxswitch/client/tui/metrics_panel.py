@@ -248,18 +248,21 @@ def _gpu_line(idx: int, g: dict, hist: list, bar_w: int, nspark: int, width: int
     gu, gt = g.get("mem_used"), g.get("mem_total")
     have_vram = isinstance(gu, (int, float)) and isinstance(gt, (int, float)) and gt
     vstyle = vram_style(float(gu) / float(gt) * 100) if have_vram else "dim"
-    tail = [Text(f" {DASH}/{DASH}G", "dim") if not have_vram else
-            Text(f" {float(gu) / GB:.1f}/{float(gt) / GB:.1f}G", style=vstyle),
-            Text(f" {DASH}°C", "dim"), Text(f" {DASH}W", "dim")]
+    # fixed widths, so every card's line is as long as the next and the sparkline, VRAM, °C and W line up in
+    # columns: a 3.4 GiB card next to a 29.6 GiB one, a 9 W idler next to a 271 W one
+    tail = [Text(f" {DASH:>4}/{DASH:>4}G", "dim") if not have_vram else
+            Text(f" {float(gu) / GB:>4.1f}/{float(gt) / GB:>4.1f}G", style=vstyle),
+            Text(f" {DASH:>2}°C", "dim"), Text(f" {DASH:>5}W", "dim")]
     for pos, key, unit in ((1, "temp_c", "°C"), (2, "power_w", "W")):
         v = g.get(key)
         if isinstance(v, (int, float)):
             v = float(v)
-            tail[pos] = Text(f" {v:.0f}°C" if unit == "°C" else f" {v:.1f}W",
+            tail[pos] = Text(f" {v:>2.0f}°C" if unit == "°C" else f" {v:>5.1f}W",
                              style=temp_style(v) if unit == "°C" else vstyle)
     for drop in range(4):                                   # what goes first is the last thing on the line
         for n in range(nspark, 0, -1):
-            t = Text.assemble(lead, " ", _spark(hist, n), *tail[:len(tail) - drop])
+            spark = _spark(hist, n)                         # a card with less history is padded on its left
+            t = Text.assemble(lead, " ", " " * (n - len(spark.plain)), spark, *tail[:len(tail) - drop])
             if len(t.plain) <= width:
                 return t
     return Text.assemble(lead, *tail)[:width]
