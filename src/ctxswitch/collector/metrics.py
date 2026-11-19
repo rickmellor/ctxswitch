@@ -3,8 +3,10 @@
 
 Read the way btop reads it: ``/proc/stat``'s **delta** between two calls (its counters are cumulative, so one read
 says nothing), the k10temp / coretemp hwmon for temperature, the cpufreq knobs for clock, and either ``nvidia-smi``
-or the amdgpu sysfs for each card. NVIDIA first, then AMD by DRM card number, re-indexed 0..n-1, so GPU0..GPU7 on
-the board read like btop's.
+or the amdgpu sysfs for each card. An Intel card on the xe driver has no busy percent at all, so it is read the same
+way the CPU is: the GT's idle residency and the hwmon's energy counter, both as the delta between two calls, so a
+card's first sample says nothing for util and power. NVIDIA first, then AMD by DRM card number, then Intel by the same
+number, re-indexed 0..n-1, so GPU0..GPU7 on the board read like btop's.
 
 A value that can't be read is null, never a guess: a panel showing 0 °C or 0 % for a sensor it couldn't open is
 worse than one showing nothing. A host with no GPUs sends ``"gpus": []``.
@@ -15,6 +17,7 @@ import re
 import os
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -180,6 +183,7 @@ def mem(proc: str | Path = "/proc") -> dict[str, Any]:
 PCI_NAMES: dict[tuple[int, ...], str] = {
     (0x1002, 0x7551): "AI R9700",              # Navi 48, lspci: Radeon AI PRO R9700 (gpu-host)
     (0x1002, 0x7550, 0xC0): "RX 9070 XT",      # Navi 48 rev c0 (devbox)
+    (0x8086, 0xE212): "Arc Pro B50",           # Battlemage G21, lspci: Arc Pro B50 (gpu-host)
 }
 
 
@@ -218,6 +222,97 @@ def amd_gpus(sys: str | Path = "/sys") -> list[dict[str, Any]]:
                     "temp_c": round(temp / 1000, 2) if temp is not None else None,
                     "power_w": round(power / 1e6, 1) if power is not None else None})
     return out
+
+
+class IntelSampler:
+    """Every Intel card the ``xe`` driver drives, as the ``gpus`` entries. Like CpuSampler it has to be called twice
+    before it can say anything about load or watts: xe publishes no busy percent and no power reading, only two
+    counters that add up since the card came up, each GT's ``gtidle/idle_residency_ms`` and a hwmon ``energyN_input``.
+    So util is the share of the interval a GT was *not* idling, and power the joules it spent over it. The first
+    sample of a card says null for both; a card that vanishes between two samples simply drops out of the list."""
+
+    def __init__(self, sys: str | Path = "/sys", clock: Callable[[], float] = time.monotonic):
+        self.sys, self.clock = Path(sys), clock
+        self._prev: dict[str, dict[str, Any]] = {}     # by DRM card directory name, "card2"
+
+    def sample(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for name, dev in self._cards():
+            if _text(dev / "vendor").strip().lower() != "0x8086":
+                continue
+            idles = {str(g.relative_to(dev)): v for g in sorted(dev.glob("tile*/gt*/gtidle/idle_residency_ms"))
+                    if (v := _num(g)) is not None}
+            if not idles:                    # no GT idle counters: an Intel card xe does not drive
+                continue
+            now, prev = self.clock(), self._prev.get(name)
+            cur = {"now": now, "idles": idles, "uj": self._energy(dev)}
+            self._prev[name] = cur
+            out.append({"index": len(out), "vendor": "intel",
+                "name": _text(dev / "product_name").strip() or _pci_name(dev) or "Intel GPU",
+                "util": self._util(prev, cur, now), "mem_used": None, "mem_total": None,
+                "temp_c": self._temp(dev), "power_w": self._watts(prev, cur, now)})
+        return out
+
+    def _cards(self) -> list[tuple[str, Path]]:
+        """Every cardN under /sys/class/drm that is a card rather than a connector, as (directory name, its device/ dir),
+        by DRM card number: card2 before card10, which a lexical sort gets wrong."""
+        drm = self.sys / "class" / "drm"
+        cards = [(int(m.group(1)), d.name, d / "device")
+                 for d in (sorted(drm.iterdir()) if drm.is_dir() else []) if (m := _CARD.match(d.name))]
+        return [d[1:] for d in sorted(cards, key=lambda x: x[0])]
+
+    @staticmethod
+    def _util(prev: dict[str, Any] | None, cur: dict[str, Any], now: float) -> float | None:
+        """The busiest GT's share of the interval, from each GT that has a reading on both sides. A GT whose idle
+        counter went backwards (a driver reload) drops out, and with nothing left to compare, or no interval at all, the
+        card says nothing."""
+        d_wall = (now - prev["now"]) * 1000 if prev is not None else 0.0
+        if d_wall <= 0:
+            return None
+        d_idle = [v - prev["idles"][k] for k, v in cur["idles"].items()
+                  if k in prev["idles"] and v - prev["idles"][k] >= 0]
+        if not d_idle:
+            return None
+        busy = 100.0 * (1 - min(d_idle) / d_wall)        # the least-idling GT is the busiest
+        return round(max(0.0, min(100.0, busy)), 1)
+
+    @staticmethod
+    def _energy(dev: Path) -> float | None:
+        """The card's own cumulative joules, in microjoules: the ``energyN_input`` whose label says "card", in a hwmon
+        named "xe"; failing that, the lowest-numbered counter there that reads as a number."""
+        best: tuple[int, float] | None = None
+        for h in sorted((dev / "hwmon").glob("hwmon[0-9]*")):
+            if _text(h / "name").strip() != "xe":
+                continue
+            for label in sorted(h.glob("energy*_label")):
+                v = _num(h / label.name.replace("_label", "_input"))
+                if v is None:
+                    continue
+                if _text(label).strip().lower() == "card":
+                    return v
+                n = int(label.stem[6:]) if label.stem[6:].isdigit() else 1 << 30
+                best = min(best, (n, v)) if best is not None else (n, v)
+        return best[1] if best is not None else None
+
+    @staticmethod
+    def _watts(prev: dict[str, Any] | None, cur: dict[str, Any], now: float) -> float | None:
+        """Watts: the joules of the interval over its seconds. Nothing on a card's first sample, or when the counter
+        went backwards (a driver reload resets it)."""
+        if prev is None or cur["uj"] is None or prev.get("uj") is None:
+            return None
+        d_s, d_uj = now - prev["now"], cur["uj"] - prev["uj"]
+        return round(d_uj / 1e6 / d_s, 1) if d_s > 0 and d_uj >= 0 else None
+
+    @staticmethod
+    def _temp(dev: Path) -> float | None:
+        """The package's own sensor, by its label. A vram or board sensor is not this panel's GPU temperature, so with no
+        "pkg" label the card says nothing."""
+        for h in sorted((dev / "hwmon").glob("hwmon[0-9]*")):
+            for label in sorted(h.glob("temp*_label")):
+                if _text(label).strip().lower() == "pkg":
+                    v = _num(h / label.name.replace("_label", "_input"))
+                    return round(v / 1000, 2) if v is not None else None
+        return None
 
 
 def _f(s: str) -> float | None:
@@ -263,10 +358,11 @@ class Sampler:
 
     def __init__(self, proc: str | Path = "/proc", sys: str | Path = "/sys", run: Callable[..., Any] = subprocess.run):
         self.cpu, self.sys, self.run = CpuSampler(proc, sys), Path(sys), run
+        self.intel = IntelSampler(sys)
 
     def sample(self, host_id: str) -> dict[str, Any]:
-        gpus = nvidia_gpus(self.run) + amd_gpus(self.sys)
-        for i, g in enumerate(gpus):         # one numbering across both vendors, btop's order
+        gpus = nvidia_gpus(self.run) + amd_gpus(self.sys) + self.intel.sample()
+        for i, g in enumerate(gpus):         # one numbering across the vendors, btop's order
             g["index"] = i
         return {"host_id": host_id, "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "cpu": self.cpu.sample(), "mem": mem(self.cpu.proc), "gpus": gpus}

@@ -212,6 +212,111 @@ def test_a_sample_lists_nvidia_first_then_amd_and_numbers_them_like_btop(tmp_pat
     assert M.Sampler(proc, tmp_path / "empty-sys", run=_run(out="")).sample("h")["gpus"] == []
 
 
+# -- the Intel xe cards --------------------------------------------------------------------------------
+
+def xe_card(tmp_path, n, idle=(93_587, 102_710), energy=121_800_692_199, energy_label="card", temp=55_000,
+             temp_label="pkg", gts=2):
+    """A card the ``xe`` driver drives, laid out like card2 on gpu-host: one idle counter per GT, an energy counter
+    labelled ``energy_label`` and a temperature labelled ``temp_label``. The ids are the B50's: 8086:e212 rev 00."""
+    d = tmp_path / "sys" / "class" / "drm" / f"card{n}" / "device"
+    w(d, "vendor", "0x8086\n"); w(d, "device", "0xe212\n"); w(d, "revision", "0x00\n")
+    w(d, "hwmon/hwmon3/name", "xe\n")
+    for i in range(gts):
+        w(d, f"tile0/gt{i}/gtidle/idle_residency_ms", f"{idle[i]}\n")
+    if energy is not None:
+        w(d, "hwmon/hwmon3/energy1_input", f"{energy}\n")
+        w(d, "hwmon/hwmon3/energy1_label", energy_label + "\n")
+    if temp is not None:
+        w(d, "hwmon/hwmon3/temp2_input", f"{temp}\n")
+        w(d, "hwmon/hwmon3/temp2_label", temp_label + "\n")
+    return d
+
+
+class _Clock:
+    """A clock the test advances by hand, so a sample's interval is the test's rather than the suite's."""
+
+    def __init__(self, t=0.0):
+        self.t = float(t)
+
+    def __call__(self):
+        return self.t
+
+
+def test_the_first_sample_of_an_xe_card_names_it_and_says_nothing_about_load_or_watts(tmp_path):
+    xe_card(tmp_path, 2)
+    (g,) = M.IntelSampler(tmp_path / "sys", _Clock()).sample()
+    assert g["index"] == 0 and g["vendor"] == "intel" and g["name"] == "Arc Pro B50"
+    assert g["util"] is None and g["power_w"] is None          # both are deltas: no interval, nothing to say
+    assert g["temp_c"] == 55.0 and g["mem_used"] is None and g["mem_total"] is None
+
+
+def test_util_is_the_busiest_gt_and_power_the_joules_over_the_interval(tmp_path):
+    d, clk = xe_card(tmp_path, 2), _Clock()
+    s = M.IntelSampler(tmp_path / "sys", clk)
+    s.sample()
+    clk.t = 2.0
+    w(d, "tile0/gt0/gtidle/idle_residency_ms", str(93_587 + 1000) + "\n")   # idled 1000 of 2000 ms: 50 % busy
+    w(d, "tile0/gt1/gtidle/idle_residency_ms", str(102_710 + 2000) + "\n")   # idled all of it: 0 % busy
+    w(d, "hwmon/hwmon3/energy1_input", str(121_800_692_199 + 43_600_000) + "\n")
+    g = s.sample()[0]                                # one sample of the interval: both counters moved once
+    assert g["util"] == 50.0 and g["power_w"] == 21.8 and g["temp_c"] == 55.0
+
+
+def test_an_idle_counter_that_went_backwards_contributes_nothing(tmp_path):
+    d, clk = xe_card(tmp_path, 2, idle=(93_587, 102_710)), _Clock(100.0)
+    s = M.IntelSampler(tmp_path / "sys", clk)
+    s.sample()
+    clk.t = 102.0
+    w(d, "tile0/gt0/gtidle/idle_residency_ms", "80000\n")        # the driver reloaded: that counter went down
+    w(d, "tile0/gt1/gtidle/idle_residency_ms", str(102_710 + 1_500) + "\n")   # counts for nothing; 1500 of 2000: 25 %
+    assert s.sample()[0]["util"] == 25.0
+
+
+def test_an_energy_counter_that_went_backwards_says_nothing(tmp_path):
+    d, clk = xe_card(tmp_path, 2), _Clock()
+    s = M.IntelSampler(tmp_path / "sys", clk)
+    s.sample()
+    clk.t = 2.0
+    w(d, "hwmon/hwmon3/energy1_input", str(121_800_692_199 - 43_600_000) + "\n")
+    assert s.sample()[0]["power_w"] is None
+
+
+def test_an_energy_counter_without_a_card_label_is_still_the_card_s(tmp_path):
+    d, clk = xe_card(tmp_path, 2, energy_label="pkg"), _Clock()   # no "card" label anywhere: take energy1
+    s = M.IntelSampler(tmp_path / "sys", clk)
+    s.sample()
+    clk.t = 2.0
+    w(d, "hwmon/hwmon3/energy1_input", str(121_800_692_199 + 20_000_000) + "\n")
+    assert s.sample()[0]["power_w"] == 10.0
+
+
+def test_a_temperature_labelled_vram_is_not_the_gpu_temperature(tmp_path):
+    xe_card(tmp_path, 2, temp_label="vram")                     # no "pkg" label: nothing to say about temperature
+    assert M.IntelSampler(tmp_path / "sys", _Clock()).sample()[0]["temp_c"] is None
+
+
+def test_a_card_with_no_gtidle_is_an_intel_card_xe_does_not_drive(tmp_path):
+    xe_card(tmp_path, 2, gts=0)                                      # an Intel card on another driver: no GT counters
+    assert M.IntelSampler(tmp_path / "sys", _Clock()).sample() == []
+
+
+def test_the_intel_reader_takes_only_intel_cards_and_the_amd_reader_only_amd(tmp_path):
+    card(tmp_path, 0)                                               # the AMD box's card: gpu_busy_percent, no gtidle
+    xe_card(tmp_path, 2)
+    assert [x["name"] for x in M.amd_gpus(tmp_path / "sys")] == ["AMD GPU"]
+    assert [x["name"] for x in M.IntelSampler(tmp_path / "sys", _Clock()).sample()] == ["Arc Pro B50"]
+
+
+def test_a_sample_lists_nvidia_then_amd_then_intel_and_numbers_them_like_btop(tmp_path):
+    proc, sys = cpu_tree(tmp_path, hwmon={"k10temp": {"temp1_input": 45750}})
+    card(tmp_path, 0)
+    xe_card(tmp_path, 2)
+    s = M.Sampler(proc, sys, run=_run()).sample("gpu-box")
+    assert [g["vendor"] for g in s["gpus"]] == ["nvidia", "nvidia", "amd", "intel"]
+    assert [g["index"] for g in s["gpus"]] == [0, 1, 2, 3]
+    assert s["gpus"][3]["name"] == "Arc Pro B50" and s["gpus"][3]["util"] is None
+
+
 # -- the loop that posts it ----------------------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
