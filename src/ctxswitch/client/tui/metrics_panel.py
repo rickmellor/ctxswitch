@@ -149,11 +149,11 @@ def _head(parts: list[tuple[str, str]], width: int, warn: tuple[str, str] | None
 
 
 def label_cols(gpus: list, width: int) -> tuple[int, int]:
-    """(number width, name width) of the GPU labels — "GPU10", "RTX 4080" — so every bar on a panel starts in one
+    """(number width, name width) of the GPU labels — "#10", "RTX 4080" — so every bar on a panel starts in one
     column; the CPU label is padded to the same. Several hosts stacked take the max of theirs (hosts_text)."""
     bar_w, nspark = _bar_w(width), _nspark(width)
     room = max(4, width - 34 - bar_w - 5)          # names before history: the sparkline gives ground first
-    idx_w = max((len(f"GPU{g.get('index', i)}") for i, g in enumerate(gpus)), default=0)
+    idx_w = max((len(f"#{g.get('index', i)}") for i, g in enumerate(gpus)), default=0)
     name_w = max((len(((gpu_name(g)[:14] or "GPU")[:room].strip() or "GPU")) for g in gpus), default=0)
     return idx_w, name_w
 
@@ -243,7 +243,7 @@ def _gpu_line(idx: int, g: dict, hist: list, bar_w: int, nspark: int, width: int
     util = float(util) if isinstance(util, (int, float)) else None
     room = max(4, width - 34 - bar_w - 5)          # names before history: the sparkline gives ground first
     name = ((gpu_name(g)[:14] or "GPU")[:room].strip() or "GPU").ljust(min(name_w, room))
-    lead = Text.assemble((f"GPU{idx}".ljust(idx_w), "bold"), " ", (name, ""), " ", _bar(util, bar_w), " ",
+    lead = Text.assemble((f"#{idx}".ljust(idx_w), "bold"), " ", (name, ""), " ", _bar(util, bar_w), " ",
                          (f"{util:>3.0f}%" if util is not None else DASH.rjust(4), level_style(util)))
     gu, gt = g.get("mem_used"), g.get("mem_total")
     have_vram = isinstance(gu, (int, float)) and isinstance(gt, (int, float)) and gt

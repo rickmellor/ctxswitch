@@ -267,7 +267,7 @@ window, the last one on the left.
 **CPU and GPU** (`g`) puts a panel between the list and the detail: what the hosts doing the work are made of and
 how hard they're working. Per host: one line for the machine (model, clock, temperature, load average), one for its
 CPU (a bar, the percent, then one character per core and the memory), then one line per card — utilization, its last
-minute of history, VRAM, temperature, power — NVIDIA's first and the rest by card number, so `GPU0`…`GPU9` read like
+minute of history, VRAM, temperature, power — NVIDIA's first and the rest by card number, so `#0`…`#9` read like
 btop's. Nothing a collector can't read is guessed: it prints `—`.
 
 It is opt-in per host: a host only reports once its collector has `[collector] metrics_every` set (default `0`, which

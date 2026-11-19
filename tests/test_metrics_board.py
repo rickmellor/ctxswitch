@@ -122,7 +122,7 @@ def test_a_sample_at_the_boards_usual_width_says_it_in_five_lines():
     assert len(lines) == 5 and all(len(ln) <= 60 for ln in lines)
     assert lines[0].startswith("gpu-host · ") and "1.8 GHz" in lines[0] and "46°C" in lines[0]
     assert "Threadripper PRO 3945WX" in lines[0] and "AMD " not in lines[0] and "12-Core" not in lines[0]
-    assert "GPU0 RTX 4080" in lines[3] and "GPU1 AMD GPU" in lines[4]
+    assert "#0 RTX 4080" in lines[3] and "#1 AMD GPU" in lines[4]
     assert "13.6/15.3G" in lines[3] and "28.4/31.9G" in lines[4]
     assert "29°C" in lines[3] and "31°C" in lines[4] and "21.0W" in lines[4] and "3.5W" in lines[3]
     assert lines[1].startswith("CPU") and len(re.findall(r"[▁▂▃▄▅▆▇█]", lines[1])) == 24      # one char a core
@@ -138,9 +138,9 @@ def test_every_width_the_board_comes_in_stays_inside_it():
 
 
 def test_a_narrow_pane_gives_up_the_core_strip_and_a_wide_one_more_history():
-    at44 = panel_text("gpu-host", _sample(), 44).plain.splitlines()
-    assert all(len(ln) <= 44 for ln in at44)
-    assert len(re.findall(r"[▁▂▃▄▅▆▇█]", at44[1])) < 24 and "CPU" in at44[1]      # no room for 24 of them
+    at41 = panel_text("gpu-host", _sample(), 41).plain.splitlines()   # "#0" labels: 44 fits the strip exactly
+    assert all(len(ln) <= 41 for ln in at41)
+    assert len(re.findall(r"[▁▂▃▄▅▆▇█]", at41[1])) < 24 and "CPU" in at41[1]      # no room for 24 of them
     at60 = panel_text("gpu-host", _sample(), 60).plain.splitlines()
     at100 = panel_text("gpu-host", _sample(), 100).plain.splitlines()
     spark = lambda ln: len(re.search(r"% ([▁▂▃▄▅▆▇█]*)", ln).group(1))              # the run after the percent
@@ -167,7 +167,7 @@ def test_ten_cards_are_ten_lines_and_the_last_one_is_gpu9():
         lines = panel_text("gpu-host", entry, w).plain.splitlines()
         assert len(lines) == 13, (w, lines)
         assert all(len(ln) <= w for ln in lines), (w, lines)
-        assert "GPU9" in lines[-1] and lines[3].startswith("GPU0 ")
+        assert "#9" in lines[-1] and lines[3].startswith("#0 ")
 
 
 def test_a_panel_half_the_board_high_shows_what_fits_and_says_the_rest():
@@ -186,7 +186,7 @@ def test_a_busy_card_is_red_a_warm_one_yellow_and_a_quiet_one_green():
     for util, want in ((90.0, "red"), (60.0, "yellow"), (10.0, "green")):
         t = panel_text("gpu-host", _sample(gpus=[_gpu(0, util=util, name="AMD GPU")]), 100)
         line = t.plain.splitlines()[3]
-        assert f"{util:.0f}%" in line and "█" in line.split("GPU0 ")[1], line
+        assert f"{util:.0f}%" in line and "█" in line.split("#0 ")[1], line
         assert _style_of(t, 3, f"{util:.0f}%") == want, (util, line)         # its percent, and the bar beside it
         filled = round(util / 10)
         assert _style_of(t, 3, "█" * filled + "░" * (10 - filled)) == want, (util, line)
@@ -229,7 +229,7 @@ async def test_g_shows_the_panel_and_remembers_it(monkeypatch, tmp_path):
         assert not app.query_one("#metrics").display and app.client.metrics_calls == []   # hidden: no fetches at all
         await pilot.press("g"); await pilot.pause(2.5)
         assert app.query_one("#metrics").display
-        assert "GPU0 RTX 4080" in "\n".join(_panel(app)) and "gpu-host" in _panel(app)[0]
+        assert "#0 RTX 4080" in "\n".join(_panel(app)) and "gpu-host" in _panel(app)[0]
         assert json.loads((tmp_path / "metrics-panel").read_text()) == {"shown": True, "hosts": []}
         assert app.client.metrics_calls                                          # shown: now it asks
         n = len(app.client.metrics_calls)
@@ -247,7 +247,7 @@ async def test_a_board_that_left_the_panel_on_shows_it_as_soon_as_it_mounts(monk
     app = _board(monkeypatch, tmp_path, shown="on")          # a board that starts shown fetches as soon as it mounts
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(2.5)
-        assert app.query_one("#metrics").display and "GPU0 RTX 4080" in "\n".join(_panel(app))
+        assert app.query_one("#metrics").display and "#0 RTX 4080" in "\n".join(_panel(app))
 
 
 async def test_G_opens_the_picker_over_the_board(monkeypatch, tmp_path):
@@ -297,7 +297,7 @@ async def test_the_panel_never_takes_more_than_half_the_board(monkeypatch, tmp_p
         lines = _panel(app)
         assert w.region.height <= 24 // 2, w.region
         assert lines[-1].startswith("+") and "more GPUs" in lines[-1] and len(lines) <= 24 // 2
-        assert lines[3].startswith("GPU0 ") and any(ln.startswith("GPU6 ") for ln in lines)   # 3 fixed + 7 cards + "+3 more"
+        assert lines[3].startswith("#0 ") and any(ln.startswith("#6 ") for ln in lines)   # 3 fixed + 7 cards + "+3 more"
 
 
 # -- several hosts at once ----------------------------------------------------------------------------------------
@@ -341,8 +341,8 @@ def test_the_height_plan_counts_the_more_lines_it_owes():
 def test_hosts_text_stacks_the_chosen_hosts_sorted():
     hosts = _three(big=1, mid=1)
     t = hosts_text(hosts, ["beta", "alpha"], 60, 40).plain.splitlines()
-    assert t[0].startswith("alpha · ") and t[1].startswith("CPU") and t[2].startswith("MEM") and "GPU0" in t[3]
-    assert t[4].startswith("beta · ") and t[5].startswith("CPU") and t[6].startswith("MEM") and "GPU0" in t[7]
+    assert t[0].startswith("alpha · ") and t[1].startswith("CPU") and t[2].startswith("MEM") and "#0" in t[3]
+    assert t[4].startswith("beta · ") and t[5].startswith("CPU") and t[6].startswith("MEM") and "#0" in t[7]
     assert sum(1 for ln in t if ln.startswith("alpha ·")) == 1 and len(t) == 8
     assert hosts_text(hosts, ["beta"], 60, 40).plain.splitlines()[0].startswith("beta ·")   # one host on its own
 
@@ -473,7 +473,7 @@ async def test_G_with_the_panel_hidden_still_lists_the_hosts(monkeypatch, tmp_pa
 
 
 def test_mixed_card_names_keep_the_bars_in_one_column():
-    """RTX 4080 is a character longer than AMD GPU, and GPU10 one longer than GPU9: the bars still line up."""
+    """RTX 4080 is a character longer than AMD GPU, and #10 one longer than #9: the bars still line up."""
     gpus = [_gpu(i, name=n, vendor=v) for i, (n, v) in enumerate(
         [("NVIDIA GeForce RTX 4080", "nvidia")] + [("AMD GPU", "amd")] * 10)]
     lines = panel_text("gpu-host", _sample(gpus=gpus), 69).plain.splitlines()[3:]
@@ -488,8 +488,8 @@ def test_the_cpu_bar_and_percent_sit_in_the_gpus_columns_on_every_host():
     box = {"latest": _sample(gpus=[_gpu(0, name="NVIDIA GeForce RTX 4080", vendor="nvidia")] +
                      [_gpu(i, name="AMD GPU") for i in range(1, 11)])["latest"]}
     lines = hosts_text({"laptop": laptop, "gpu-host": box}, ["laptop", "gpu-host"], 69, 80).plain.splitlines()
-    bars = [ln for ln in lines if ln.startswith(("CPU", "GPU"))]
-    bars = [ln for ln in lines if ln.startswith(("CPU", "MEM", "GPU"))]
+    bars = [ln for ln in lines if ln.startswith(("CPU", "#"))]
+    bars = [ln for ln in lines if ln.startswith(("CPU", "MEM", "#"))]
     assert len(bars) == 2 * 2 + 1 + 11                                     # CPU + MEM per host, then the cards
     start = {next(i for i, c in enumerate(ln) if c in "█░") for ln in bars}   # where each bar begins
     assert len(start) == 1 and len({ln.index("%") for ln in bars}) == 1, bars
