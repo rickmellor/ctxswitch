@@ -34,9 +34,10 @@ EDIT_KEYS = "T review · R reviewer · + − rounds · r refresh"
 READ_ONLY_MSG = f"read-only: no {POOL_TOOL} on this host's PATH to set"
 
 # the keys the panel edits, as (what the board's action calls it, the config key it sets)
-KEY_REVIEW = "enabled"
-KEY_REVIEWER = "reviewer"
-KEY_ROUNDS = "rounds"
+# the KEYS `saint-pool config set` takes: dotted, under `review.` (a bare "enabled" is refused as not settable)
+KEY_REVIEW = "review.enabled"
+KEY_REVIEWER = "review.reviewer"
+KEY_ROUNDS = "review.rounds"
 
 
 class Cmd(NamedTuple):
@@ -149,6 +150,14 @@ def parse_settings(cmd: Cmd) -> dict | None:
     return {k: get(k) for k in ("enabled", "reviewer", "rounds", "applies_to", "skip_read_mostly") if get(k) is not None}
 
 
+def _cloud_word(v) -> str:
+    """Where a reviewer runs, as a word: `cloud`, `local`, or what the tool said if it is already a word."""
+    if isinstance(v, bool):
+        return "cloud" if v else "local"
+    s = str(v or "").strip()
+    return {"true": "cloud", "yes": "cloud", "false": "local", "no": "local", "": "local"}.get(s.lower(), s)
+
+
 def parse_reviewers(cmd: Cmd) -> list | None:
     """``saint-pool config reviewers --json`` as rows (name, cloud, verified), in the order it lists them. None when
     the tool has no such subcommand yet, which is one dim line rather than an empty list."""
@@ -156,7 +165,7 @@ def parse_reviewers(cmd: Cmd) -> list | None:
     rows = body.get("reviewers") if isinstance(body, dict) else body
     if not isinstance(rows, list):
         return None
-    return [{"name": str(r.get("name") or ""), "cloud": str(r.get("cloud") or ""),
+    return [{"name": str(r.get("name") or ""), "cloud": _cloud_word(r.get("cloud")),
              "verified": bool(r.get("verified"))} for r in rows if isinstance(r, dict)]
 
 
@@ -313,7 +322,7 @@ def _reviewers_line(reviewers: list | None, width: int) -> Text:
         for i, r in enumerate(reviewers[:keep]):
             name = str(r.get("name") or "?")
             cloud = str(r.get("cloud") or "")
-            t.append((" · " if i else "") + (f"{name} ({cloud})" if cloud and cloud != "none" else name),
+            t.append((" · " if i else "") + (f"{name} ({cloud})" if cloud and cloud not in ("none", "local") else name),
                      "bold" if r.get("verified") else "dim")
             t.append(" ✓" if r.get("verified") else " ✗", "green" if r.get("verified") else "red")
         if keep < len(reviewers):

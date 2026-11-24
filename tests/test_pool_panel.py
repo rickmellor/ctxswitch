@@ -68,7 +68,10 @@ class FakeTools:
             if bad:
                 return Cmd(2, "", str(bad))
             if self.settings is not None:
-                self.settings[argv[3]] = _as_field(argv[4])
+                # like the real tool: only the dotted review.* keys are settable; the field is the part after it
+                if not argv[3].startswith("review."):
+                    return Cmd(2, "", f"saint-pool-config: key '{argv[3]}' is not settable")
+                self.settings[argv[3].split(".", 1)[1]] = _as_field(argv[4])
             return Cmd(0, "")
         if argv == ["saint-pool", "config", "get", "--json"] and self.settings is not None:
             return Cmd(0, json.dumps(self.settings))
@@ -378,13 +381,13 @@ async def test_t_reviewer_and_rounds_each_run_the_exact_command_and_read_back(mo
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
         await pilot.press("T"); await pilot.pause(1)                           # it read on, so: off
-        assert tools.last_set(pp.KEY_REVIEW) == ["saint-pool", "config", "set", "enabled", "off"]
+        assert tools.last_set(pp.KEY_REVIEW) == ["saint-pool", "config", "set", "review.enabled", "off"]
         await pilot.press("T"); await pilot.pause(1)                           # it read back off, so: on
-        assert tools.last_set(pp.KEY_REVIEW) == ["saint-pool", "config", "set", "enabled", "on"]
+        assert tools.last_set(pp.KEY_REVIEW) == ["saint-pool", "config", "set", "review.enabled", "on"]
         await pilot.press("R"); await pilot.pause(1)
-        assert tools.last_set(pp.KEY_REVIEWER) == ["saint-pool", "config", "set", "reviewer", "qwen-plus"]
+        assert tools.last_set(pp.KEY_REVIEWER) == ["saint-pool", "config", "set", "review.reviewer", "qwen-plus"]
         await pilot.press("plus"); await pilot.pause(1)
-        assert tools.last_set(pp.KEY_ROUNDS) == ["saint-pool", "config", "set", "rounds", "3"]
+        assert tools.last_set(pp.KEY_ROUNDS) == ["saint-pool", "config", "set", "review.rounds", "3"]
         assert "review · on · qwen-plus · 3 rounds" in _panel(app)[1]           # read back, not remembered
 
 
@@ -398,7 +401,7 @@ async def test_rounds_stop_at_one_and_five_and_nothing_runs_when_they_cant_move(
         assert tools.sets_of(pp.KEY_ROUNDS) == []
         for _ in range(6):                                                     # down through the bottom, and past it
             await pilot.press("minus"); await pilot.pause(0.5)
-        assert tools.sets_of(pp.KEY_ROUNDS) == [["saint-pool", "config", "set", "rounds", str(n)] for n in (4, 3, 2, 1)]
+        assert tools.sets_of(pp.KEY_ROUNDS) == [["saint-pool", "config", "set", "review.rounds", str(n)] for n in (4, 3, 2, 1)]
         n = len(tools.calls)
         await pilot.press("minus"); await pilot.pause(0.5)
         assert len(tools.calls) == n                                           # at 1: not one command
@@ -468,3 +471,15 @@ async def test_the_panel_writes_no_file_of_its_own(monkeypatch, tmp_path):
         for key in ("T", "R", "plus"):
             await pilot.press(key); await pilot.pause(0.8)
         assert {p.name for p in tmp_path.iterdir()} <= {"pool-panel", "list-rows", "popup.log"}
+
+
+def test_edit_keys_are_the_ones_saint_pool_config_accepts():
+    """The panel's keys must be the dotted ones `saint-pool config set` takes. A bare "enabled" was refused live
+    ("key 'enabled' is not settable") while every test here passed, because they checked the panel against itself."""
+    assert (pp.KEY_REVIEW, pp.KEY_REVIEWER, pp.KEY_ROUNDS) == ("review.enabled", "review.reviewer", "review.rounds")
+
+
+def test_reviewer_cloud_flag_reads_as_a_word():
+    rows = pp.parse_reviewers(Cmd(0, json.dumps([{"name": "a", "cloud": True, "verified": True},
+                                                 {"name": "b", "cloud": False, "verified": True}])))
+    assert [r["cloud"] for r in rows] == ["cloud", "local"]
