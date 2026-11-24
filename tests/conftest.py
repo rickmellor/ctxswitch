@@ -30,6 +30,9 @@ def _no_real_board_state(tmp_path, monkeypatch):
     made a row-overflow test see 5 rows where it expected 10. A test that wants a cap writes its own."""
     from ctxswitch.client.tui import app as tui
     monkeypatch.setattr(tui, "LIST_FILE", tmp_path / "list-rows")
+    # and P's pool panel: the real ~/.local/state file once said "on" (Rick opened the panel live) and every board
+    # test then started with the pool panel up, pushing g's panel off the key bar; the P tests wrote to it too
+    monkeypatch.setattr(tui, "POOL_PANEL_FILE", tmp_path / "pool-panel")
 
 
 @pytest.fixture
