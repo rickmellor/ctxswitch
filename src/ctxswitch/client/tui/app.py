@@ -49,6 +49,8 @@ from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
 from ctxswitch.client.tui.metrics_panel import (METRICS_HUB_MSG, METRICS_NONE_MSG, HostPicker, MetricsPanel,
                                                 gpu_count, hosts_text)
+from ctxswitch.client.tui import pool_panel
+from ctxswitch.client.tui.pool_panel import PoolPanel
 from ctxswitch.common.config import Config
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
@@ -59,6 +61,7 @@ REACH_STYLE = {"pane": "bold", "resume": "", "ssh": "blue", "attach": "bold mage
                "remote": "blue", "none": "dim"}
 SLOTS = 9                                          # Alt+1…9 open the session with that number
 METRICS_FILE = Path.home() / ".local/state/ctxswitch/metrics-panel"   # whether g's panel starts shown, and which hosts
+POOL_PANEL_FILE = Path.home() / ".local/state/ctxswitch/pool-panel"   # whether P's local-pool panel starts shown
 LIST_FILE = Path.home() / ".local/state/ctxswitch/list-rows"          # the session list's tallest it may be, in lines
 METRICS_EVERY = 2                          # seconds between panel fetches (each host's collector samples just as fast)
 
@@ -270,6 +273,23 @@ def _metrics_save(shown: bool, hosts: list[str]) -> None:
         pass
 
 
+def _pool_panel_state() -> bool:
+    """Whether the last run left P's local-pool panel up. A file this code never wrote is "not shown"."""
+    try:
+        return POOL_PANEL_FILE.read_text().strip() == "on"
+    except OSError:
+        return False
+
+
+def _pool_panel_save(shown: bool) -> None:
+    """The one choice this panel makes, as one line, so the next `ctx tmux` opens it the same way."""
+    try:
+        POOL_PANEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        POOL_PANEL_FILE.write_text("on\n" if shown else "off\n")
+    except OSError:
+        pass
+
+
 def _list_rows() -> int | None:
     """The line [ ] left in LIST_FILE: the session list's maximum height in lines. None — no file, or one this code
     never wrote — means automatic: today's cap of half the body."""
@@ -339,6 +359,13 @@ HELP_KEYS = [
     (("g",), "g", "CPU and GPU: a panel of the hosts doing the work (opt-in: a host reports once its collector has "
                   "metrics_every set) — utilization per core, each card's memory, temperature and power; remembered"),
     (("G",), "G", "pick the hosts the CPU/GPU panel shows, several at once (remembered)"),
+    (("P",), "P", "local pool: what this machine's own `saint-pool` and `pool-stats` say — the switch and whether "
+                  "SAINT answers, the review settings and reviewers, today's job numbers. T review, R reviewer, "
+                  "+ − rounds, r refresh; an edit runs `saint-pool config set`, never a file write"),
+    (("T",), "T", "the pool panel: review on / off (`saint-pool config set enabled …`)"),
+    (("R",), "R", "the pool panel: the next verified reviewer (`saint-pool config set reviewer …`)"),
+    (("plus", "minus"), "+ −", "the pool panel: one more / one fewer review round, 1–5 "
+     "(`saint-pool config set rounds …`)"),
     (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
     (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
     (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y"),
@@ -376,6 +403,16 @@ HELP_TIPS = [
      "here is only a view of it. A ⇄ row is live over there: Enter shows it here over ssh (detach and it stays put), "
      "and `k` ends it there, its transcript left resumable. A host ssh can't reach is still on the board and takes "
      "messages; it just can't be opened from here.")),
+    ("Local pool panel", ("`P` puts a panel between the list and the detail showing the local pool as THIS machine's "
+     "tools see it — nothing comes from the hub, so it works on a host with no hub. One line per command: "
+     "`saint-pool status` (ON/OFF, its URL, whether SAINT answers, and the `review:` line when that version prints "
+     "one); `saint-pool config get --json` (review on/off, the reviewer, rounds, applies_to, skip_read_mostly); "
+     "`saint-pool config reviewers --json` (each name with a ✓ when verified — only those are offered) and, when "
+     "`pool-stats` is on PATH, today's numbers (jobs finished, ok rate, job-hours, verify pass/fail, asks, and the "
+     "review verdicts when they're reported). A tool that isn't installed is one dim line. Editing goes through the "
+     "tool too: `T` review on/off, `R` the next verified reviewer, `+`/`−` rounds 1–5, each running `saint-pool "
+     "config set KEY VALUE` and reading it back; what it answers is what the panel says, including its errors. With "
+     "`saint-pool` not on PATH the panel is read-only. `r` re-reads everything.")),
     ("CPU and GPU", ("`g` puts a panel between the list and the detail showing what the hosts doing the work are made "
      "of: their CPU by core, and each card's utilization, memory, temperature and power. It's opt-in per host — a "
      "host only reports once its collector has `metrics_every` set (default 0, sampling nothing), and the panel says "
@@ -748,6 +785,9 @@ class CtxApp(App):
     #filter.visible { display: block; }
     #metrics { display: none; height: auto; max-height: 50%; padding: 0 1; border-top: solid $surface; }
     #metrics.visible { display: block; }
+    /* P's pool panel, under the metrics one: its own few lines, never more than a third of the board */
+    #pool { display: none; height: auto; max-height: 30%; padding: 0 1; border-top: solid $surface; }
+    #pool.visible { display: block; }
     .h { color: $text-muted; }
     #keys { height: auto; background: $panel; padding: 0 1; }
     """
@@ -765,6 +805,11 @@ class CtxApp(App):
         Binding("dollar_sign", "spend", "spend"), Binding("g", "metrics", "gpu"),
         Binding("question_mark", "help", "help"),
         Binding("G", "metrics_host", show=False),                      # G: pick the hosts the CPU/GPU panel stacks
+        Binding("P", "pool_panel", "pool"),                            # P: this machine's local-pool panel
+        Binding("T", "pool_review", show=False),                       # P's panel: review on/off
+        Binding("R", "pool_reviewer", show=False),                     # P's panel: the next verified reviewer
+        Binding("plus", "pool_rounds_up", show=False),                 # P's panel: one more review round, to 5
+        Binding("minus", "pool_rounds_down", show=False),              # P's panel: one fewer, to 1
         Binding("W", "message_work", "msg work", show=False),
         Binding("less_than_sign", "wider", show=False), Binding("greater_than_sign", "narrower", show=False),   # the edge moves the arrow's way
         Binding("left_square_bracket", "list_shorter", show=False),      # [ ]: the session list one line shorter /
@@ -813,6 +858,9 @@ class CtxApp(App):
         self.metrics_counts: dict[str, int] = {}     # host -> cards in its last sample: what G counts after its name
         self.metrics_agents: dict | None = None      # the hub's rig-wide agent rows ({"window_s", "rows"}), or None
         self.metrics_picking = False                 # G pressed before the hub had answered: open the picker on it
+        self.pool_on = _pool_panel_state()           # P: the local-pool panel shown or not, as the last run left it
+        self.pool_tools = pool_panel.PoolTools()     # this host's pool commands, through one runner a test can swap
+        self.pool_snap: dict = {}                    # what they last answered, so an edit can read the current values
         self.list_rows: int | None = _list_rows()    # [ ]: how tall the session list may get, or None for half the body
 
     def compose(self) -> ComposeResult:
@@ -826,6 +874,8 @@ class CtxApp(App):
         # g's CPU/GPU panel, pinned to the bottom right above the keys: the body above keeps 1fr, so the detail
         # pane stays a scrolling region that simply ends where the panel starts
         yield MetricsPanel("", id="metrics")
+        # P's local-pool panel, under the CPU/GPU one: it reads this machine's own commands, so it needs no hub
+        yield PoolPanel("", id="pool")
         yield KeyBar(id="keys")
 
     def on_mount(self) -> None:
@@ -837,6 +887,8 @@ class CtxApp(App):
         t.focus()
         if self.metrics_on:
             self.show_metrics()                             # the last run left the panel up: it comes back up
+        if self.pool_on:
+            self.show_pool()                                # same for the local-pool panel
         self.refresh_data()
         self.set_interval(10, self.refresh_data)
         self.listen_ws()
@@ -1516,6 +1568,8 @@ class CtxApp(App):
 
     def action_refresh(self) -> None:
         self.refresh_data()
+        if self.pool_on:                                 # r: the pool panel reads its tools again too
+            self.fetch_pool()
 
     # -- the CPU/GPU panel ----------------------------------------------------------------------------------------
     def action_metrics(self) -> None:
@@ -1588,6 +1642,94 @@ class CtxApp(App):
             self.metrics_picking = False
             self.push_screen(HostPicker([], {}, self.metrics_picked), self._hosts_picked)
         self.query_one("#metrics", MetricsPanel).update(Text(msg, "dim"))
+
+    # -- the local-pool panel ---------------------------------------------------------------------------------------
+    def action_pool_panel(self) -> None:
+        """P: this machine's local-pool panel on or off, remembered for the next run. Hidden, nothing is run."""
+        self.pool_on = not self.pool_on
+        _pool_panel_save(self.pool_on)
+        self.show_pool()
+
+    def show_pool(self) -> None:
+        """The panel's own lines, and whether to go asking at all: hidden, no command runs. An edit's error does not
+        survive opening it again: a panel that has just been opened says what the tools say now."""
+        w = self.query_one("#pool", PoolPanel)
+        w.add_class("visible") if self.pool_on else w.remove_class("visible")
+        if self.pool_on:
+            self.pool_snap = {}
+            self.fetch_pool()
+
+    @work(thread=True, exclusive=True, group="pool")
+    def fetch_pool(self) -> None:
+        """What this host's pool commands say, read in a worker thread: a status probe can take a few seconds, and
+        four commands at once is not something to do on the UI thread."""
+        snap = pool_panel.read_pool(self.pool_tools, pool_panel.today())
+        self.call_from_thread(self.pool_show, snap)
+
+    def pool_show(self, snap: dict) -> None:
+        """The one place the panel is written, from the UI thread: keep the snapshot (an edit reads the current
+        values out of it) and render it, no line wider than the pane. A snapshot carrying an ``error`` — what an
+        edit's ``config set`` answered back — shows it on a red line, and the next read clears it."""
+        self.pool_snap = snap or {}
+        if self.pool_snap.get("error"):
+            self.notify(f"saint-pool config set: {self.pool_snap['error']}", severity="warning", timeout=8)
+        w = self.query_one("#pool", PoolPanel)
+        w.update(pool_panel.panel_text(self.pool_snap, max(20, w.content_size.width - 2)))
+
+    def pool_edit(self, key: str, value) -> None:
+        """One edit, through saint-pool itself: the command, then the tools read again so the panel says what they
+        now say. The edit keys mean something with the panel up — closed, nothing is set, and a panel that hasn't
+        read anything yet re-reads rather than guess what to set. A host with no saint-pool edits nothing."""
+        if not self.pool_on:
+            self.notify("P shows the local pool panel", timeout=5)
+            return
+        if not self.pool_snap:
+            self.fetch_pool()
+            return
+        if self.pool_snap.get("readonly") or not self.pool_tools.have(pool_panel.POOL_TOOL):
+            self.notify(f"{pool_panel.POOL_TOOL} is not on this host's PATH: the pool panel is read-only",
+                        severity="warning", timeout=8)
+            if self.pool_on:
+                self.fetch_pool()
+            return
+        self.run_pool_edit(key, value)
+
+    @work(thread=True, exclusive=True, group="pool")
+    def run_pool_edit(self, key: str, value) -> None:
+        """The edit and the read that follows it, off the UI thread: what the tool refused (None when it took it)
+        rides along on the snapshot, so the panel shows it and the values around it."""
+        err = pool_panel.set_value(self.pool_tools, key, value)
+        snap = pool_panel.read_pool(self.pool_tools, pool_panel.today())
+        self.call_from_thread(self.pool_show, {**snap, "error": err})
+
+    def action_pool_review(self) -> None:
+        """T: review on, or off — whatever saint-pool says it isn't right now."""
+        cur = (self.pool_snap or {}).get("settings") or {}
+        self.pool_edit(pool_panel.KEY_REVIEW, "off" if cur.get("enabled") else "on")
+
+    def action_pool_reviewer(self) -> None:
+        """R: the next verified reviewer in the list. An unverified one is never chosen, and with nothing verified
+        the panel just says that."""
+        nxt = pool_panel.next_reviewer((self.pool_snap or {}).get("reviewers"),
+                                       str(((self.pool_snap or {}).get("settings") or {}).get("reviewer") or ""))
+        if nxt is None:
+            self.notify("no verified reviewer to pick from", severity="warning", timeout=6)
+            return
+        self.pool_edit(pool_panel.KEY_REVIEWER, nxt)
+
+    def action_pool_rounds_up(self) -> None:
+        self.pool_rounds(1)
+
+    def action_pool_rounds_down(self) -> None:
+        self.pool_rounds(-1)
+
+    def pool_rounds(self, step: int) -> None:
+        """+ / −: one review round more or fewer, held to 1–5, and not run at all when it wouldn't move."""
+        cur = ((self.pool_snap or {}).get("settings") or {}).get("rounds")
+        cur = int(cur) if isinstance(cur, (int, float)) and not isinstance(cur, bool) else pool_panel.ROUND_MIN
+        nxt = min(pool_panel.ROUND_MAX, max(pool_panel.ROUND_MIN, cur + step))
+        if nxt != cur:
+            self.pool_edit(pool_panel.KEY_ROUNDS, nxt)
 
     def action_mark_viewed(self) -> None:
         if self._selected_session():

@@ -59,7 +59,9 @@ rendered by [scripts/screenshots.py](scripts/screenshots.py) from made-up sessio
   budget (yellow as it runs down, red near the limit); `$` breaks it down by account, model, session and pool job.
 - **Works with a local agent pool.** Pool jobs (`saint-agent` workers) sit nested under the session that launched
   them (`↳`) with their local cost; `⌂` says whether each session was told the local pool is on, and turns yellow
-  when that no longer matches its host's switch. `g` adds a CPU/GPU panel above the keys, for one host or several.
+  when that no longer matches its host's switch. `P` adds a panel of what this machine's own pool tools say (the
+  switch, the review settings, today's numbers) and edits them through `saint-pool`. `g` adds a CPU/GPU panel above
+  the keys, for one host or several.
 - **Says what changed since you last looked.** Each row shows `+N` for the exchanges you haven't seen, and the
   detail pane lists the new ones.
 - **Links the same work across machines.** Sessions on the same repo and branch (on any host) are one
@@ -192,6 +194,18 @@ reports the switch itself (`~/.claude/saint-pool`, plus a SAINT health check, on
 `pool on|unreachable|off` for this host. When the two disagree, say you turned the pool off and a session still thinks
 it's on, its `⌂` and its account label turn yellow: run `/local-pool` in it, or resume it. The detail pane says which:
 `pool: on (told at resume, 2h ago) · host switch: on`. pi and shell sessions don't use the pool rule and show nothing.
+
+**The pool panel (`P`).** The board's other pool view is this machine's own: `P` puts a panel between the list and the
+detail showing what the pool's command-line tools say *here*, so it needs no hub and shows the pool this board would
+actually use. One line each: `saint-pool status` (ON/OFF, its URL, whether SAINT answers, and the `review:` line when
+that version prints one), `saint-pool config get --json` (review on/off, the reviewer, rounds, applies_to,
+skip_read_mostly), `saint-pool config reviewers --json` (each name with a `✓` when verified — only verified ones are
+offered), and, when `pool-stats` is on PATH, today's numbers (jobs finished, ok rate, job-hours, verify pass/fail,
+asks, and the review verdicts when they're reported). A tool that isn't installed is one dim line. In the panel `T`
+toggles review, `R` cycles the verified reviewers, `+`/`−` walk rounds 1–5 and `r` re-reads everything; each edit runs
+`saint-pool config set KEY VALUE` and reads it back, so what the tool answers — errors included — is what the panel
+shows, and the panel never writes the config file itself. With `saint-pool` not on PATH the panel still shows what
+`pool-stats` can say, and edits nothing.
 
 | State | Meaning |
 |---|---|
@@ -350,6 +364,7 @@ only this one.
 | `$` | spend: today's cost, cloud and local, per account, per pool job (`Esc`, `$` or `q` closes it) |
 | `g` | CPU and GPU: a panel of the hosts doing the work — utilization by core, and each card's memory, temperature and power (remembered for next time). Opt-in per host: one reports once its collector has `[collector] metrics_every` set |
 | `G` | pick the hosts the CPU/GPU panel shows, several at once: a digit toggles one, Enter, Esc or `G` closes it, and the set is remembered |
+| `P` | local pool: a panel of what **this machine's** own `saint-pool` and `pool-stats` say — the switch and whether SAINT answers, the review settings and reviewers, today's job numbers (remembered for next time). Nothing comes from the hub, so it works on a host with no hub. In the panel: `T` review on/off, `R` the next verified reviewer, `+`/`−` rounds 1–5, `r` re-reads. Every edit runs `saint-pool config set KEY VALUE` and reads it back — the panel never writes the config file itself — and what the tool answers, errors included, is what the panel shows. With `saint-pool` not on PATH it's read-only |
 | `?` | help, filling the board's pane: every key, every glyph in words, and how messages, answers, agents and restarts work. ↑↓ PgUp PgDn scroll; Esc (or `?`, `q`) closes. Hovering the mouse over a row, or the header, says it in words |
 | `q` | detach: close your terminal, keep everything running (the board too: `ctx tmux` brings it all back as it was; `ctx tmux --restart` restarts the board on new code) |
 | `k` | end the selected session's agent, after a `y` (the transcript stays: Enter resumes it). One on another host is ended there, in its own tmux |
