@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import unix_sockets_ok
 from ctxswitch.collector.liveness import proc_start
 
 
@@ -30,7 +31,7 @@ def bash_ok() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None or not bash_ok(),
+pytestmark = pytest.mark.skipif(shutil.which("tmux") is None or not bash_ok() or not unix_sockets_ok(),
                                 reason="needs tmux and bash 4.4+")
 SOCK = f"ctxshell{os.getpid()}"
 _n = 0

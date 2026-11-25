@@ -5,8 +5,10 @@ import json
 import time
 
 import httpx
+import pytest
 from starlette.testclient import TestClient
 
+from conftest import unix_sockets_ok
 from ctxswitch.client import fmt
 from ctxswitch.collector import deliver
 from ctxswitch.collector.main import Collector
@@ -112,6 +114,10 @@ async def test_outbox_long_poll_wakes_when_a_message_is_queued(tmp_path):
         assert r.json() == {"messages": []}                           # times out empty
 
 
+needs_unix = pytest.mark.skipif(not unix_sockets_ok(),
+                                reason="this sandbox forbids the unix sockets collector delivery binds")
+
+
 class FakeSocket:
     """A session socket: records each line; pi answers like the extension, Claude answers nothing."""
     def __init__(self, path, reply=None):
@@ -160,6 +166,7 @@ def _collector(tmp_path, monkeypatch):
     return Collector(cfg)
 
 
+@needs_unix
 async def test_collector_delivers_once_and_only_to_its_own_live_sockets(tmp_path, monkeypatch):
     col = _collector(tmp_path, monkeypatch)
     hub = Hub2()
@@ -183,6 +190,7 @@ async def test_collector_delivers_once_and_only_to_its_own_live_sockets(tmp_path
         assert ps.lines[0]["message"]["content"] == "do x" and hub.reports[-1][1]["status"] == "sent"
 
 
+@needs_unix
 async def test_collector_reports_a_refusal_or_a_dead_socket_as_failed(tmp_path, monkeypatch):
     col = _collector(tmp_path, monkeypatch)
     hub = Hub2()

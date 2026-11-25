@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from starlette.testclient import TestClient
+from conftest import unix_sockets_ok
 from test_phase45 import _ask, _session, _turn
 
 from ctxswitch.client import fmt, tmux
@@ -16,7 +17,8 @@ from ctxswitch.hub.api import Hub
 from ctxswitch.hub.store import Store
 from ctxswitch.hub.tracker.recap import build_prompt
 
-needs_tmux = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+needs_tmux = pytest.mark.skipif(shutil.which("tmux") is None or not unix_sockets_ok(),
+                                reason="tmux not installed, or this sandbox forbids the unix sockets a tmux server binds")
 H = {"Authorization": "Bearer t"}
 WS = "me/proj@main"
 LAP, SHELL = "laptop/claude/s1", "laptop/shell/3f2b0000-0000-4000-8000-000000000000"

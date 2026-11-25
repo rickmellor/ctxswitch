@@ -8,9 +8,11 @@ import time
 
 import pytest
 
+from conftest import unix_sockets_ok
 from ctxswitch.client import tmux
 
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+pytestmark = pytest.mark.skipif(shutil.which("tmux") is None or not unix_sockets_ok(),
+                                reason="tmux not installed, or this sandbox forbids the unix sockets a tmux server binds")
 SOCK = f"ctxtest{os.getpid()}"
 _n = 0
 

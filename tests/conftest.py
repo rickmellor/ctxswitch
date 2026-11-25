@@ -1,7 +1,29 @@
 import json
+import os
+import socket
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+def unix_sockets_ok() -> bool:
+    """Whether this machine lets a test bind a unix socket, which collector delivery and every tmux server need.
+    Some sandboxes refuse it outright (EPERM on socket/bind), the way they refuse tmux; a capability the kernel won't
+    do is skipped the way a missing binary is, and the test still runs on a normal host."""
+    p = Path(tempfile.gettempdir()) / f"ctxswitch-probe-{os.getpid()}.sock"
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    except OSError:
+        return False
+    try:
+        s.bind(str(p))
+    except OSError:
+        return False
+    finally:
+        s.close()
+        p.unlink(missing_ok=True)
+    return True
 
 
 @pytest.fixture(autouse=True)

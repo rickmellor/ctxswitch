@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 from starlette.testclient import TestClient
-from test_messages import FakeSocket, Hub2, _collector
+from test_messages import FakeSocket, Hub2, _collector, needs_unix
 
 from ctxswitch.client import fmt
 from ctxswitch.client.hubclient import HubClient
@@ -123,6 +123,7 @@ def test_the_from_line_says_which_agent_sent_it_whatever_the_receiver_calls_it()
         assert h.startswith("Message from another agent session, not from the operator (sent with ctxswitch).\n")
 
 
+@needs_unix
 async def test_collector_delivers_an_agent_message_with_its_header(tmp_path, monkeypatch):
     col = _collector(tmp_path, monkeypatch)
     async with httpx.AsyncClient(transport=httpx.MockTransport(Hub2().handler)) as client, FakeSocket(tmp_path / "p.sock", {"ok": True}) as ps:
