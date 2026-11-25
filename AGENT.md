@@ -109,6 +109,10 @@ tests/                    pytest; transcript fixtures are synthetic (tests/claud
   `msg:<id>` in its state = at most once). `store._match_message` runs first in `upsert_turns`: a `sent` message
   whose normalised body (first 200 chars) is in a turn's prompt marks it delivered and rewrites the turn as yours;
   the turn completing marks it replied. Only `sent` messages match, so the same text typed by hand isn't claimed.
+  A message that landed while the session was busy never becomes a prompt: it arrives inside the running turn as that
+  turn's `mid_texts` (Claude's `queued_command` attachments), and matching one marks the message delivered with
+  `mid_turn=1` and that turn, leaving the turn's own prompt and origin alone. A prompt naming it wins. `agent_send_refused`
+  stops counting a `sent` row older than `SENT_STALE_S`, so one the two sides disagree about can't stall its sender.
 - **Quick-reply:** a message with `ask_ref` (`answers` in the API), checked by `store.open_ask` and
   `REPLYABLE` (`plain`, `text`) when sent. It adds no closing path: the collector / `_close_llm_asks` close the
   ask as for any prompt; `upsert_turns` then swaps the wrapped Claude text for your body on plain asks closed by

@@ -393,37 +393,51 @@ class Store:
         """Mark the message this turn delivers (and its reply, once complete); the turn becomes your prompt, or the
         sending agent's.
 
-        A message that lands while the session is busy is surfaced MID-TURN, as a ``queued_command`` entry inside the
-        running turn rather than as a prompt of its own, so a turn that never goes idle would otherwise leave it
-        ``sent`` forever. Those texts arrive on the turn as ``mid_texts``: matching one marks the message delivered and
-        the turn's, but leaves the turn's own text and origin alone — the turn belongs to the prompt that started it.
+        A message that lands while the session is busy is surfaced MID-TURN — a ``queued_command`` entry inside the
+        turn already running, never a prompt of its own — so a session that never goes idle would leave it ``sent``
+        forever, and one in flight per sender would then refuse that sender for good. Those texts come through on the
+        turn as ``mid_texts``: matching one marks the message delivered with ``mid_turn`` set and that turn recorded,
+        and leaves the turn's own text and origin alone — it belongs to the prompt that started it. A prompt naming the
+        same message wins: that turn *is* the delivery's.
         """
         m = self.db.execute("SELECT id, body, status, from_key, mid_turn FROM messages WHERE key=? AND turn_idx=?",
                             (key, t["idx"])).fetchone()
+        text = _norm(t.get("user_text"))
+        mid = [_norm(x) for x in t.get("mid_texts") or []]
+        prompt_hit = mid_hit = None
+        for r in self.db.execute("SELECT id, body, status, from_key FROM messages WHERE key=? "
+                                 "AND status='sent' ORDER BY id", (key,)):
+            want = _norm(r["body"])[:MATCH_CHARS]
+            in_prompt, in_mid = want in text, any(want in x for x in mid)
+            if in_prompt:
+                prompt_hit = prompt_hit or r                        # the prompt's own turn: it wins
+            if in_mid and not in_prompt:
+                mid_hit = mid_hit or r
+                if m is None or r["id"] != m["id"]:                 # a busy turn can take one per sender: mark them
+                    self.db.execute("UPDATE messages SET status='delivered', delivered_at=?, turn_idx=?, mid_turn=1 "
+                                    "WHERE id=?", (time.time(), t["idx"], r["id"]))
         if m is None:
-            text = _norm(t.get("user_text"))
-            mid = [_norm(x) for x in t.get("mid_texts") or []]
-            for r in self.db.execute("SELECT id, body, status, from_key, 0 AS mid_turn FROM messages WHERE key=? "
-                                     "AND status='sent' ORDER BY id", (key,)):
-                want = _norm(r["body"])[:MATCH_CHARS]
-                if want in text:
-                    m = r; break
-                if m is None and any(want in x for x in mid):
-                    m = r                       # only when no prompt claims it: the prompt's own turn wins
+            m = prompt_hit or mid_hit
             if m is None:
                 return
+            flag = 0 if m is prompt_hit else 1
             self.db.execute("UPDATE messages SET status='delivered', delivered_at=?, turn_idx=?, mid_turn=? WHERE id=?",
-                            (time.time(), t["idx"], int(m["mid_turn"]), m["id"]))
+                            (time.time(), t["idx"], flag, m["id"]))
+            m = {**dict(m), "mid_turn": flag}
         if m["mid_turn"]:
+            # the turn keeps its own prompt and origin, so it isn't labelled the sender's: only say which message it took
             t.update(message_id=m["id"])
-            if m["from_key"]:
-                t["from_key"] = m["from_key"]
         else:
             t.update(user_text=m["body"], user_origin="peer" if m["from_key"] else "human", via="ctx", message_id=m["id"])
             if m["from_key"]:
                 t["from_key"] = m["from_key"]
         if t.get("complete") and m["status"] != "replied":
-            self.db.execute("UPDATE messages SET status='replied', reply=? WHERE id=?", (_clip(t.get("assistant_text"), REPLY_CHARS), m["id"]))
+            reply = _clip(t.get("assistant_text"), REPLY_CHARS)
+            self.db.execute("UPDATE messages SET status='replied', reply=? WHERE id=?", (reply, m["id"]))
+            # a turn can take several arrivals: the rest of the ones it took mid-turn get its text too, else they
+            # would read "working on it" after the turn that answered them closed
+            self.db.execute("UPDATE messages SET status='replied', reply=? WHERE key=? AND turn_idx=? AND mid_turn=1 "
+                            "AND status='delivered'", (reply, key, t["idx"]))
 
     def _close_llm_asks(self, key: str, t: dict[str, Any]) -> None:
         self.db.execute(f"UPDATE asks SET answered=1, answer=?, answered_at=? WHERE key=? AND answered=0 AND ref LIKE '{LLM_ASK}%' AND turn_idx<?",

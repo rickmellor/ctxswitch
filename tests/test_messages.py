@@ -2,6 +2,7 @@
 fake session sockets."""
 import asyncio
 import json
+import time
 
 import httpx
 from starlette.testclient import TestClient
@@ -27,9 +28,9 @@ def _session(store, key=KEY, live=True):
         store.set_liveness(h, [{"key": key, "status": "idle", "status_since": NOW, "pid": 1, "socket": "/x"}])
 
 
-def _turn(idx, user, agent="", complete=False, origin="peer"):
+def _turn(idx, user, agent="", complete=False, origin="peer", mid=()):
     return {"idx": idx, "started_at": NOW, "ended_at": NOW, "user_text": user, "user_origin": origin, "assistant_text": agent,
-            "tally": {}, "asks": [], "events": [], "complete": complete, "offset_end": idx * 100 + 10}
+            "tally": {}, "asks": [], "events": [], "complete": complete, "offset_end": idx * 100 + 10, "mid_texts": list(mid)}
 
 
 def test_lifecycle_rewrites_the_delivering_turn_as_yours(tmp_path):
@@ -211,3 +212,88 @@ def test_liveness_keeps_and_clears_the_process_that_shows_a_session(tmp_path):
     assert st.session("laptop/claude/job", turns=0)["via_pid"] == 100
     st.set_liveness("laptop", [])                                      # it ended: nothing shows it any more
     assert st.session("laptop/claude/job", turns=0)["via_pid"] is None
+
+
+def by_id(mid, store):
+    return {x["id"]: x for x in store.messages(KEY)}[mid]
+
+
+def _resend(store, from_key, body):
+    """The hub's answer to this sender's next message: its status, or "ok" when it took it."""
+    c = TestClient(Hub(store, token="t").app())
+    r = c.post(f"/v1/sessions/{KEY}/messages", headers=H, json={"body": body, "from_key": from_key})
+    return r.status_code if r.status_code != 200 else "ok"
+
+
+def test_a_message_taken_mid_turn_is_delivered_without_rewriting_the_turn(tmp_path):
+    """A session that never goes idle surfaces a message inside the turn already running, so waiting for a prompt of
+    its own leaves the row `sent` forever — and then every further message from that sender is refused."""
+    from ctxswitch.hub import store as store_mod
+    store = Store(tmp_path / "hub.db")
+    _session(store)
+    a, b = "devbox/claude/s9", "devbox/claude/s8"
+    for k in (a, b):
+        h, harness, sid = k.split("/")
+        store.upsert_session({"key": k, "host_id": h, "harness": harness, "session_id": sid, "title": "T", "cwd": "/x",
+                              "last_activity": NOW})
+    store.upsert_turns(KEY, [_turn(0, "work on it", "working", origin="human")], None)
+    m1 = store.add_message(KEY, "rebase main when the build finishes", "devbox", from_key=a)
+    store.set_message_status(m1, "laptop", "sent")
+    assert store.agent_send_refused(a, KEY) == (409, "your last message to that session hasn't been delivered yet")
+
+    rendered = deliver.agent_header(a, "api work") + "rebase main when the build finishes"
+    body = "rebase main when the build finishes"
+    store.upsert_turns(KEY, [_turn(0, "work on it", "rebuilt, rebasing", origin="human", mid=[rendered, body])], None)
+    (m,) = store.messages(KEY)
+    assert (m["status"], m["turn_idx"], m["mid_turn"]) == ("delivered", 0, 1) and m["delivered_at"]
+    t = store.session(KEY, turns=1)["turns"][-1]
+    assert (t["user_text"], t["user_origin"], t.get("via")) == ("work on it", "human", None)   # still its own prompt
+    assert t["message_id"] == m1 and "from_key" not in t
+    assert store.agent_send_refused(a, KEY) is None                     # no longer in flight: the next one goes
+    assert _resend(store, a, "and then run the suite") == "ok"          # the hub takes it at the API too
+
+    m2 = store.add_message(KEY, "and the changelog too", "devbox", from_key=b)
+    store.set_message_status(m2, "laptop", "sent")
+    store.upsert_turns(KEY, [_turn(0, "work on it", "done", origin="human", complete=True,
+                                   mid=[deliver.agent_header(b, "docs work") + "and the changelog too"])], None)
+    by = {x["id"]: x for x in store.messages(KEY)}
+    assert (by[m1]["status"], by[m2]["status"]) == ("replied", "replied")     # both taken by that one turn
+    assert (by[m2]["mid_turn"], by[m2]["turn_idx"], by[m2]["reply"]) == (1, 0, "done")
+    assert store.session(KEY, turns=1)["turns"][-1]["assistant_text"] == "done"     # the turn's own reply, not rewritten
+
+    # a prompt turn wins over a mid-turn text naming the same message
+    m3 = store.add_message(KEY, "open a ticket for it", "devbox", from_key=a)
+    store.set_message_status(m3, "laptop", "sent")
+    store.upsert_turns(KEY, [_turn(1, deliver.agent_header(a, "api work") + "open a ticket for it", "filed",
+                                   origin="human", complete=True, mid=[deliver.agent_header(a, "api work") + "open a ticket for it"])],
+                        None)
+    t1 = [t for t in store.session(KEY, turns=2)["turns"] if t["idx"] == 1][0]
+    assert (t1["user_origin"], t1["from_key"], t1.get("via")) == ("peer", a, "ctx")
+    assert by_id(m3, store)["mid_turn"] == 0                        # the prompt turn, not a mid-turn flag
+
+    # the 6-hour valve: a row still `sent` (the two sides disagreed about it) stops holding the sender's queue
+    c = store.add_message(KEY, "stuck one", "devbox", from_key="devbox/claude/s7")
+    store.set_message_status(c, "laptop", "sent")
+    assert store.agent_send_refused("devbox/claude/s7", KEY) is not None
+    store.db.execute("UPDATE messages SET created=? WHERE id=?", (time.time() - store_mod.SENT_STALE_S - 60, c))
+    assert store.agent_send_refused("devbox/claude/s7", KEY) is None
+    assert store.messages(KEY)[-1]["status"] == "sent"                  # still reads as undelivered
+    assert "not in the transcript yet" in fmt.message_note(store.session(KEY), store.messages(KEY)[-1])
+
+
+def test_a_mid_turn_delivery_reads_that_way():
+    s = {"harness": "claude", "live_status": "busy"}
+    assert fmt.message_note(s, {"status": "delivered", "turn_idx": 4, "mid_turn": 1}) == "delivered mid-turn in #4"
+    assert fmt.message_note(s, {"status": "delivered", "turn_idx": 4}) == "delivered as #4, working on it"
+
+
+def test_an_older_database_gains_the_mid_turn_column(tmp_path):
+    path = tmp_path / "old.db"
+    Store(path).db.execute("ALTER TABLE messages DROP COLUMN mid_turn")      # a db written before mid-turn tracking
+    store = Store(path)
+    assert "mid_turn" in {r[1] for r in store.db.execute("PRAGMA table_info(messages)")}
+    _session(store)
+    mid = store.add_message(KEY, "rebase main", "devbox")
+    store.set_message_status(mid, "laptop", "sent")
+    store.upsert_turns(KEY, [_turn(0, "work on it", origin="human", mid=["rebase main"])], None)
+    assert store.messages(KEY)[0]["status"] == "delivered"

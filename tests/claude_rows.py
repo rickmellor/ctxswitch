@@ -29,5 +29,23 @@ def system(subtype, ts, **kw):
     d = dict(BASE, type="system", subtype=subtype, timestamp=ts, uuid=f"s{ts}"); d.update(kw); return d
 
 
+def queued(prompt, ts, body=None, mode="prompt", origin=None, **kw):
+    """A queued_command attachment: what the harness ran inside the running turn. ``prompt`` is the text as it
+    rendered it; ``body`` the message itself when the arrival was another session's."""
+    a = {"type": "queued_command", "prompt": prompt, "commandMode": mode, "timestamp": ts,
+         "source_uuid": "00000000-0000-4000-8000-000000000001"}
+    if body is not None:
+        a["origin"] = origin if origin is not None else {"kind": "peer", "from": "uds:/run/user/1000/cc.sock", "body": body}
+    elif origin is not None:
+        a["origin"] = origin
+    d = dict(BASE, type="attachment", uuid=f"q{ts}", timestamp=ts, attachment=a); d.update(kw); return d
+
+
+def queue_operation(op, ts, content=None, **kw):
+    d = dict(BASE, type="queue-operation", operation=op, timestamp=ts); d.update(kw)
+    if content is not None: d["content"] = content
+    return d
+
+
 def meta(type_, **kw):
     d = {"type": type_, "sessionId": S}; d.update(kw); return d

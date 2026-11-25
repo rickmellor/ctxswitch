@@ -53,7 +53,9 @@ _USAGE_MAP = (("input", "input_tokens"), ("output", "output_tokens"), ("cache_re
 
 COUNTED_KEEP = 64                    # a reply's lines never straddle more replies than this
 MID_TEXT_CHARS = 800                 # a mid-turn arrival keeps its head (a message match needs its first 200 chars)
-MID_KEEP = 32                        # ... and a turn keeps this many of its most recent ones
+MID_KEEP = 32                        # ... and a turn keeps this many of its most recent ones: the open turn is
+                                     # re-emitted as the file grows, so an arrival is matched within a poll of landing;
+                                     # the cap is for a collector coming back to a long turn's queue
 
 
 def _epoch(ts: Any) -> float | None:
@@ -410,8 +412,8 @@ class ClaudeParser:
             if t in dest:                                  # the same arrival written twice (body == prompt)
                 continue
             dest.append(t)
+            del dest[:-MID_KEEP]                           # a long turn's queue can't grow the state without bound
             if self._cur is not None:
-                del dest[:-MID_KEEP]                       # a long turn's queue can't grow the state without bound
                 self._touch(offset_end, ts)
 
     @staticmethod

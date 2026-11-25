@@ -1,4 +1,4 @@
-from claude_rows import S, assistant, meta, system, text, tool_result, tool_use, user
+from claude_rows import S, assistant, meta, queued, queue_operation, system, text, tool_result, tool_use, user
 from conftest import feed_all
 
 from ctxswitch.collector.adapters.claude import ClaudeParser
@@ -155,3 +155,49 @@ def test_interrupt_marker_is_an_event_not_a_prompt():
     p = feed_all(ClaudeParser(), rows)
     assert p.drain() == [] and p.current.user_text == "run touch x"
     assert p.current.events.count("interrupted") == 2
+
+
+def test_a_message_arriving_mid_turn_lands_on_the_running_turn():
+    """A ctxswitch message to a busy session is a queued_command attachment inside the turn already running: it is
+    never that turn's prompt, so its text has to be collected or the hub waits for a prompt that never comes."""
+    body = "rebase main when the build finishes"
+    rendered = ("Another Claude session sent a message:\nFrom: Claude Code session devbox/claude/s2 \"api work\" "
+                "on host devbox\n\n" + body)
+    rows = [user("work on it", "2026-10-28T10:00:00Z"),
+            assistant([tool_use("Bash", "t1", {"command": "make"})], "2026-10-28T10:00:01Z"),
+            queued(rendered, "2026-10-28T10:00:02Z", body=body),
+            queue_operation("dequeue", "2026-10-28T10:00:02Z", content=rendered),
+            tool_result("t1", "built", "2026-10-28T10:00:03Z"),
+            assistant([text("Rebased as the message asked.")], "2026-10-28T10:00:04Z")]
+    p = feed_all(ClaudeParser(), rows)
+    t = p.current
+    assert t.user_text == "work on it" and t.user_origin == "human"     # the turn still belongs to its own prompt
+    assert t.mid_texts == [rendered, body]                              # the header form and the message bare
+    assert t.assistant_text == "Rebased as the message asked."
+    p.feed(system("turn_duration", "2026-10-28T10:00:05Z"), 700)
+    assert p.current.complete and body in p.current.mid_texts      # closed by the harness, still holding its arrivals
+    p.feed(user("and now push", "2026-10-28T10:01:00Z"), 800)
+    assert body in p.drain()[0].mid_texts                          # and onto the turn record the hub reads
+
+
+def test_mid_turn_texts_deduplicate_cap_and_precede_the_first_prompt():
+    p = feed_all(ClaudeParser(), [queued("first in", "2026-10-28T09:59:00Z", origin={"kind": "human"}),
+                                  queued("first in", "2026-10-28T09:59:01Z", origin={"kind": "human"}),
+                                  user("the prompt", "2026-10-28T10:00:00Z")])
+    assert p.current.mid_texts == ["first in"]                          # once, and carried onto the turn it precedes
+    rows = [user("go", "2026-10-28T10:00:00Z")]
+    rows += [queued(f"n{i} " + "x" * 2000, "2026-10-28T10:00:01Z", origin={"kind": "human"}) for i in range(40)]
+    p = feed_all(ClaudeParser(), rows)
+    assert len(p.current.mid_texts) == 32 and p.current.mid_texts[-1].startswith("n39 xxx")
+    assert len(p.current.mid_texts[0]) <= 1203                          # trim's head + "…" + tail, not all 2000 chars
+    st = __import__("json").loads(__import__("json").dumps(p.state()))
+    assert ClaudeParser.from_state(st).current.mid_texts == p.current.mid_texts
+
+
+def test_sidechain_and_textless_queued_commands_are_not_mid_turn_text():
+    p = feed_all(ClaudeParser(), [user("go", "2026-10-28T10:00:00Z"),
+                                  queued("subagent queue", "2026-10-28T10:00:01Z", isSidechain=True),
+                                  queued("   ", "2026-10-28T10:00:02Z", origin={"kind": "human"}),
+                                  queued(None, "2026-10-28T10:00:03Z", origin={"kind": "human"}),
+                                  assistant([text("on it")], "2026-10-28T10:00:04Z")])
+    assert p.current.mid_texts == []

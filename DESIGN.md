@@ -176,6 +176,19 @@ Greenfield repo: `~/repos/ctxswitch`.
   transcript names in an `Opening "…", running in the background (<id>)` line). The collector folds the window into
   the job it SHOWS — the transcript's last one, else its `parkedJobId` — so one conversation is one row; a parked job
   it no longer shows stays a row of its own.
+- 2026-11-25 (mid-turn delivery): a message that reaches a Claude session while it is busy is surfaced INSIDE the
+  turn already running — an `attachment` of type `queued_command` whose `prompt` is the text as the harness rendered
+  it and whose `origin.body` is the message itself (seen live: 38 peer ones across the transcripts, 27 of which never
+  became a prompt; `queue-operation` enqueue/dequeue/remove lines sit beside it and say nothing of their own). Since
+  `_match_message` only read prompts, such a message stayed `sent` forever and `agent_send_refused` (one in flight per
+  sender+recipient) then refused that sender for good — two sessions that never go idle each got exactly one message
+  through and both directions died. The Claude adapter now puts every one of a turn's queued_command texts on it as
+  `Turn.mid_texts`; a `sent` message matching one is delivered with `mid_turn=1` and that turn recorded, and the turn
+  keeps its own `user_text`/origin (it belongs to the prompt that started it, so it is not labelled the sender's and
+  the recap still reads it as your turn). A prompt naming the same message wins — that turn *is* the delivery — so a
+  mid-turn text is only consulted when no prompt claims anything. A busy turn can take one message per sender, so every
+  mid-turn match in it is marked, not just the first. Safety valve: a `sent` row older than 6 h (`SENT_STALE_S`) stops
+  holding its sender's queue; it still reads as undelivered.
 
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is

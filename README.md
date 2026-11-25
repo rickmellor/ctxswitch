@@ -496,7 +496,7 @@ session as a new prompt, so the agent works on it like anything you type there:
 |---|---|
 | `…` queued | waiting for the session's host to pick it up: at once if it's live, else when it next runs (resume it with Enter) |
 | `→` sent | written into the session; not in its transcript yet |
-| `✓` delivered | the agent is working on it (`#12` is the exchange) |
+| `✓` delivered | the agent is working on it (`#12` is the exchange); a session that was busy takes it mid-turn, which reads `delivered mid-turn in #12` |
 | `↩` replied | the exchange finished; the first lines of the reply are shown |
 | `✗` failed | the session's socket refused it or was gone; the reason is shown. Send it again |
 
@@ -507,6 +507,10 @@ session as a new prompt, so the agent works on it like anything you type there:
   permissions** mode Claude holds it for your approval in that terminal; the board says so.
 - In the board and the ledger the exchange counts as yours (`you`), with the wrapper removed. A message an agent
   sent (see Agents) counts as that agent's, never yours.
+- A session that is busy when the message lands takes it mid-turn, inside the exchange already running, and it never
+  becomes a prompt of its own: the row reads `delivered mid-turn in #12` and that exchange stays the one that started
+  it. An agent whose last message is still showing `sent` six hours on is free to send again (it still reads as
+  undelivered) — one the two sides disagreed about used to stall that pair for good.
 - Delivery is at most once: the collector on the session's host remembers what it wrote, so a lost report never
   sends it twice. A queued message can be cancelled with `ctx send --cancel <id>`.
 - Windows-native Claude (`cw`) sessions can't take messages. Set `[collector] accept_messages = false` on a host
