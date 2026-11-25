@@ -42,7 +42,7 @@
 <text x="618" y="359" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="start">waits unbound; the first session live on that repo + branch, any host, takes it</text>
 <rect x="600" y="388" width="540" height="64" rx="12" fill="#262626" stroke="#d97757" stroke-width="1.2" />
 <text x="618" y="413" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#d97757" text-anchor="start">from another agent (MCP send_message)</text>
-<text x="618" y="435" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="start">headed with its session and host, never &quot;you&quot;; one in flight per pair, 20 an hour</text>
+<text x="618" y="435" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="start">headed with its session and host, never &quot;you&quot;; 5 in order per pair, 20 an hour</text>
 <rect x="40" y="388" width="520" height="64" rx="12" fill="#262626" stroke="#98e024" stroke-width="1.2" />
 <text x="58" y="413" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#98e024" text-anchor="start">answering a question (a, ctx reply)</text>
 <text x="58" y="435" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8a8a8a" text-anchor="start">the same path, linked to the question; the ledger keeps your words</text>

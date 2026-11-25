@@ -448,6 +448,9 @@ WORK_NOTE = "the first session live on this work (any host) takes it"
 def message_note(s: dict, m: dict) -> str:
     """What's happening to a message, in words."""
     st = m["status"]
+    if m.get("waiting_behind"):
+        # an agent's messages to one session go out in the order they were sent, so this one waits on that one
+        return f"waiting behind #{m['waiting_behind']}"
     if st == "queued":
         return "delivering…" if s.get("live_status") in ("busy", "waiting", "idle", "shell") else "queued: delivered when it next runs"
     if st == "sent":

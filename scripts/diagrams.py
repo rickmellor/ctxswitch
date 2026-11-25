@@ -224,7 +224,7 @@ def messages() -> None:
     s.text(618, 359, "waits unbound; the first session live on that repo + branch, any host, takes it", size=12, fill=DIM)
     s.rect(600, 388, 540, 64, fill=PANEL2, stroke=ORANGE, rx=12, sw=1.2)
     s.text(618, 413, "from another agent (MCP send_message)", size=13.5, fill=ORANGE, weight=700)
-    s.text(618, 435, "headed with its session and host, never \"you\"; one in flight per pair, 20 an hour", size=12, fill=DIM)
+    s.text(618, 435, "headed with its session and host, never \"you\"; 5 in order per pair, 20 an hour", size=12, fill=DIM)
     s.rect(40, 388, 520, 64, fill=PANEL2, stroke=GREEN, rx=12, sw=1.2)
     s.text(58, 413, "answering a question (a, ctx reply)", size=13.5, fill=GREEN, weight=700)
     s.text(58, 435, "the same path, linked to the question; the ledger keeps your words", size=12, fill=DIM)

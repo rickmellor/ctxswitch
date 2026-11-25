@@ -189,6 +189,14 @@ Greenfield repo: `~/repos/ctxswitch`.
   mid-turn text is only consulted when no prompt claims anything. A busy turn can take one message per sender, so every
   mid-turn match in it is marked, not just the first. Safety valve: a `sent` row older than 6 h (`SENT_STALE_S`) stops
   holding its sender's queue; it still reads as undelivered.
+- 2026-11-25 (queued, not refused): that one-message valve refused a sender for as long as the recipient sat in one
+  long tool call (seen live: 11:35–12:30Z, a sender retrying by hand on an accurate "not delivered yet"). An agent may
+  now have `AGENT_BACKLOG` (5) messages open with one recipient; the 6th is refused. Ordering follows the backlog: a
+  message is offered to a collector only when it is that sender's OLDEST open one with that session (`_oldest_open`,
+  applied in `outbox` and in workstream binding), so a session taking its backlog when it returns takes it in the order
+  it was written. The operator's messages (no `from_key`) are never held behind an agent's, and each sender's queue is
+  its own. `messages()` carries `waiting_behind`, the id of what an agent's message is stuck behind, which the board
+  and `ctx show` read as `waiting behind #<id>`.
 
 ## Design principles
 1. **Deterministic first.** What the harness states outright (asks, approvals, idle-since, last prompt) is

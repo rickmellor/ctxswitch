@@ -15,7 +15,8 @@
                                      on that repo + branch, any host
   POST /v1/messages/{id}/cancel      a queued message only
   GET  /v1/outbox?host=&wait=25&agents=1   collector long-poll: queued messages for that host's live sessions (agents'
-                                     messages only with agents=1)
+                                     messages only with agents=1, and only once that sender's earlier ones to the same
+                                     session have been delivered)
   POST /v1/messages/{id}/status      collector report {host_id, status: sent|failed, error}
   GET  /v1/attention?host=           open asks, idle sessions, and the prompts that read like another session's work
                                      (kind "misplaced": keep it or move it on the board)

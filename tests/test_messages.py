@@ -235,7 +235,7 @@ def _resend(store, from_key, body):
 
 def test_a_message_taken_mid_turn_is_delivered_without_rewriting_the_turn(tmp_path):
     """A session that never goes idle surfaces a message inside the turn already running, so waiting for a prompt of
-    its own leaves the row `sent` forever — and then every further message from that sender is refused."""
+    its own leaves the row `sent` forever — and then that sender's whole backlog would hold behind it."""
     from ctxswitch.hub import store as store_mod
     store = Store(tmp_path / "hub.db")
     _session(store)
@@ -247,7 +247,7 @@ def test_a_message_taken_mid_turn_is_delivered_without_rewriting_the_turn(tmp_pa
     store.upsert_turns(KEY, [_turn(0, "work on it", "working", origin="human")], None)
     m1 = store.add_message(KEY, "rebase main when the build finishes", "devbox", from_key=a)
     store.set_message_status(m1, "laptop", "sent")
-    assert store.agent_send_refused(a, KEY) == (409, "your last message to that session hasn't been delivered yet")
+    assert store.agent_send_refused(a, KEY) is None                      # one open message is a backlog of 1, not a refusal
 
     rendered = deliver.agent_header(a, "api work") + "rebase main when the build finishes"
     body = "rebase main when the build finishes"
@@ -280,13 +280,22 @@ def test_a_message_taken_mid_turn_is_delivered_without_rewriting_the_turn(tmp_pa
     assert by_id(m3, store)["mid_turn"] == 0                        # the prompt turn, not a mid-turn flag
 
     # the 6-hour valve: a row still `sent` (the two sides disagreed about it) stops holding the sender's queue
-    c = store.add_message(KEY, "stuck one", "devbox", from_key="devbox/claude/s7")
-    store.set_message_status(c, "laptop", "sent")
-    assert store.agent_send_refused("devbox/claude/s7", KEY) is not None
-    store.db.execute("UPDATE messages SET created=? WHERE id=?", (time.time() - store_mod.SENT_STALE_S - 60, c))
-    assert store.agent_send_refused("devbox/claude/s7", KEY) is None
-    assert store.messages(KEY)[-1]["status"] == "sent"                  # still reads as undelivered
-    assert "not in the transcript yet" in fmt.message_note(store.session(KEY), store.messages(KEY)[-1])
+    s7 = "devbox/claude/s7"
+    store.upsert_session({"key": s7, "host_id": "devbox", "harness": "claude", "session_id": "s7", "title": "T",
+                          "cwd": "/x", "last_activity": NOW})
+    stuck = [store.add_message(KEY, f"stuck one {i}", "devbox", from_key=s7) for i in range(store_mod.AGENT_BACKLOG)]
+    for c in stuck:
+        store.set_message_status(c, "laptop", "sent")                   # none of them ever reached the session
+    assert store.agent_send_refused(s7, KEY) is not None                # a full backlog of rows nobody took
+    follow = store.add_message(KEY, "and its follow-up", "devbox", from_key=s7)
+    mine = lambda: [x["id"] for x in store.outbox("laptop", agents=True) if x["from_key"] == s7]
+    assert mine() == []                                                 # ... and the next one waits behind them
+    store.db.execute("UPDATE messages SET created=? WHERE from_key=?", (time.time() - store_mod.SENT_STALE_S - 60, s7))
+    assert store.agent_send_refused(s7, KEY) is None                    # past the valve they stop holding the queue
+    assert mine() == [follow]                                           # the valve opened its queue again
+    stale = {x["id"]: x for x in store.messages(KEY)}[stuck[0]]
+    assert stale["status"] == "sent"                                    # a stale row still reads as undelivered
+    assert "not in the transcript yet" in fmt.message_note(store.session(KEY), stale)
 
 
 def test_a_mid_turn_delivery_reads_that_way():

@@ -19,8 +19,9 @@ undelivered.
 An agent's message (``from_key`` = the sending session) is the same, except its turn is recorded as a peer's (origin
 peer, ``from_key`` on the turn), never yours, and an ask it happens to answer says who answered. Collectors only get
 agent messages when they say they know the header to deliver them with (outbox ``agents``), so an older one can't
-deliver one as yours. One in flight per sender and recipient, and AGENT_PER_HOUR per sender, so two agents can't
-keep each other busy.
+deliver one as yours. AGENT_BACKLOG of one sender's messages to one recipient may stay open at a time, delivered in
+the order they were sent (a later one waits while an earlier one is undelivered), and AGENT_PER_HOUR per sender, so
+two agents can't keep each other busy.
 
 Workstreams: sessions on the same repo (by remote, so clones on other hosts match) and branch; see workstream_of.
 
@@ -101,6 +102,9 @@ MSG_OPEN = ("queued", "sent")
 SENT_STALE_S = 6 * 3600                               # a `sent` message past this stops holding the sender's queue
                                                       # (a mid-turn delivery can stay `sent` whatever the hub does)
 AGENT_PER_HOUR = 20                                 # messages one agent session may send in an hour
+AGENT_BACKLOG = 5                                   # ... and how many of one sender's messages to one recipient may
+                                                    # sit undelivered: a session in one long tool call takes them in
+                                                    # order when it returns, so the sender isn't refused for minutes
 NOT_DELIVERABLE = ("claude-win", "shell")     # Windows-native Claude: no socket reachable from WSL; shell: a bash, nobody
                                               # is listening for a prompt. agy takes them through its hooks' inbox, or
                                               # its tmux pane while idle (collector/deliver.deliver_agy)
@@ -111,6 +115,22 @@ SEARCH_KINDS = ("decision", "instruction", "claim", "prompt")
 MISPLACE_STATES = ("kept", "moved", "resent", "dropped")         # what the operator can do with an open misplaced row
 
 TOKEN_TYPES = ("input", "output", "cache_read", "cache_creation")        # every usage dict has all four ints
+
+
+def _open_msg(alias: str) -> str:
+    """SQL: this message is still open — queued, or sent and not yet past the stale valve (``?``: the cutoff,
+    ``time.time() - SENT_STALE_S``). One still open has not reached its session yet."""
+    return (f"{alias}.status IN ({','.join(repr(x) for x in MSG_OPEN)}) "
+            f"AND NOT ({alias}.status='sent' AND {alias}.created < ?)")
+
+
+def _oldest_open(alias: str = "m") -> str:
+    """SQL: nothing this sender sent that recipient EARLIER is still open, so this message may go out. An agent's
+    messages to one session are delivered in the order they were sent — a later one waits where an earlier one is
+    still undelivered — and a session in one long tool call takes its whole backlog in order when it returns.
+    The operator's messages (no sender) are never held behind another's. Param: the cutoff."""
+    return (f"(COALESCE({alias}.from_key,'')='' OR NOT EXISTS (SELECT 1 FROM messages p "
+            f"WHERE p.from_key={alias}.from_key AND p.key={alias}.key AND p.id<{alias}.id AND {_open_msg('p')}))")
 
 
 def _usage_cols(alias: str = "t") -> str:
@@ -322,8 +342,15 @@ class Store:
         return int(cur.lastrowid)
 
     def messages(self, key: str, limit: int = 20) -> list[dict[str, Any]]:
-        rows = self.db.execute("SELECT * FROM messages WHERE key=? ORDER BY id DESC LIMIT ?", (key, limit)).fetchall()
-        return [dict(r) for r in rows][::-1]
+        # waiting_behind: what an agent's message is stuck behind (see client/fmt.message_note) — the oldest open one
+        # from that sender to here, when this one isn't it. NULL when the message is next out (or the operator's).
+        cutoff = time.time() - SENT_STALE_S
+        rows = self.db.execute(f"SELECT * FROM (SELECT m.*, CASE WHEN {_open_msg('m')} AND NOT {_oldest_open()} "
+                               f"THEN (SELECT MIN(p.id) FROM messages p WHERE p.from_key=m.from_key AND p.key=m.key "
+                               f"AND {_open_msg('p')}) END AS waiting_behind "
+                               f"FROM messages m WHERE m.key=? ORDER BY m.id DESC LIMIT ?) ORDER BY id",
+                               (cutoff, cutoff, cutoff, key, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     def outbox(self, host_id: str, agents: bool = False) -> list[dict[str, Any]]:
         """Queued messages for sessions live on ``host_id`` right now, oldest first. The collector checks each
@@ -331,13 +358,15 @@ class Store:
         the sender's key and title) only to a collector that asks for them. A workstream message is bound here to a
         session live on this host on that work, the first such host to ask taking it."""
         self._bind_workstream_messages(host_id)
+        cutoff = time.time() - SENT_STALE_S
         # a harness that can't take one is filtered here too: api refuses them, but a row queued before that must not go out
         q = (f"SELECT m.id, m.key, m.body, s.harness, m.from_key, COALESCE(NULLIF(f.live_name,''), f.title) AS from_title "
              f"FROM messages m JOIN sessions s ON s.key=m.key LEFT JOIN sessions f ON f.key=m.from_key WHERE m.status='queued' "
              f"AND s.host_id=? AND s.live_status IN ({_LIVE_SQL}) "
-             f"AND s.harness NOT IN ({','.join(repr(h) for h in NOT_DELIVERABLE)})"
+             f"AND s.harness NOT IN ({','.join(repr(h) for h in NOT_DELIVERABLE)}) "
+             f"AND {_oldest_open()}"
              f"{'' if agents else ' AND m.from_key IS NULL'} ORDER BY m.id")
-        return [dict(r) for r in self.db.execute(q, (host_id,))]
+        return [dict(r) for r in self.db.execute(q, (host_id, cutoff))]
 
     def _bind_workstream_messages(self, host_id: str) -> None:
         if not self.db.execute("SELECT 1 FROM messages WHERE key='' AND status='queued' LIMIT 1").fetchone():
@@ -348,21 +377,29 @@ class Store:
             f"WHERE host_id=? AND live_status IN ({_LIVE_SQL}) AND harness NOT IN ({','.join(repr(h) for h in NOT_DELIVERABLE)})", (host_id,))]
         live.sort(key=lambda s: s["last_activity"] or "", reverse=True)
         live.sort(key=lambda s: rank.get(s["live_status"], 2))
+        cutoff = time.time() - SENT_STALE_S
+        held = f"SELECT 1 FROM messages p WHERE p.from_key=? AND p.key=? AND p.id<? AND {_open_msg('p')} LIMIT 1"
         with self._lock:
-            for m in self.db.execute("SELECT id, workstream FROM messages WHERE key='' AND status='queued' ORDER BY id").fetchall():
+            # binding one hands it to that session's collector, so an agent's message can't jump the queue it already
+            # has with that session either: the workstream it names only takes it once nothing older is still open
+            for m in self.db.execute("SELECT id, workstream, from_key FROM messages WHERE key='' AND status='queued' ORDER BY id"):
                 s = next((s for s in live if workstream_of(s) == m["workstream"]), None)
-                if s is not None:
-                    self.db.execute("UPDATE messages SET key=? WHERE id=? AND key=''", (s["key"], m["id"]))
-                    self._bump()
+                if s is None or (m["from_key"] and self.db.execute(held, (m["from_key"], s["key"], m["id"], cutoff)).fetchone()):
+                    continue
+                self.db.execute("UPDATE messages SET key=? WHERE id=? AND key=''", (s["key"], m["id"]))
+                self._bump()
 
     def agent_send_refused(self, from_key: str, key: str) -> tuple[int, str] | None:
         """(HTTP status, why) when this agent may not send to ``key`` now, else None."""
         # A message the session took mid-turn and the collector's report for it crossed somewhere stays `sent`: the
-        # valve below stops one of those dead-locking the pair for good, and the row still reads as undelivered.
-        if self.db.execute(f"SELECT 1 FROM messages WHERE from_key=? AND key=? AND status IN "
-                           f"({','.join(repr(x) for x in MSG_OPEN)}) "
-                           f"AND NOT (status='sent' AND created < ?)", (from_key, key, time.time() - SENT_STALE_S)).fetchone():
-            return 409, "your last message to that session hasn't been delivered yet"
+        # valve in _open_msg stops one of those holding the sender's backlog for good, and the row still reads as
+        # undelivered. A sender may have AGENT_BACKLOG of them open at a time — a session sitting in one long tool
+        # call takes them in order when it returns, so it isn't refused for the whole call.
+        open_ = self.db.execute(f"SELECT COUNT(*) FROM messages m WHERE m.from_key=? AND m.key=? AND {_open_msg('m')}",
+                                (from_key, key, time.time() - SENT_STALE_S)).fetchone()[0]
+        if open_ >= AGENT_BACKLOG:
+            return 409, (f"your last {open_} messages to that session are not delivered yet "
+                         f"(the backlog is {AGENT_BACKLOG})")
         n = self.db.execute("SELECT COUNT(*) FROM messages WHERE from_key=? AND created>? AND status!='cancelled'",
                             (from_key, time.time() - 3600)).fetchone()[0]
         if n >= AGENT_PER_HOUR:
@@ -395,7 +432,7 @@ class Store:
 
         A message that lands while the session is busy is surfaced MID-TURN — a ``queued_command`` entry inside the
         turn already running, never a prompt of its own — so a session that never goes idle would leave it ``sent``
-        forever, and one in flight per sender would then refuse that sender for good. Those texts come through on the
+        forever, and a sender whose backlog was open would then be refused for good. Those texts come through on the
         turn as ``mid_texts``: matching one marks the message delivered with ``mid_turn`` set and that turn recorded,
         and leaves the turn's own text and origin alone — it belongs to the prompt that started it. A prompt naming the
         same message wins: that turn *is* the delivery's.

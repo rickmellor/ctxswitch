@@ -102,7 +102,7 @@ class Server:
             Tool("send_message", "Message another session (any host) as yourself: it arrives headed with your session's "
                  "key, title and host, and starts a turn there if it is idle (queued until it runs if it has ended). For "
                  "coordinating with another agent, not for speaking for the operator. Its reply shows under messages in "
-                 "get_session for that session. One message in flight per recipient.",
+                 "get_session for that session. Messages to a busy session queue in order (up to 5).",
                  {"session": SESSION, "text": {"type": "string", "description": "the message"}}, ("session", "text"), self.send_message),
         )}
 

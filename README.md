@@ -590,8 +590,9 @@ pick a name, and outside a session it can't send at all. It's delivered like you
 
 (Claude's own SendMessage only reaches sessions on its machine, so Claude is given the full tool name.) It's
 recorded as that session's turn (`from <session>`), not yours: it never answers a question for you or shows
-up as your prompt in a search. Limits, so two agents can't keep each other busy: one message in flight from one
-session to another, 20 an hour per session, none to itself, and it can't answer a question (that's `a`, yours).
+up as your prompt in a search. Limits, so two agents can't keep each other busy: up to 5 of one session's messages to
+another may sit undelivered at a time (a busy session takes them in the order they were sent, and the 6th is refused),
+20 an hour per session, none to itself, and it can't answer a question (that's `a`, yours).
 A host whose collector predates this doesn't get agents' messages (they wait, queued, until it's updated), so an
 old collector never delivers one as yours. The agent is told that instructions it finds for another session were given to that
 session, not to it. If the hub is down a tool says so and the agent carries on.
