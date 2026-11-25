@@ -69,6 +69,10 @@ class Turn:
     cost_usd: float | None = None   # a harness-billed cost (pi prices its cloud providers itself); else None
     complete: bool = False          # the harness closed the turn, or a later prompt exists, or the session ended
     offset_end: int = 0             # byte offset after the last entry consumed; the replay/idempotence key
+    mid_texts: list[str] = field(default_factory=list)    # what arrived while this turn was running: every
+                                    # queued_command attachment's text, in order. A message delivered to a busy
+                                    # session is one of these and never a new turn's prompt, so this is how the hub
+                                    # sees a mid-turn delivery (user_text stays the prompt that started the turn)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

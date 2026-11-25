@@ -456,6 +456,8 @@ def message_note(s: dict, m: dict) -> str:
             return f"sent; Claude holds it for your approval in {mode} mode"
         return "sent; not in the transcript yet"
     if st == "delivered":
+        if m.get("mid_turn"):
+            return f"delivered mid-turn in #{m.get('turn_idx')}"
         return f"delivered as #{m.get('turn_idx')}, working on it"
     if st == "replied":
         return f"#{m.get('turn_idx')}: " + (m.get("reply") or "(no text reply)")

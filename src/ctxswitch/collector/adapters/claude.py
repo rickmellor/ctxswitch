@@ -8,8 +8,11 @@ Entry types that matter (surveyed across 2.1.128–2.1.312 files, see DESIGN.md)
   system      subtype turn_duration (the harness closed the turn), compact_boundary, api_error, away_summary,
               local_command, scheduled_task_fire.
   ai-title / custom-title / agent-name / permission-mode   session metadata.
-  attachment  only a SessionStart hook_success says anything: what saint-pool --hook told the session about the
-              local Qwen pool (meta pool / pool_at / pool_how).
+  attachment  two kinds say anything. hook_success on SessionStart: what saint-pool --hook told the session about the
+              local Qwen pool (meta pool / pool_at / pool_how). queued_command: what landed while the turn was running
+              — a message to a busy session, a background task's notification, an operator's follow-up — whose text is
+              the harness's own ``prompt`` field (its ``origin.body`` is the same message bare, with the header and any
+              routing prefix cut off) and goes onto the turn as mid_texts.
   everything else (attachment of other kinds, atis-latch, last-prompt, mode, pr-link, queue-operation,
   file-history-*, cost-state, api-request*, tools-used)   ignored.
 
@@ -49,6 +52,8 @@ _USAGE_MAP = (("input", "input_tokens"), ("output", "output_tokens"), ("cache_re
 
 
 COUNTED_KEEP = 64                    # a reply's lines never straddle more replies than this
+MID_TEXT_CHARS = 800                 # a mid-turn arrival keeps its head (a message match needs its first 200 chars)
+MID_KEEP = 32                        # ... and a turn keeps this many of its most recent ones
 
 
 def _epoch(ts: Any) -> float | None:
@@ -97,6 +102,7 @@ class ClaudeParser:
         self._n = 0
         self._tools: dict[str, str] = {}        # pending tool_use id -> tool name
         self._pending_events: list[str] = []    # events seen before the next turn opens
+        self._pending_mid: list[str] = []       # queued_command texts seen before it, which are its arrivals too
         self._usage_ids: dict[str, dict[str, int]] = {}   # this turn's API replies (message.id) -> the usage counted
         self._reply: dict[str, Any] | None = None    # the API reply still streaming: {id, start, end, out, model}
         self._trigger: float | None = None           # epoch of the last entry that could start a reply
@@ -107,13 +113,15 @@ class ClaudeParser:
     # -- persistence -------------------------------------------------------------------------------------------
     def state(self) -> dict[str, Any]:
         return {"meta": self.meta, "cur": self._cur.to_dict() if self._cur else None, "n": self._n,
-                "tools": self._tools, "pending": self._pending_events, "bad": self.bad_lines, "usage_ids": self._usage_ids,
+                "tools": self._tools, "pending": self._pending_events, "pending_mid": self._pending_mid,
+                "bad": self.bad_lines, "usage_ids": self._usage_ids,
                 "reply": self._reply, "trigger": self._trigger, "counted": self._counted}
 
     @classmethod
     def from_state(cls, st: dict[str, Any], max_text: int = 4000) -> "ClaudeParser":
         p = cls(max_text)
         p.meta = st["meta"]; p._n = st["n"]; p._tools = st["tools"]; p._pending_events = st["pending"]
+        p._pending_mid = list(st.get("pending_mid") or [])      # arrivals before the first turn opened
         if str(p.meta.get("first_prompt", "")).startswith("<"):      # cached from before the wrapper filter
             p.meta.pop("first_prompt")
         p.bad_lines = st["bad"]
@@ -186,7 +194,7 @@ class ClaudeParser:
         elif t == "permission-mode":
             self.meta["permission_mode"] = e.get("permissionMode", "") or self.meta.get("permission_mode", "")
         elif t == "attachment":
-            self._attachment(e)
+            self._attachment(e, offset_end)
 
     # -- helpers -----------------------------------------------------------------------------------------------
     def _event(self, name: str, offset_end: int, ts: str | None) -> None:
@@ -285,10 +293,11 @@ class ClaudeParser:
                 if a.kind == "plain" and not a.answered:
                     a.answered, a.answer, a.answered_at = True, trim(text, 400), e.get("timestamp")
         events = self._pending_events; self._pending_events = []
+        mid = self._pending_mid; self._pending_mid = []
         self._usage_ids = {}
         self._cur = Turn(idx=self._n, started_at=e.get("timestamp") or "", ended_at=e.get("timestamp"),
                          user_text=trim(text, self.max_text), user_origin=origin, assistant_text="",
-                         events=events, offset_end=offset_end)
+                         events=events, mid_texts=mid, offset_end=offset_end)
         self._n += 1
         first = text.strip().splitlines()[0] if text.strip() else ""
         if not self.meta.get("first_prompt") and origin == "human" and first and not first.startswith("<"):
@@ -357,13 +366,19 @@ class ClaudeParser:
         if cur is not None:
             self._touch(offset_end, e.get("timestamp"))
 
-    def _attachment(self, e: dict[str, Any]) -> None:
-        """The one attachment that carries news: the SessionStart hook's own stdout, which is where a Claude session
-        learns about the local Qwen pool (or, printing nothing, that there's nothing to learn)."""
+    def _attachment(self, e: dict[str, Any], offset_end: int) -> None:
+        """The two attachments that carry news: the SessionStart hook's own stdout, which is where a Claude session
+        learns about the local Qwen pool (or, printing nothing, that there's nothing to learn), and a queued_command's
+        text, which is what reached the session while the turn was still running."""
         if e.get("isSidechain"):
             return
         a = e.get("attachment") or {}
-        if not isinstance(a, dict) or a.get("type") != "hook_success" or a.get("hookEvent") != "SessionStart":
+        if not isinstance(a, dict):
+            return
+        if a.get("type") == "queued_command":
+            self._mid_turn(a, e.get("timestamp"), offset_end)
+            return
+        if a.get("type") != "hook_success" or a.get("hookEvent") != "SessionStart":
             return
         if not str(a.get("command", "")).endswith("saint-pool --hook"):
             return
@@ -376,6 +391,28 @@ class ClaudeParser:
         self.meta["pool"], self.meta["pool_how"] = state, how
         if isinstance(e.get("timestamp"), str):
             self.meta["pool_at"] = e["timestamp"]
+
+    def _mid_turn(self, a: dict[str, Any], ts: str | None, offset_end: int) -> None:
+        """A ``queued_command`` attachment: what the harness ran *inside* the running turn — a ctxswitch message to a
+        busy session, a background task's notification, an operator's follow-up typed while the agent worked. Its
+        ``prompt`` is the text as the harness rendered it; a peer delivery also keeps the message itself in
+        ``origin.body``, header and any routing prefix cut off. Both go on the turn, and a message reaching a session
+        that never goes idle appears nowhere else: without this the hub would wait for a prompt that never comes."""
+        texts = [a.get("prompt")]
+        origin = a.get("origin")
+        if isinstance(origin, dict):
+            texts.append(origin.get("body"))
+        for t in texts:
+            if not isinstance(t, str) or not t.strip():
+                continue
+            t = trim(t, MID_TEXT_CHARS)
+            dest = self._cur.mid_texts if self._cur is not None else self._pending_mid
+            if t in dest:                                  # the same arrival written twice (body == prompt)
+                continue
+            dest.append(t)
+            if self._cur is not None:
+                del dest[:-MID_KEEP]                       # a long turn's queue can't grow the state without bound
+                self._touch(offset_end, ts)
 
     @staticmethod
     def _pool_says(text: str) -> str:

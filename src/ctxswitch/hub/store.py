@@ -10,6 +10,12 @@ message's turn is recorded as yours (origin human, prompt = what you wrote), wha
 so is the answer it gave to an open plain-text ask. A quick-reply is a message naming the ask it answers (``ask_ref``,
 checked when sent, shown with it); delivering it answers that ask the way any prompt does.
 
+A message that reaches a session while it is busy is surfaced mid-turn, inside the turn already running, and never
+becomes a prompt: matching one of that turn's mid-turn texts marks the message delivered with ``mid_turn`` set and
+that turn recorded, but leaves the turn's own prompt and origin alone. One still ``sent`` after SENT_STALE_S stops
+counting as in flight, so a delivery the two sides disagree about can't stall a sender for good; it still reads as
+undelivered.
+
 An agent's message (``from_key`` = the sending session) is the same, except its turn is recorded as a peer's (origin
 peer, ``from_key`` on the turn), never yours, and an ask it happens to answer says who answered. Collectors only get
 agent messages when they say they know the header to deliver them with (outbox ``agents``), so an older one can't
@@ -67,7 +73,7 @@ CREATE INDEX IF NOT EXISTS ledger_key ON ledger(key, kind, active);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL,
     from_host TEXT, created REAL NOT NULL, sent_at REAL, delivered_at REAL, turn_idx INTEGER, reply TEXT, error TEXT,
-    ask_ref TEXT, from_key TEXT, workstream TEXT
+    ask_ref TEXT, from_key TEXT, workstream TEXT, mid_turn INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS messages_key ON messages(key, status);
 CREATE TABLE IF NOT EXISTS links (
@@ -92,6 +98,8 @@ ANSWER_CHARS = 300
 REPLY_CHARS = 2000
 MATCH_CHARS = 200                                   # a turn is the message's when its prompt contains this much of the body
 MSG_OPEN = ("queued", "sent")
+SENT_STALE_S = 6 * 3600                               # a `sent` message past this stops holding the sender's queue
+                                                      # (a mid-turn delivery can stay `sent` whatever the hub does)
 AGENT_PER_HOUR = 20                                 # messages one agent session may send in an hour
 NOT_DELIVERABLE = ("claude-win", "shell")     # Windows-native Claude: no socket reachable from WSL; shell: a bash, nobody
                                               # is listening for a prompt. agy takes them through its hooks' inbox, or
@@ -176,6 +184,8 @@ class Store:
         for col in ("ask_ref", "from_key", "workstream"):
             if col not in mcols:
                 self.db.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
+        if "mid_turn" not in mcols:                 # older databases: no delivery was ever marked mid-turn
+            self.db.execute("ALTER TABLE messages ADD COLUMN mid_turn INTEGER NOT NULL DEFAULT 0")
         self._lock = threading.Lock()
         self.change = int(self._get("change", "0"))
 
@@ -347,8 +357,11 @@ class Store:
 
     def agent_send_refused(self, from_key: str, key: str) -> tuple[int, str] | None:
         """(HTTP status, why) when this agent may not send to ``key`` now, else None."""
-        if self.db.execute(f"SELECT 1 FROM messages WHERE from_key=? AND key=? AND status IN ({','.join(repr(x) for x in MSG_OPEN)})",
-                           (from_key, key)).fetchone():
+        # A message the session took mid-turn and the collector's report for it crossed somewhere stays `sent`: the
+        # valve below stops one of those dead-locking the pair for good, and the row still reads as undelivered.
+        if self.db.execute(f"SELECT 1 FROM messages WHERE from_key=? AND key=? AND status IN "
+                           f"({','.join(repr(x) for x in MSG_OPEN)}) "
+                           f"AND NOT (status='sent' AND created < ?)", (from_key, key, time.time() - SENT_STALE_S)).fetchone():
             return 409, "your last message to that session hasn't been delivered yet"
         n = self.db.execute("SELECT COUNT(*) FROM messages WHERE from_key=? AND created>? AND status!='cancelled'",
                             (from_key, time.time() - 3600)).fetchone()[0]
@@ -378,19 +391,37 @@ class Store:
 
     def _match_message(self, key: str, t: dict[str, Any]) -> None:
         """Mark the message this turn delivers (and its reply, once complete); the turn becomes your prompt, or the
-        sending agent's."""
-        m = self.db.execute("SELECT id, body, status, from_key FROM messages WHERE key=? AND turn_idx=?", (key, t["idx"])).fetchone()
+        sending agent's.
+
+        A message that lands while the session is busy is surfaced MID-TURN, as a ``queued_command`` entry inside the
+        running turn rather than as a prompt of its own, so a turn that never goes idle would otherwise leave it
+        ``sent`` forever. Those texts arrive on the turn as ``mid_texts``: matching one marks the message delivered and
+        the turn's, but leaves the turn's own text and origin alone — the turn belongs to the prompt that started it.
+        """
+        m = self.db.execute("SELECT id, body, status, from_key, mid_turn FROM messages WHERE key=? AND turn_idx=?",
+                            (key, t["idx"])).fetchone()
         if m is None:
             text = _norm(t.get("user_text"))
-            for r in self.db.execute("SELECT id, body, status, from_key FROM messages WHERE key=? AND status='sent' ORDER BY id", (key,)):
-                if _norm(r["body"])[:MATCH_CHARS] in text:
+            mid = [_norm(x) for x in t.get("mid_texts") or []]
+            for r in self.db.execute("SELECT id, body, status, from_key, 0 AS mid_turn FROM messages WHERE key=? "
+                                     "AND status='sent' ORDER BY id", (key,)):
+                want = _norm(r["body"])[:MATCH_CHARS]
+                if want in text:
                     m = r; break
+                if m is None and any(want in x for x in mid):
+                    m = r                       # only when no prompt claims it: the prompt's own turn wins
             if m is None:
                 return
-            self.db.execute("UPDATE messages SET status='delivered', delivered_at=?, turn_idx=? WHERE id=?", (time.time(), t["idx"], m["id"]))
-        t.update(user_text=m["body"], user_origin="peer" if m["from_key"] else "human", via="ctx", message_id=m["id"])
-        if m["from_key"]:
-            t["from_key"] = m["from_key"]
+            self.db.execute("UPDATE messages SET status='delivered', delivered_at=?, turn_idx=?, mid_turn=? WHERE id=?",
+                            (time.time(), t["idx"], int(m["mid_turn"]), m["id"]))
+        if m["mid_turn"]:
+            t.update(message_id=m["id"])
+            if m["from_key"]:
+                t["from_key"] = m["from_key"]
+        else:
+            t.update(user_text=m["body"], user_origin="peer" if m["from_key"] else "human", via="ctx", message_id=m["id"])
+            if m["from_key"]:
+                t["from_key"] = m["from_key"]
         if t.get("complete") and m["status"] != "replied":
             self.db.execute("UPDATE messages SET status='replied', reply=? WHERE id=?", (_clip(t.get("assistant_text"), REPLY_CHARS), m["id"]))
 
