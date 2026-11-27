@@ -568,9 +568,12 @@ async def test_a_board_that_finds_another_one_answering_leaves_it_alone(monkeypa
     kept: list = []
     app = _board(monkeypatch, tmp_path, _rows(1), sock=sock)
 
+    class _Writer:                                      # the other board took the handshake: a connection, not an error
+        def close(self): pass
+        async def wait_closed(self): pass
     async def _someone_else(*a, **k):
         kept.append(str(a[1] if len(a) > 1 else k.get("path")))
-        raise OSError("the other board's socket")
+        return None, _Writer()
     monkeypatch.setattr(tui.control.asyncio, "open_unix_connection", _someone_else)
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
