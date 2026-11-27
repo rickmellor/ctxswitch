@@ -417,9 +417,9 @@ to run while the screen has the pane.
 | 1–5 (top row) | `pick` — the profile that digit starts, as the picker's keys do | the option's number and label |
 | `gpu` `pool` `spend` `exchange` `detach` (middle row) | nothing at all | black |
 | ▲ / ▼ | `move -1` / `move +1`: the screen's cursor, one recent up / down (holding one sends nothing on release) | ▲ / ▼ |
-| `select` | `mark`: Space — mark or unmark the recent the cursor is on, so `enter` can bring several back at once | `select`, its title under it, on the lit blue while that row is marked |
+| `select` | `mark`: Space — mark or unmark the recent the cursor is on, so `enter` can bring several back at once | `select`, on the lit blue while the cursor's row is marked |
 | `cancel` | `cancel`: the screen's Esc | cancel |
-| `enter` | `submit`: Enter — resume what's marked, or the cursor's row when none are | `enter`, and `resume N` under it (`N` marked, or 1; `nothing`, the key dim, when nothing has ended) |
+| `enter` | `submit`: Enter — resume what's marked, or the cursor's row when none are | `enter`, dim when nothing has ended |
 
 With the board unreachable every key goes black except the centre one, which says `no board` and retries every 2 s.
 While the spend screen is up every key is cancel except `spend` itself, which is lit and closes it again; while the

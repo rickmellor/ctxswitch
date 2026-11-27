@@ -311,34 +311,34 @@ def test_the_start_screen_keys_walk_mark_and_resume():
     faces = Layout().plan(start_mode_state())
     assert faces[10].lines == ("▲",) and faces[10].bg == deck.ARROW_BG
     assert faces[11].lines == ("▼",) and faces[11].bg == deck.ARROW_BG
-    assert faces[12].lines == ("select",) and faces[12].bg == deck.ACTION_BG and faces[12].sub == "ctx switch"
+    assert faces[12].lines == ("select",) and faces[12].bg == deck.ACTION_BG and faces[12].sub is None
     assert faces[13].lines == ("cancel",) and faces[13].bg == deck.ACTION_BG
-    assert faces[14].lines == ("enter",) and faces[14].bg == deck.ACTION_BG and faces[14].sub == "resume 1"
+    assert faces[14].lines == ("enter",) and faces[14].bg == deck.ACTION_BG and faces[14].sub is None
     assert not faces[14].dim, "there are rows to bring back, so the key isn't dim"
 
 
-def test_the_start_screen_s_select_key_names_the_row_under_its_cursor():
+def test_the_start_screen_s_select_key_lights_for_a_marked_row_and_shows_no_title():
     """`select` says which row its Space would mark, in the small line under the label, and goes to the lit colour
     while that row is marked."""
     L = Layout()
     face = L.plan(start_mode_state(cursor=1))[12]
-    assert face.lines == ("select",) and face.sub == "board control" and face.bg == deck.ACTION_BG
+    assert face.lines == ("select",) and face.sub is None and face.bg == deck.ACTION_BG
     marked = L.plan(start_mode_state(cursor=1, marked=1))[12]
-    assert marked.bg == deck.LIT_BG and marked.lines == ("select",) and marked.sub == "board control"
+    assert marked.bg == deck.LIT_BG and marked.lines == ("select",) and marked.sub is None
     # the cursor moved off the marked row: the key says which row Space would mark now, and it is not lit
     away = L.plan(start_mode_state(cursor=2, marked=1, recents=[recent("ctx switch"), recent("board control", True),
                                                                 recent("the deck")]))[12]
-    assert away.bg == deck.ACTION_BG and away.sub == "the deck"
+    assert away.bg == deck.ACTION_BG and away.sub is None
 
 
-def test_the_start_screen_s_enter_key_says_how_many_it_would_resume():
+def test_the_start_screen_s_enter_key_shows_no_count_and_dims_when_empty():
     """`enter` resumes what is marked, or the cursor row when nothing is: the key says how many, and says `nothing`
     and goes dim when the screen has no rows at all."""
     L = Layout()
-    assert L.plan(start_mode_state(marked=2))[14].sub == "resume 2"
-    assert L.plan(start_mode_state(cursor=2))[14].sub == "resume 1", "nothing marked: the cursor row, and one"
+    assert L.plan(start_mode_state(marked=2))[14].sub is None
+    assert L.plan(start_mode_state(cursor=2))[14].sub is None, "no count on the key"
     empty = L.plan(start_mode_state(recents=[]))[14]
-    assert empty.lines == ("enter",) and empty.sub == "nothing" and empty.dim
+    assert empty.lines == ("enter",) and empty.sub is None and empty.dim
 
 
 def test_an_older_board_s_start_screen_says_only_what_the_two_keys_are(monkeypatch):

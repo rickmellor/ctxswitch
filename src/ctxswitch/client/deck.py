@@ -402,14 +402,11 @@ class Layout:
         row = recents[cursor] if isinstance(cursor, int) and 0 <= cursor < len(recents) else {}
         # lit by the cursor row's own mark — the row this key would mark — not by how many others are marked
         marked = bool(row.get("marked"))
-        n_marked = (start or {}).get("marked") or sum(1 for r in recents if r.get("marked"))
-        under = None if start is None else (f"resume {n_marked or 1}" if (n_marked or recents) else "nothing")
         faces[10] = KeyFace(bg=ARROW_BG, lines=("▲",))
         faces[11] = KeyFace(bg=ARROW_BG, lines=("▼",))
-        faces[12] = KeyFace(bg=LIT_BG if marked else ACTION_BG, lines=("select",),
-                            sub=(_title(row.get("title")) or None) if start else None)
+        faces[12] = KeyFace(bg=LIT_BG if marked else ACTION_BG, lines=("select",))
         faces[13] = KeyFace(bg=ACTION_BG, lines=("cancel",))
-        faces[14] = KeyFace(bg=ACTION_BG, lines=("enter",), sub=under,
+        faces[14] = KeyFace(bg=ACTION_BG, lines=("enter",),
                             dim=bool(start) and not recents)   # nothing to bring back: the key says so, in grey
         return faces
 
