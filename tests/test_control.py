@@ -583,15 +583,6 @@ async def test_a_board_that_finds_another_one_answering_leaves_it_alone(monkeypa
 
 
 # -- the panels, the spend screen, and the rest of the keyboard ----------------------------------------------------
-def _pool_tools(**kw):
-    """This host's pool commands, answered from the test: the panel reads them instead of running anything."""
-    from ctxswitch.client.tui import pool_panel as pp
-
-    def run(argv):
-        return pp.Cmd(kw.get("rc", 0), kw.get("out", ""))
-    return pp.PoolTools(run=run, which=lambda tool: kw.get("where", "/usr/local/bin/saint-pool"))
-
-
 async def test_gpu_turns_the_cpu_panel_on_and_says_so_in_the_state(monkeypatch, tmp_path):
     app = _board(monkeypatch, tmp_path, _rows(2))
     monkeypatch.setattr(tui.CtxApp, "fetch_metrics", lambda self: None)   # nothing to ask the hub about
@@ -606,7 +597,8 @@ async def test_gpu_turns_the_cpu_panel_on_and_says_so_in_the_state(monkeypatch, 
 
 async def test_pool_turns_the_local_pool_panel_on_and_says_so(monkeypatch, tmp_path):
     app = _board(monkeypatch, tmp_path, _rows(2))
-    app.pool_tools = _pool_tools()
+    # P's own read: no command of anyone's runs, and no worker outliving the board to write its panel into
+    monkeypatch.setattr(tui.CtxApp, "fetch_pool", lambda self: None)
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
         assert board_state(app)["panels"] == {"gpu": False, "pool": False}
@@ -679,36 +671,49 @@ def _binding_cmds() -> list[str]:
 
 
 @pytest.mark.parametrize("cmd", _binding_cmds())
-async def test_every_board_key_can_be_driven_from_the_socket(cmd, monkeypatch, tmp_path):
-    """The socket covers the whole keyboard, so that nothing is missing from it can only be found by asking of the
-    bindings themselves: one command per binding, each calling that binding's own action."""
+def test_every_board_key_has_a_command_of_its_own(cmd):
+    """The socket covers the whole keyboard, and what's missing from it can only be found by asking the bindings
+    themselves: one command per binding — the slot ones excepted, since `slot` and `select` take the row's number —
+    naming an action the board really has. Stays true as keys are added, and costs no board to check."""
     method = tui.control.ALIASES.get(cmd) or tui.control.ACTIONS.get(cmd)
-    hit: list = []
+    assert method is not None, f"{cmd} names no board action"
+    assert callable(getattr(tui.CtxApp, method, None)), f"{cmd} -> {method}, which the board has no such action"
+
+
+async def test_the_whole_keyboard_drives_one_board(monkeypatch, tmp_path):
+    """The same commands, dispatched: every one of them runs the action its binding says, and answers like a
+    command does. One board, mounted once, rather than one per key."""
     app = _board(monkeypatch, tmp_path, _rows(2))
-    app.pool_tools = _pool_tools()
+    hit: list = []
     for name in dir(tui.CtxApp):
         if name.startswith("action_"):
             monkeypatch.setattr(tui.CtxApp, name, lambda self, _n=name, *a, **k: hit.append(_n))
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
-        assert method is not None, f"{cmd} names no board action"
-        assert cmd in tui.control.ACTIONS or cmd in tui.control.ALIASES, cmd
-        reply = app.control.dispatch({"cmd": cmd})
-        assert reply["ok"] is True and "state" in reply, reply
-        # what it ran: the action the binding says, or that action's own reason for saying nothing happened
-        assert hit == [method], (cmd, hit)
+        for cmd in _binding_cmds():
+            method = tui.control.ALIASES.get(cmd) or tui.control.ACTIONS.get(cmd)
+            hit.clear()
+            reply = app.control.dispatch({"cmd": cmd})
+            assert reply["ok"] is True and "state" in reply, (cmd, reply)
+            # what it ran: the action the binding says, or that action's own reason for saying nothing happened
+            assert hit == [method], (cmd, hit)
 
 
 async def test_a_command_needing_a_row_says_nothing_is_selected(monkeypatch, tmp_path):
     app = _board(monkeypatch, tmp_path, _rows(2))
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
-        for cmd in ("resume", "message", "reply", "message_buffer", "mark_viewed", "exchange", "misplace_move",
-                    "misplace_keep", "misplace_drop"):
+        for cmd in ("resume", "message", "reply", "message_buffer", "message_work", "mark_viewed", "exchange",
+                    "misplace_move", "misplace_keep", "misplace_drop", "retire"):
             app.selected = None
             assert app.control.dispatch({"cmd": cmd}) == {"ok": False, "error": "nothing selected"}, cmd
-            app.selected = "ws:webapp"                          # a workstream header answers these itself
+        for cmd in ("message", "message_work"):                 # m and W answer from a workstream header too,
+            app.selected = "ws:webapp"                          # the way those two keys do on the keyboard
             assert app.control.dispatch({"cmd": cmd})["ok"] is True, cmd
+        for cmd in ("resume", "reply", "message_buffer", "mark_viewed", "exchange", "misplace_move",
+                    "misplace_keep", "misplace_drop", "retire"):
+            app.selected = "ws:webapp"                          # the rest have no session to act on
+            assert app.control.dispatch({"cmd": cmd}) == {"ok": False, "error": "nothing selected"}, cmd
         app.selected = app.slots[0]                             # these two answer from the detail or the work,
         for cmd in ("retire", "message_work"):                  # so they get on with a row highlighted at all
             assert app.control.dispatch({"cmd": cmd})["ok"] is True, cmd

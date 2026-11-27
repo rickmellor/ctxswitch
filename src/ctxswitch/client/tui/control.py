@@ -84,10 +84,10 @@ def prompt_of(app: "CtxApp") -> str:
     return str(getattr(top, "prompt", "") or "") if isinstance(top, Confirm) else ""
 
 
-# cmd -> the board's own action method. Named after the key's action (the `action_` prefix dropped), so the table in
-# docs/board-control.md is the keyboard map read a different way: every Binding in CtxApp.BINDINGS has its line here.
-# The five in ACTIONS_SHORT keep the name the deck's row-2 keys use for them, and `end_session` is `end` (see EXTRA)
-# because a client already spoke that one.
+# cmd -> the board's own action method, named after the key's action (the `action_` prefix dropped), so the second
+# table in docs/board-control.md is the keyboard read another way: every Binding in CtxApp.BINDINGS has its line
+# here. `new`, `start` and `end` are served in dispatch() itself, where they can carry the fresh state back with
+# them; their binding names are here too, so the whole keyboard is answered from one place.
 ACTIONS = {
     "resume": "action_resume", "message": "action_message", "reply": "action_reply",
     "message_buffer": "action_message_buffer", "message_work": "action_message_work",
@@ -101,7 +101,7 @@ ACTIONS = {
     "pool_rounds_down": "action_pool_rounds_down", "wider": "action_wider", "narrower": "action_narrower",
     "list_shorter": "action_list_shorter", "list_taller": "action_list_taller", "list_auto": "action_list_auto",
     "clear_filter": "action_clear_filter", "metrics": "action_metrics", "exchange": "action_exchange",
-    "spend": "action_spend",                                   # $ toggles; served above, where it can close again
+    "spend": "action_spend",                                   # $ toggles: served in dispatch(), which can close
     "new_session": "action_new_session", "end_session": "action_end_session", "start": "action_start",
     # the two names this protocol answered before the whole keyboard was wired up, kept for its first client
     "new": "action_new_session", "end": "action_end_session",
@@ -111,15 +111,17 @@ ALIASES = {"gpu": "action_metrics", "pool": "action_pool_panel"}
 # an action that does something to the session under the highlight, so with nothing highlighted it can only say no
 NEEDS_SELECTION = frozenset({"resume", "message", "reply", "message_buffer", "message_work", "misplace_move",
                              "misplace_keep", "misplace_drop", "mark_viewed", "retire", "exchange"})
-# `new`, `start` and `end` are answered above, where they can carry the fresh state back with them, so they are not
-# listed here even though the keyboard has those three actions too.
+# the two of those that answer from a workstream header as well, the way `m` and `W` do on the keyboard
+WORKSTREAM_OK = frozenset({"message", "message_work"})
 
 
-def has_target(app: "CtxApp") -> bool:
-    """Whether a command that acts on the highlighted row has one to act on. A workstream header (a `w` group's
-    line) answers the same commands as a session, so it counts too; the actions' own guard is `_selected_session`,
-    which sees only sessions — this is the same reach, widened where the row itself is the thing."""
-    return app._selected_session() is not None or str(app.selected or "").startswith("ws:")
+def has_target(app: "CtxApp", cmd: str) -> bool:
+    """Whether a command that acts on the highlighted row has one to act on. The actions' own guard is
+    `_selected_session`, which sees only sessions. `m` and `W` widen it themselves to a workstream header (a `w`
+    group's line) — that is what those two keys act on when the highlight sits there — so a header counts for them
+    and for nobody else."""
+    return (app._selected_session() is not None
+            or (cmd in WORKSTREAM_OK and str(app.selected or "").startswith("ws:")))
 
 
 def panels_of(app: "CtxApp") -> dict:
@@ -342,7 +344,7 @@ class ControlServer:
             return {"ok": True, "state": board_state(app)}
         action = ALIASES.get(cmd) or ACTIONS.get(cmd)
         if action is not None:
-            if cmd in NEEDS_SELECTION and not has_target(app):
+            if cmd in NEEDS_SELECTION and not has_target(app, cmd):
                 return {"ok": False, "error": "nothing selected"}
             getattr(app, action)()
             return {"ok": True, "state": board_state(app)}

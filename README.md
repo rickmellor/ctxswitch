@@ -388,12 +388,14 @@ the keys and closes the deck.
 | Key | Does | While the board is asking (picker / start) | While a confirm is up |
 |---|---|---|---|
 | 1–5 (top row) | open session slot 1–5 (as `Alt+1`…`Alt+5`): the number, its title, a white bar along the top if it's in the main pane and along the bottom if it's the highlighted row, and a dot for busy / **waiting** / idle / shell / ended | option 1–5 | nothing |
-| 6–10 | blank, reserved | blank | blank |
+| `gpu` `pool` `spend` `exchange` `detach` (middle row) | `g` / `P` / `$` / `x` / `q`. The two panels and the spend screen stay lit while they are up — blue with a white bar along the bottom — and `detach` wears `kill`'s red | cancel | cancel |
 | ▲ / ▼ | move the highlight up / down, and open the highlighted row if held 0.6 s before release | cancel | cancel |
 | `restart` / `new` | `s` / `n` | cancel | cancel |
 | `kill` | `k`, which asks the board to confirm | cancel | **KILL ✓** (the key beside it is cancel) |
 
 With the board unreachable every key goes black except the centre one, which says `no board` and retries every 2 s.
+While the spend screen is up every key is cancel except `spend` itself, which is lit and closes it again; while the
+board's text box has focus (`/`, `m`, `a`) the bottom two rows say `type on the board` and send nothing.
 
 ## 5. Opening and closing sessions
 - **Sessions started by hand inside the ctx tmux session** are found automatically (by matching the agent's pid
@@ -454,8 +456,9 @@ With the board unreachable every key goes black except the centre one, which say
 (`~/.local/state/ctxswitch/board.sock`, env `CTXSWITCH_BOARD_SOCK`, mode 0600) so another program — a Stream Deck
 daemon, say — can switch to session N, move the highlight, open new/start/end, answer their modals, and mirror the
 numbered row list as it changes. Only the board knows the row numbers and which session is in the main pane, so the
-endpoint lives there. The protocol, and how to point a client at it, is in [docs/board-control.md](docs/board-control.md).
-A board that can't bind one logs it and runs normally without it.
+endpoint lives there. Beyond those, one command per key on the board — by its action's name — so a client can drive
+the whole keyboard, not only the rows. The protocol, and how to point a client at it, is in
+[docs/board-control.md](docs/board-control.md). A board that can't bind one logs it and runs normally without it.
 
 ### Shell sessions
 - **`n` → shell** (the last choice on its list) opens a plain bash in the left pane, in a directory you pick (default:

@@ -22,12 +22,60 @@ Every request is `{"cmd": "<name>", ...}`; an optional `"id"` (any JSON value) i
 | `end` | | same as `k` (`action_end_session`): opens the y/n Confirm |
 | `pick` | `n` 1..9 | while a Picker or StartScreen is on top: choose option n, as pressing that digit does |
 | `confirm` | `yes` bool | while a Confirm is on top: answer it |
-| `cancel` | | dismiss the top modal (Picker / StartScreen / Confirm) as Esc / "no" does; `ok` even if none is open |
+| `cancel` | | dismiss what is on top — the Picker / StartScreen / Confirm / Spend screen, or the board's text box — as Esc / "no" does; `ok` even if none is open |
+| `gpu` | | `g`: the CPU/GPU panel on or off (also `metrics`) |
+| `pool` | | `P`: this machine's local-pool panel on or off (also `pool_panel`) |
+| `spend` | | `$`: the spend screen. A toggle — while it is the top screen this closes it, anywhere else it opens one |
+| `exchange` | | `x`: send the selected session elsewhere (opens a Picker, which `pick` / `cancel` then drive). Needs a selected session |
+| `detach` | | `q`: inside tmux detach (everything keeps running); outside it, quit the board |
+
+## Other board keys
+
+Every remaining key on the board has a command named after its action (`CtxApp.BINDINGS`, the `action_` prefix
+dropped), so this table is the whole keyboard map read another way. Each runs that action on the app's loop and
+replies `{"ok": true, "state": {…}}`; what it does is what the key does, including any prompt or notice it raises.
+The commands in the first table cover the rest of the keyboard: `new` (`n`), `start` (`s`), `end` (`k`), `slot` /
+`select` (`Alt+N` / a digit) and the five above.
+
+| key | cmd | does |
+|---|---|---|
+| `Enter` | `resume` | open the highlighted row: swap it in, resume it, or say why not |
+| `m` | `message` | message it: the text box comes up (`modal` becomes `"input"`), Enter sends, Esc / `cancel` drops it |
+| `a` | `reply` | answer the question it is waiting on, same box |
+| `M` | `message_buffer` | send it the tmux paste buffer, after a y |
+| `W` | `message_work` | message its workstream: whichever session is, or next is, live on it |
+| `t` | `misplace_move` | a prompt marked ↯: move it where it looks like it belongs, after a y |
+| `o` | `misplace_keep` | keep the ↯ prompt where it is (nothing is sent) |
+| `d` | `misplace_drop` | drop the ↯ prompt (the agent gets Escape and a disregard message) |
+| `Q` | `kill_all` | end the tmux session and every agent in it, after a y |
+| `h` | `cycle_host` | host filter: this host → all → each other host |
+| `/` | `filter` | filter by text: the box comes up with what is filtered now |
+| `e` | `toggle_ended` | show or hide ended sessions |
+| `v` | `mark_viewed` | mark the highlighted session viewed |
+| `w` | `toggle_ws` | group the list by workstream, or back to a flat list |
+| `r` | `refresh` | refresh now (and re-read the pool panel while it is shown) |
+| `p` | `toggle_popups` | pop-ups off / on for this run |
+| `i` | `retire` | retire one of YOUR INSTRUCTIONS: the box comes up asking which |
+| `?` | `help` | help, filling the pane (Esc closes it; it is not a modal a client drives) |
+| `G` | `metrics_host` | pick which hosts the CPU/GPU panel stacks (opens a Picker) |
+| `T` | `pool_review` | the pool panel: review on, or off |
+| `R` | `pool_reviewer` | the pool panel: the next verified reviewer |
+| `+` / `-` | `pool_rounds_up` / `pool_rounds_down` | the pool panel: one review round more / fewer, 1–5 |
+| `<` / `>` | `wider` / `narrower` | the board 5 columns wider / narrower (inside ctx tmux) |
+| `[` / `]` | `list_shorter` / `list_taller` | the session list one line shorter / taller |
+| `\` | `list_auto` | the list's height back to automatic |
+| `Esc` | `clear_filter` | clear the text filter, or drop out of the box, and give the table focus |
+
+Commands that act on the highlighted row — `resume`, `message`, `reply`, `message_buffer`, `message_work`,
+`misplace_move`, `misplace_keep`, `misplace_drop`, `mark_viewed`, `retire`, `exchange` — answer
+`{"ok": false, "error": "nothing selected"}` when nothing is. Two of them, `message` and `message_work`, take a
+workstream header (`w`) for a row as well: that is what those keys do on one.
 
 ## Replies (board → client)
 
 `{"ok": true, "id": <echoed>, ...}` or `{"ok": false, "id": <echoed>, "error": "<short reason>"}`.
-Errors (exact strings): `"no such slot"`, `"no picker open"`, `"no confirm open"`, `"unknown cmd"`, `"bad request"`.
+Errors (exact strings): `"no such slot"`, `"no picker open"`, `"no confirm open"`, `"nothing selected"`,
+`"unknown cmd"`, `"bad request"`.
 Requests are executed on the Textual event loop (`app.call_from_thread` or an asyncio server on the app loop) and
 the reply is sent after the action has run.
 
@@ -44,7 +92,8 @@ the reply is sent after the action has run.
   "visible_key": "laptop/claude/abc",
   "selected_key": "laptop/claude/def",
   "modal": null,
-  "options": []
+  "options": [],
+  "panels": {"gpu": false, "pool": false}
 }
 ```
 
@@ -52,7 +101,11 @@ the reply is sent after the action has run.
   is `pool_jobs` on the parent. `n` is the number drawn on the board (1..SLOTS). `state` is
   `fmt.session_state()`: `busy | waiting | idle | shell | unknown | ended`. `visible` = this session is in the main
   pane (`▶`), `selected` = the highlighted row. `title` = `fmt.display_title`, `harness` = `fmt.harness_label`.
-- `modal`: `null | "picker" | "start" | "confirm" | "input"` — what is on top of the screen stack (`"input"` = the
-  board's text Input has focus: `/`, `m`, `a` or a directory prompt).
+- `modal`: `null | "picker" | "start" | "confirm" | "spend" | "input"` — what is on top of the screen stack
+  (`"input"` = the board's text Input has focus: `/`, `m`, `a` or a directory prompt). `cancel` closes any of them,
+  the Spend screen included.
 - `options`: when `modal` is `picker` or `start`, `[{"n": 1, "label": "claude (max)"}, ...]` for the numbered
   choices a `pick` accepts; otherwise `[]`. For `confirm`, `prompt` carries the question text.
+- `panels`: the two panels a key shows and hides — `gpu` is `g`'s CPU/GPU panel (`action_metrics`), `pool` is `P`'s
+  local-pool panel (`action_pool_panel`). Both bool, and they follow the key: a client that lights a key while its
+  panel is up can ask the board whether it is.
