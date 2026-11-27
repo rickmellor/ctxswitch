@@ -436,6 +436,63 @@ async def test_a_pick_when_no_picker_is_open_says_so(monkeypatch, tmp_path):
         await pilot.pause(1)
         assert app.control.dispatch({"cmd": "pick", "n": 1}) == {"ok": False, "error": "no picker open"}
         assert app.control.dispatch({"cmd": "cancel"})["ok"]             # ok even with nothing to dismiss
+        assert app.control.dispatch({"cmd": "submit"}) == {"ok": False, "error": "no input open"}
+        assert board_state(app)["input_text"] is None and board_state(app)["input_prompt"] is None
+
+
+async def test_submit_presses_enter_in_the_directory_prompt_the_keyboard_would(monkeypatch, tmp_path):
+    """n's last step is the board's Input, pre-filled with where the new session would go: `submit` is that Enter,
+    and it must start the same session the key does — the same call, with the same directory."""
+    started: list = []
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    monkeypatch.setattr(tui, "new_session_options", lambda cfg, which=None: OPTS)
+    monkeypatch.setattr(tui.CtxApp, "start_agent",
+                        lambda self, harness, cwd, profile=None, first="": started.append((harness, cwd, profile)))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        app.control.dispatch({"cmd": "new"})
+        await pilot.pause(0.2)
+        app.control.dispatch({"cmd": "pick", "n": 1})                    # claude · bedrock: the directory is next
+        await _wait(pilot, "the directory prompt", lambda: board_state(app)["modal"] == "input")
+        st = board_state(app)
+        assert st["input_text"] == "/r/webapp"                           # the selected session's directory
+        assert "directory" in st["input_prompt"] and "enter to start" in st["input_prompt"]
+        assert app.control.dispatch({"cmd": "submit"})["ok"] is True
+        await pilot.pause(0.3)
+        assert started == [("claude", "/r/webapp", "bedrock")]           # what Enter in the box would have done
+        assert board_state(app)["modal"] is None                         # and the box is gone, as pressing Enter hides it
+        assert board_state(app)["input_text"] is None and board_state(app)["input_prompt"] is None
+        assert app.control.dispatch({"cmd": "submit"}) == {"ok": False, "error": "no input open"}
+        started.clear()
+        app.control.dispatch({"cmd": "new"})                             # the same prompt again, closed with the key
+        await pilot.pause(0.2)
+        app.control.dispatch({"cmd": "pick", "n": 1})
+        await _wait(pilot, "the directory prompt", lambda: board_state(app)["modal"] == "input")
+        await pilot.press("enter"); await pilot.pause(0.3)
+        assert started == [("claude", "/r/webapp", "bedrock")], "submit and Enter must start the same thing"
+
+
+async def test_submit_waits_for_the_box_rather_than_answering_a_screen_above_it(monkeypatch, tmp_path):
+    """A y/n on top is what Enter belongs to; the box behind it is not to be submitted from under it."""
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    sent: list = []
+    monkeypatch.setattr(tui.CtxApp, "send_message", lambda self, key, text, ask=None: sent.append((key, text)))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        app._show_input(f"msg:{S[0]}", "message to it, enter to send", "hello")
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] == "input" and board_state(app)["input_text"] == "hello"
+        assert "message to it" in board_state(app)["input_prompt"]
+        app.push_screen(tui.Confirm("end it?"), lambda r: None)
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] == "confirm" and board_state(app)["input_text"] is None
+        assert app.control.dispatch({"cmd": "submit"}) == {"ok": False, "error": "no input open"}
+        assert sent == []
+        app.pop_screen(); await pilot.pause(0.2)                         # now the box is on top again
+        assert board_state(app)["modal"] == "input" and board_state(app)["input_text"] == "hello"
+        assert app.control.dispatch({"cmd": "submit"})["ok"] is True     # its own submit path: send what is typed
+        await pilot.pause(0.3)
+        assert sent == [(S[0], "hello")] and board_state(app)["modal"] is None   # and the box is closed, as Enter
 
 
 async def test_the_keyboard_through_the_methods_behaves_as_it_always_did(monkeypatch, tmp_path):

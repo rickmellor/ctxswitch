@@ -57,6 +57,41 @@ def input_focused(app: "CtxApp") -> bool:
     return bool(box.display and box.has_focus) or app.input_mode != "filter"
 
 
+def input_of(app: "CtxApp"):
+    """The board's text Input, or None on a board that hasn't composed one yet."""
+    try:
+        return app.query_one("#filter")
+    except Exception:                                    # noqa: BLE001 - not composed yet
+        return None
+
+
+def submit_input(app: "CtxApp") -> bool:
+    """Enter, pressed in the board's text Input: the same message the keyboard posts, with the text it holds now.
+    Only when that Input is what is on top (state's `"input"` modal) — a screen above it answers its own keys.
+    False when none is open, which is what the `submit` command says rather than doing nothing."""
+    if modal_of(app) != "input":
+        return False
+    box = input_of(app)
+    if box is None:
+        return False
+    app.on_input_submitted(type(box).Submitted(box, box.value))
+    return True
+
+
+def input_text_of(app: "CtxApp"):
+    """What `submit` would send: the Input's text while one is open, null otherwise. Both it and
+    ``input_prompt_of`` are null exactly when `submit` would say "no input open", so a client can show what it would
+    accept and know when it can't."""
+    return input_of(app).value if modal_of(app) == "input" else None
+
+
+def input_prompt_of(app: "CtxApp"):
+    """What the open Input asks for, as it says in its own placeholder (null with none, or with no Input open): what
+    a client shows beside the text so the operator knows what Enter would accept."""
+    box = input_of(app)
+    return None if (box is None or not input_focused(app)) else (str(box.placeholder or "") or None)
+
+
 def modal_of(app: "CtxApp") -> str | None:
     """What's on top of the screen stack, as state names it: picker / start / confirm / spend / deck_settings /
     input, or None."""
@@ -159,7 +194,8 @@ def board_state(app: "CtxApp") -> dict:
                      "selected": key == app.selected, "pool_jobs": kids.get(key, 0)})
     out = {"proto": PROTO, "rows": rows, "slots": slots, "visible_key": app.visible_key,
            "selected_key": app.selected, "modal": modal_of(app), "options": options_of(app),
-           "panels": panels_of(app), "settings": deck_settings.load_settings(deck_settings.FILE)}
+           "panels": panels_of(app), "settings": deck_settings.load_settings(deck_settings.FILE),
+           "input_text": input_text_of(app), "input_prompt": input_prompt_of(app)}
     if out["modal"] == "confirm":
         out["prompt"] = prompt_of(app)
     return out
@@ -334,6 +370,9 @@ class ControlServer:
                 return {"ok": False, "error": "no confirm open"}
             top.answer(bool(req.get("yes")))
             return {"ok": True, "state": board_state(app)}
+        if cmd == "submit":                            # Enter inside the board's Input, on its current text
+            return ({"ok": True, "state": board_state(app)} if submit_input(app)
+                    else {"ok": False, "error": "no input open"})
         if cmd == "cancel":
             if modal_of(app) == "input":               # Esc out of the box: what the Esc binding itself does
                 app.action_clear_filter()

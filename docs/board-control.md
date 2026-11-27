@@ -28,6 +28,7 @@ Every request is `{"cmd": "<name>", ...}`; an optional `"id"` (any JSON value) i
 | `spend` | | `$`: the spend screen. A toggle — while it is the top screen this closes it, anywhere else it opens one |
 | `deck_settings` | | `D`: the Stream Deck's settings screen. A toggle, the same way `spend` is |
 | `deck_set` | any of `top_row` / `brightness` / `animations` | one or more of the deck's settings, validated by the same rules the settings file has (see `docs/deck-settings.md`): `top_row` `"pages"` or `"scroll"`, `brightness` an int 10..100, `animations` a bool. Saves what is valid and replies `{"ok": true, "settings": {…}, "state": {…}}` with the whole set as it now stands; one bad value saves nothing and replies `{"ok": false, "error": "bad setting"}`. Works with or without the screen up, and re-renders it when it is |
+| `submit` | | Enter inside the board's text Input, on the text it holds now: the directory prompt after `n`, or what `/`, `m`, `a`, `W` or `i` brought up. Same handler the keyboard's Enter runs, so it starts / sends / filters exactly as typing and pressing Enter does. Needs the Input on top (`modal` `"input"`); otherwise `{"ok": false, "error": "no input open"}`. `input_text` and `input_prompt` in `state` say what it would accept |
 | `exchange` | | `x`: send the selected session elsewhere (opens a Picker, which `pick` / `cancel` then drive). Needs a selected session |
 | `detach` | | `q`: inside tmux detach (everything keeps running); outside it, quit the board |
 
@@ -77,8 +78,8 @@ workstream header (`w`) for a row as well: that is what those keys do on one.
 ## Replies (board → client)
 
 `{"ok": true, "id": <echoed>, ...}` or `{"ok": false, "id": <echoed>, "error": "<short reason>"}`.
-Errors (exact strings): `"no such slot"`, `"no picker open"`, `"no confirm open"`, `"nothing selected"`,
-`"unknown cmd"`, `"bad request"`.
+Errors (exact strings): `"no such slot"`, `"no picker open"`, `"no confirm open"`, `"no input open"`,
+`"nothing selected"`, `"unknown cmd"`, `"bad request"`.
 Requests are executed on the Textual event loop (`app.call_from_thread` or an asyncio server on the app loop) and
 the reply is sent after the action has run.
 
@@ -97,7 +98,9 @@ the reply is sent after the action has run.
   "modal": null,
   "options": [],
   "panels": {"gpu": false, "pool": false},
-  "settings": {"top_row": "pages", "brightness": 60, "animations": true}
+  "settings": {"top_row": "pages", "brightness": 60, "animations": true},
+  "input_text": null,
+  "input_prompt": null
 }
 ```
 
@@ -117,3 +120,6 @@ the reply is sent after the action has run.
 - `settings`: the Stream Deck's settings as the settings file has them (defaults filled, values checked), so a client
   can read them without touching the file — `deck_set` is how it changes them. Read off the file each time, so it is
   current even when something else wrote it.
+- `input_text` / `input_prompt`: what `submit` would send, and what the board's Input says it is asking for (its
+  placeholder, e.g. "directory for the new claude · max session, enter to start"). Both null when there is no Input
+  open to submit — that is the same moment `submit` answers `"no input open"`.
