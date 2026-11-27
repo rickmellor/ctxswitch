@@ -3,7 +3,7 @@
 The board (`ctx tui`) listens on a unix socket (PROTOCOL.md: NDJSON, one object per line). This talks that protocol
 and paints the 15 keys of a Stream Deck MK.2 with what the board is showing: five session slots; the middle row's
 `gpu` `pool` `spend` `exchange` `detach`, the two panels and the spend screen lit while they are up; and ▲▼ to move
-the highlight (hold one and it opens the row it landed on), `restart`, `new` and `kill` — the last of which makes the
+the highlight, `restart`, `new` and `kill` — the last of which makes the
 board ask, so the key becomes KILL ✓ / cancel. While a modal is up the middle row is cancel with the bottom one, the
 two exceptions being `spend` while the spend screen is showing, which closes it, and the Start screen, whose own
 cursor, marks and Enter are worth five keys of their own — ▲▼ over its recent rows, `select` to mark one, `cancel`,
@@ -51,7 +51,6 @@ KEY_W = 72                         # an MK.2 key, in pixels: what a label is fit
 KEY_H = 72                         # …and how tall it is, which is what an animation moves along
 ROW2 = 5                           # the middle row's first key: keys 5…9 are the board's panels and its exits
 ROW2_CMDS = ("gpu", "pool", "spend", "exchange", "detach")     # what each of those keys is, and what it sends
-HOLD_MS = 600                      # ▲/▼ held this long opens the highlighted row on release
 RECONNECT_S = 2.0                  # how often to retry the board while it is unreachable
 HEARTBEAT_S = 20.0                 # `ctx deck` runs for hours: one line of proof it's still awake, every 20 s
 FPS = 20                           # the animation clock: measured on the device, a full board repaint fits in one
@@ -513,19 +512,6 @@ class Layout:
             return [{"cmd": "end"}]
         return []
 
-    def on_release(self, state: dict | None, key: int, held_ms: float) -> list[dict]:
-        """The requests to send when key ``key`` comes up after ``held_ms`` milliseconds. Only a ▲▼ held past
-        HOLD_MS does anything: it opens the row the highlight is on now — the press already moved it, so this is
-        where the press left it. Read off the state as it stands at release, which may be later than the press."""
-        if key not in (10, 11) or state is None or held_ms < HOLD_MS:
-            return []
-        if state.get("modal"):
-            return []
-        for i, r in enumerate(state.get("rows") or []):
-            if r.get("selected"):
-                return [{"cmd": "slot", "n": r.get("n", i + 1)}]     # the row's own position, whatever page shows it
-        return []
-
 
 def _title(text) -> str:
     """One board title as key text: on one line, shortened with an ellipsis when it won't fit."""
@@ -897,9 +883,7 @@ class DeckApp:
         self.loop: asyncio.AbstractEventLoop | None = None
         self._timers: list[asyncio.Task] = []
         self._last_paint = 0.0
-        self._down: dict[int, float] = {}       # when each key went down, so a release can be timed
-        self.clock = clock                                      # the animation's clock, and how a key's hold
-        #                                                       is timed: a test may hand its own
+        self.clock = clock                                      # the animation's clock: a test may hand its own
         self._last_visible: str | None = None   # the visible_key of the state before this one: a switch is off it
         self._had_state = False                 # …and whether there was one at all: the first state is not a switch
         self._paint_times: list[float] = []     # when each repaint went out, so the heartbeat can count the last 20 s
@@ -1087,19 +1071,14 @@ class DeckApp:
         self.refresh(state)
 
     def _key(self, deck, key: int, pressed: bool) -> None:
-        """The device's own callback, on its own thread: ask the layout, send what it says. A press goes at once; a
-        release only matters for a key this remembers going down, and only for as long as it was held."""
+        """The device's own callback, on its own thread: ask the layout, send what it says. Only a press does
+        anything: a key coming back up sends nothing at all."""
+        if not pressed:
+            return
         now = self.clock()
         state = self.board.state
-        if pressed:
-            self._down[key] = now
-            reqs = self.layout.on_press(state, key, self.page, self.mode, self.offset)
-            self._armed(key, state, reqs, now)
-        else:
-            t0 = self._down.pop(key, None)
-            if t0 is None:
-                return                                          # a release with no press behind it: nothing was held
-            reqs = self.layout.on_release(state, key, (now - t0) * 1000)
+        reqs = self.layout.on_press(state, key, self.page, self.mode, self.offset)
+        self._armed(key, state, reqs, now)
         self._send(key, reqs)
 
     def _armed(self, key: int, state: dict | None, reqs: list[dict], now: float) -> None:
@@ -1222,10 +1201,6 @@ class DeckApp:
     def press(self, key: int) -> None:
         """A key going down, for a hand-driven fake deck."""
         self._key(self.deck, key, True)
-
-    def release(self, key: int) -> None:
-        """The same key coming back up, for a hand-driven fake deck."""
-        self._key(self.deck, key, False)
 
 
 def _request(board, cmd: str | None, fields: dict, loop, log=print) -> dict | None:

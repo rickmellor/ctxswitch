@@ -396,15 +396,14 @@ running. A `--brightness` said on the command line wins over the file for that r
 It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board, and takes `--brightness 0-100` (the
 file's, 60 until the board's D screen says otherwise),
 `--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
-drawing them, to try the wiring by hand). ▲▼ move the highlight the moment you press them; hold one for 0.6 s before
-letting go and it opens the row the highlight ends up on, so one key both walks the list and enters it. Ctrl-C resets
-the keys and closes the deck.
+drawing them, to try the wiring by hand). ▲▼ move the highlight the moment you press them. Ctrl-C resets the keys and
+closes the deck.
 
 | Key | Does | While the board is asking (picker) | While a confirm is up |
 |---|---|---|---|
 | 1–5 (top row) | open the session the key is showing (as `Alt+1`…`Alt+5`): the row's number, its title, a white bar along the top if it's in the main pane and along the bottom if it's the highlighted row, and a dot for busy / **waiting** / idle / shell / ended. Past five sessions the outer keys become `◀` / `▶` and page the rows | option 1–5 | nothing |
 | `gpu` `pool` `spend` `exchange` `detach` (middle row) | `g` / `P` / `$` / `x` / `q`. The two panels and the spend screen stay lit while they are up — blue with a white bar along the bottom — and `detach` wears `kill`'s red | cancel | cancel |
-| ▲ / ▼ | move the highlight up / down, and open the highlighted row if held 0.6 s before release | cancel | cancel |
+| ▲ / ▼ | move the highlight up / down | cancel | cancel |
 | `restart` / `new` | `s` / `n` | cancel | cancel |
 | `kill` | `k`, which asks the board to confirm | cancel | **KILL ✓** (the key beside it is cancel) |
 
@@ -416,7 +415,7 @@ to run while the screen has the pane.
 |---|---|---|
 | 1–5 (top row) | `pick` — the profile that digit starts, as the picker's keys do | the option's number and label |
 | `gpu` `pool` `spend` `exchange` `detach` (middle row) | nothing at all | black |
-| ▲ / ▼ | `move -1` / `move +1`: the screen's cursor, one recent up / down (holding one sends nothing on release) | ▲ / ▼ |
+| ▲ / ▼ | `move -1` / `move +1`: the screen's cursor, one recent up / down | ▲ / ▼ |
 | `select` | `mark`: Space — mark or unmark the recent the cursor is on, so `enter` can bring several back at once | `select`, on the lit blue while the cursor's row is marked |
 | `cancel` | `cancel`: the screen's Esc | cancel |
 | `enter` | `submit`: Enter — resume what's marked, or the cursor's row when none are | `enter`, dim when nothing has ended |

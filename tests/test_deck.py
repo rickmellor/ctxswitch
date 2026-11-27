@@ -1,7 +1,6 @@
 """`ctx deck`: the board's table as fifteen keys.
 
-The layout is tested as pure data (`Layout.plan` / `Layout.on_press` / `Layout.on_release` — no Pillow, no device,
-no board), the drawing
+The layout is tested as pure data (`Layout.plan` / `Layout.on_press` — no Pillow, no device, no board), the drawing
 as bytes off a fake deck, and the wire against a fake board: a real `asyncio.start_unix_server` that speaks
 PROTOCOL.md, so the client is tested on the contract the board's own job implements.
 """
@@ -627,14 +626,6 @@ def test_the_start_screen_keys_send_the_same_with_no_start_state():
         assert L.on_press(start_mode_state(start=None), key) == [], f"key {key}"
 
 
-def test_a_held_arrow_on_the_start_screen_does_not_open_a_row():
-    """▲▼ held past the threshold opens the highlighted row on a normal board; under the Start screen the highlight
-    never moved, so a release there sends nothing beyond the move the press already sent."""
-    L = Layout()
-    for key in (10, 11):
-        assert L.on_release(start_mode_state(), key, 900) == []
-
-
 def test_the_spend_key_toggles_and_the_others_cancel():
     """On the spend screen the middle row is nine ways out and one of them is the key that is already lit: key 7
     sends `spend` again, which is what closes it."""
@@ -648,34 +639,6 @@ def test_the_spend_key_toggles_and_the_others_cancel():
 
 def test_a_key_outside_the_deck_sends_nothing():
     assert Layout().on_press(board_state(), 15) == [] and Layout().on_press(board_state(), -1) == []
-
-
-# --------------------------------------------------------------------------------------- what a held key releases
-
-
-def test_an_arrow_held_past_the_threshold_opens_the_highlighted_row():
-    """▲▼ press as they always did; hold one long enough and letting go opens the row the highlight landed on."""
-    L = Layout()
-    third = board_state(rows=[row(1), row(2), row(3, selected=True)])
-    assert L.on_release(third, 11, deck.HOLD_MS) == [{"cmd": "slot", "n": 3}], "held exactly long enough should open"
-    assert L.on_release(third, 11, 700) == [{"cmd": "slot", "n": 3}]
-    assert L.on_release(third, 10, 700) == [{"cmd": "slot", "n": 3}], "▲ held opens it the same way"
-    assert L.on_release(third, 11, 300) == [], "letting go early is only the move the press already sent"
-    assert L.on_release(third, 11, deck.HOLD_MS - 1) == [], "the threshold itself, to the millisecond"
-
-
-def test_a_release_with_nothing_to_open_sends_nothing():
-    L = Layout()
-    assert L.on_release(board_state(), 11, 900) == [], "no row is highlighted, so there is nothing to open"
-    assert L.on_release(None, 11, 900) == [], "with no board there is nothing to open"
-    picker = board_state(modal="picker", options=[{"n": 3, "label": "pi"}])
-    assert L.on_release(picker, 11, 900) == [], "a held arrow still only cancels a picker"
-    assert L.on_release(picker, 10, 900) == []
-    assert L.on_release(board_state(rows=[row(1, selected=True)]), 2, 900) == [], "a slot key held does nothing"
-    assert L.on_release(board_state(rows=[row(1, selected=True)]), 14, 900) == [], "nor does end"
-    assert L.on_release(board_state(modal="confirm"), 11, 900) == []
-    assert L.on_release(board_state(modal="input"), 11, 900) == []
-    assert L.on_release(board_state(rows=[row(1, selected=True)]), 11, 0) == []
 
 
 # --------------------------------------------------------------------------------------------------- drawing
@@ -1000,47 +963,8 @@ async def test_a_press_becomes_a_request():
         d.cb(d, 2, True)
         assert b.seen == [{"cmd": "slot", "n": 3}]
         d.cb(d, 11, True)
-        d.cb(d, 13, False)                                    # a release is nothing until a key is held down
+        d.cb(d, 13, False)                                    # a key coming back up sends nothing at all
         assert b.seen == [{"cmd": "slot", "n": 3}, {"cmd": "move", "delta": 1}]
-    finally:
-        await app.stop()
-
-
-async def test_an_arrow_held_opens_the_row_it_left_the_highlight_on():
-    """The app's side of the long press: ▼ moves at once, and letting go after HOLD_MS opens the highlighted row —
-    read off the state as it stands at release, which is where the move left it. A quick tap sends only the move."""
-    clock = {"t": 1000.0}
-
-    class Held(FakeBoardSync):
-        """A board a test can advance the clock on and push a state through, as the real one does over the socket."""
-
-        def push(self, state: dict) -> None:
-            self.state = state
-            self.cb(state)
-
-    d, b = FakeDeck(), Held()
-    app = DeckApp(d, b, fps=0.0, log=lambda m: None, clock=lambda: clock["t"])
-    app.start()
-    try:
-        d.cb(d, 11, True)                                       # ▼ down: the move goes now
-        assert b.seen == [{"cmd": "move", "delta": 1}], b.seen
-        b.push(board_state(rows=[row(1), row(2), row(3, selected=True)]))   # the board's own move, come back
-        clock["t"] += 0.7                                       # held 700 ms, past the 600 ms threshold
-        d.cb(d, 11, False)
-        assert [r["cmd"] for r in b.seen] == ["move", "slot"], "a hold sends the move, then the slot it landed on"
-        assert b.seen[-1] == {"cmd": "slot", "n": 3}, b.seen
-
-        b.seen.clear()
-        d.cb(d, 10, True)
-        d.cb(d, 10, False)                                      # up again at once: nothing held, nothing sent
-        assert b.seen == [{"cmd": "move", "delta": -1}], b.seen
-
-        b.seen.clear()
-        clock["t"] += 2.0
-        d.cb(d, 2, True)
-        clock["t"] += 2.0
-        d.cb(d, 2, False)                                       # a slot key held out is still just its press
-        assert b.seen == [{"cmd": "slot", "n": 3}], b.seen
     finally:
         await app.stop()
 
