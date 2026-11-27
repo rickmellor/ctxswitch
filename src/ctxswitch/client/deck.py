@@ -174,9 +174,7 @@ class Layout:
     def _typing(self, state: dict) -> dict[int, KeyFace]:
         """The board's text Input has focus (`/`, `m`, `a`, a directory prompt): no key here can help, so say so."""
         faces = self._normal(state, blink=False)
-        for i in (10, 11, 12, 13, 14):
-            faces[i] = KeyFace(bg=ACTION_BG, lines=("type on\nthe board",))
-        for i in range(ROW2, ROW2 + COLS):
+        for i in range(ROW2, KEY_COUNT):
             faces[i] = KeyFace(bg=ACTION_BG, lines=("type on\nthe board",))
         return faces
 
