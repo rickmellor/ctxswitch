@@ -2,7 +2,8 @@
 
 The board (`ctx tui`) listens on a unix socket (PROTOCOL.md: NDJSON, one object per line). This talks that protocol
 and paints the 15 keys of a Stream Deck MK.2 with what the board is showing: five session slots, ▲▼ to move the
-highlight, `start`, `new` and `end` — the last of which makes the board ask, so the key becomes END ✓ / cancel.
+highlight (hold one and it opens the row it landed on), `restart`, `new` and `kill` — the last of which makes the
+board ask, so the key becomes KILL ✓ / cancel.
 
 Everything that decides *what a key looks like* or *what a press sends* lives in `Layout`, which needs neither
 Pillow, nor a device, nor a board — so that is the part the tests read. `render` and `DeckApp` only carry it out.
@@ -22,6 +23,7 @@ from pathlib import Path
 COLS = 5
 ROWS = 3
 KEY_COUNT = COLS * ROWS
+HOLD_MS = 600                      # ▲/▼ held this long opens the highlighted row on release
 RECONNECT_S = 2.0                  # how often to retry the board while it is unreachable
 BLINK_S = 0.5                      # waiting sessions flash: how often the phase flips
 HEARTBEAT_S = 20.0                 # `ctx deck` runs for hours: one line of proof it's still awake, every 20 s
@@ -34,7 +36,7 @@ DIM_GREY = "#3a3a3c"               # the text of a key the board says nothing ab
 ARROW_BG = "#444444"
 ACTION_BG = "#333333"
 END_BG = "#5a1a1a"
-CONFIRM_BG = "#d62728"             # the END ✓ key, while a confirm is up
+CONFIRM_BG = "#d62728"             # the KILL ✓ key, while a confirm is up
 OPTION_BG = "#2b2b2b"
 BLACK = "#000000"
 WHITE = "#ffffff"
@@ -110,9 +112,9 @@ class Layout:
             faces[i] = KeyFace()                                    # reserved
         faces[10] = KeyFace(bg=ARROW_BG, lines=("▲",))
         faces[11] = KeyFace(bg=ARROW_BG, lines=("▼",))
-        faces[12] = KeyFace(bg=ACTION_BG, lines=("start",))
+        faces[12] = KeyFace(bg=ACTION_BG, lines=("restart",))
         faces[13] = KeyFace(bg=ACTION_BG, lines=("new",))
-        faces[14] = KeyFace(bg=END_BG, lines=("end",))
+        faces[14] = KeyFace(bg=END_BG, lines=("kill",))
         return faces
 
     def _picker(self, state: dict) -> dict[int, KeyFace]:
@@ -132,7 +134,7 @@ class Layout:
         faces = {i: KeyFace() for i in range(10)}
         for i in (10, 11, 12, 13):
             faces[i] = KeyFace(bg=ACTION_BG, lines=("cancel",))
-        faces[14] = KeyFace(bg=CONFIRM_BG, lines=("END", "✓"))
+        faces[14] = KeyFace(bg=CONFIRM_BG, lines=("KILL", "✓"))
         return faces
 
     def _typing(self, state: dict) -> dict[int, KeyFace]:
@@ -170,6 +172,19 @@ class Layout:
             return [{"cmd": "new"}]
         if key == 14:
             return [{"cmd": "end"}]
+        return []
+
+    def on_release(self, state: dict | None, key: int, held_ms: float) -> list[dict]:
+        """The requests to send when key ``key`` comes up after ``held_ms`` milliseconds. Only a ▲▼ held past
+        HOLD_MS does anything: it opens the row the highlight is on now — the press already moved it, so this is
+        where the press left it. Read off the state as it stands at release, which may be later than the press."""
+        if key not in (10, 11) or state is None or held_ms < HOLD_MS:
+            return []
+        if state.get("modal"):
+            return []
+        for i, r in enumerate(state.get("rows") or []):
+            if r.get("selected"):
+                return [{"cmd": "slot", "n": r.get("n", i + 1)}]     # the same row → key numbering as `_rows`
         return []
 
 
@@ -492,7 +507,7 @@ class DeckApp:
     """The device, the board, and the redraw that keeps one showing the other."""
 
     def __init__(self, deck, board, layout: Layout | None = None, log=print, blink_s: float = BLINK_S,
-                 heartbeat_s: float = 0.0, echo=print):
+                 heartbeat_s: float = 0.0, echo=print, clock=time.monotonic):
         self.deck = deck
         self.board = board
         self.layout = layout or Layout()
@@ -506,6 +521,8 @@ class DeckApp:
         self.loop: asyncio.AbstractEventLoop | None = None
         self._timers: list[asyncio.Task] = []
         self._last_paint = 0.0
+        self._down: dict[int, float] = {}       # when each key went down, so a release can be timed
+        self.clock = clock                                      # how a key's hold is timed; a test may hand its own
 
     def start(self, loop=None) -> None:
         """Wire the device up and paint what the board says now."""
@@ -587,11 +604,23 @@ class DeckApp:
         self.refresh(state)
 
     def _key(self, deck, key: int, pressed: bool) -> None:
-        """The device's own callback, on its own thread: ask the layout, send what it says."""
-        if not pressed:
-            return
+        """The device's own callback, on its own thread: ask the layout, send what it says. A press goes at once; a
+        release only matters for a key this remembers going down, and only for as long as it was held."""
+        now = self.clock()
         state = self.board.state
-        for req in self.layout.on_press(state, key):
+        if pressed:
+            self._down[key] = now
+            reqs = self.layout.on_press(state, key)
+        else:
+            t0 = self._down.pop(key, None)
+            if t0 is None:
+                return                                          # a release with no press behind it: nothing was held
+            reqs = self.layout.on_release(state, key, (now - t0) * 1000)
+        self._send(key, reqs)
+
+    def _send(self, key: int, reqs: list[dict]) -> None:
+        """Get the layout's requests to the board, from whichever thread the device callback arrived on."""
+        for req in reqs:
             cmd, fields = req.get("cmd"), {k: v for k, v in req.items() if k != "cmd"}
             try:
                 reply = _request(self.board, cmd, fields, self.loop, self.log)
@@ -603,6 +632,10 @@ class DeckApp:
     def press(self, key: int) -> None:
         """A key going down, for a hand-driven fake deck."""
         self._key(self.deck, key, True)
+
+    def release(self, key: int) -> None:
+        """The same key coming back up, for a hand-driven fake deck."""
+        self._key(self.deck, key, False)
 
 
 def _request(board, cmd: str | None, fields: dict, loop, log=print) -> dict | None:

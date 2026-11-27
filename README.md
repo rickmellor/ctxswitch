@@ -381,15 +381,17 @@ the same control socket the keyboard shortcuts use (`~/.local/state/ctxswitch/bo
 so a press does exactly what the key on the board does, and the keys follow the board both ways — including a session
 that goes `waiting`, which flashes red. It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board,
 and takes `--brightness 0-100` (60), `--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
-drawing them, to try the wiring by hand). Ctrl-C resets the keys and closes the deck.
+drawing them, to try the wiring by hand). ▲▼ move the highlight the moment you press them; hold one for 0.6 s before
+letting go and it opens the row the highlight ends up on, so one key both walks the list and enters it. Ctrl-C resets
+the keys and closes the deck.
 
 | Key | Does | While the board is asking (picker / start) | While a confirm is up |
 |---|---|---|---|
 | 1–5 (top row) | open session slot 1–5 (as `Alt+1`…`Alt+5`): the number, its title, a white bar along the top if it's in the main pane and along the bottom if it's the highlighted row, and a dot for busy / **waiting** / idle / shell / ended | option 1–5 | nothing |
 | 6–10 | blank, reserved | blank | blank |
-| ▲ / ▼ | move the highlight up / down | cancel | cancel |
-| `start` / `new` | `s` / `n` | cancel | cancel |
-| `end` | `k`, which asks the board to confirm | cancel | **END ✓** (the key beside it is cancel) |
+| ▲ / ▼ | move the highlight up / down, and open the highlighted row if held 0.6 s before release | cancel | cancel |
+| `restart` / `new` | `s` / `n` | cancel | cancel |
+| `kill` | `k`, which asks the board to confirm | cancel | **KILL ✓** (the key beside it is cancel) |
 
 With the board unreachable every key goes black except the centre one, which says `no board` and retries every 2 s.
 
