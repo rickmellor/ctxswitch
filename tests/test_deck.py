@@ -8,20 +8,33 @@ PROTOCOL.md, so the client is tested on the contract the board's own job impleme
 from __future__ import annotations
 
 import asyncio
+import atexit
 import io
 import json
+import shutil
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
 from conftest import unix_sockets_ok
 from ctxswitch.client import deck
 from ctxswitch.client.deck import BoardClient, DeckApp, FakeDeck, KeyFace, Layout, render
+from ctxswitch.common.deck_settings import save_settings
 
 pytestmark = pytest.mark.timeout(10)
 needs_unix = pytest.mark.skipif(not unix_sockets_ok(), reason="this kernel won't let a test bind a unix socket")
 
 SLOT_BG = deck.SLOT_BG
+
+
+@pytest.fixture(autouse=True)
+def _settings_file(tmp_path_factory, monkeypatch):
+    """The settings file a deck reads when a test doesn't say otherwise: one that isn't there, so every deck in this
+    file starts on the defaults however its operator's own board is set up. A test that wants a file writes its own
+    and hands `DeckApp` the path."""
+    monkeypatch.setattr(deck, "SETTINGS_FILE", tmp_path_factory.mktemp("deck-settings") / "deck-settings")
 
 
 def row(n: int, **kw) -> dict:
@@ -305,11 +318,51 @@ def test_a_state_with_no_panels_field_is_still_a_normal_board():
 
 
 def test_typing_mode_leaves_row_2_alone():
-    """The Input has focus: no key can help, and one of them would take the board out of the box it is typing in."""
+    """The Input has focus: nothing on the middle row is the operator's to run, and one of them would take the board
+    out of the box it is typing in, so all five keys only say where the text goes."""
     faces = Layout().plan(board_state(modal="input"))
-    for i in range(deck.ROW2, deck.KEY_COUNT):
-        assert faces[i].lines == ("type on\nthe board",) and faces[i].bg == deck.ACTION_BG
+    for i in range(deck.ROW2, deck.ROW2 + deck.COLS):
+        assert faces[i].lines == (deck.TYPE_HINT,) and faces[i].bg == deck.ACTION_BG
     assert Layout().on_press(board_state(modal="input"), 5) == []
+
+
+def test_typing_mode_gives_the_text_box_its_own_two_keys():
+    """The bottom row while the box has focus: `enter` on the last key and `cancel` on the first — the two keys the
+    box answers to on the board — with the three between them still only saying where the text goes."""
+    faces = Layout().plan(board_state(modal="input"))
+    assert faces[10].lines == ("cancel",) and faces[14].lines == ("enter",)
+    for i in (11, 12, 13):
+        assert faces[i].lines == (deck.TYPE_HINT,), f"key {i} should still only say where to type"
+    for i in range(deck.ROW2, deck.KEY_COUNT):
+        assert faces[i].bg == deck.ACTION_BG and faces[i].ink is None, f"key {i} should read white on dark"
+    L = Layout()
+    st = board_state(modal="input")
+    assert L.on_press(st, 14) == [{"cmd": "submit"}], "enter accepts the Input with the text it holds"
+    assert L.on_press(st, 10) == [{"cmd": "cancel"}], "cancel drops it, as Esc does"
+    for key in (0, 5, 11, 12, 13):
+        assert L.on_press(st, key) == [], f"key {key} must not take the board out of the box mid-type"
+
+
+@pytest.mark.parametrize("prompt,text,want", [
+    ("dir for the new session: ", "~/repos/ctx", ("dir for the new session:", "~/repos/ctx")),
+    ("what should it do? ", "", ("what should it do?", "")),
+    (None, "half a message", (None, "half a message")),
+    ("a prompt", None, ("a prompt", None)),
+    (None, None, None),
+])
+def test_the_box_shows_its_prompt_and_what_is_typed_on_the_middle_key(prompt, text, want):
+    """A board that says what its Input is asking and holds shows both on key 12, prompt first, in the small size the
+    slot titles use. One that says nothing — an older board — leaves the plain reminder there instead."""
+    st = board_state(modal="input")
+    if prompt is not None or text is not None:
+        st = {**st, "input_prompt": prompt, "input_text": text}
+    face = Layout().plan(st)[12]
+    if want is None:
+        assert face.lines == (deck.TYPE_HINT,), "with nothing to show, the key says where the text goes"
+    else:
+        assert face.lines == tuple("" if line is None else line for line in want)
+        assert face.small, "both lines small, as a slot title is"
+    assert face.bg == deck.ACTION_BG
 
 
 # --------------------------------------------------------------------------------------------------- animations
@@ -764,9 +817,9 @@ async def test_replies_are_matched_and_pushes_are_not_missed():
 # ------------------------------------------------------------------- the app: a deck and a board, keeping in step
 
 
-async def _app(state=None, fps: float = 0.0, clock=None) -> tuple[DeckApp, FakeDeck, FakeBoardSync]:
+async def _app(state=None, fps: float = 0.0, clock=None, **kw) -> tuple[DeckApp, FakeDeck, FakeBoardSync]:
     d, b = FakeDeck(), FakeBoardSync(state if state is not None else board_state())
-    kw = {"clock": clock} if clock is not None else {}
+    kw = {**kw, "clock": clock} if clock is not None else kw
     app = DeckApp(d, b, fps=fps, log=lambda m: None, **kw)
     app.start()
     return app, d, b
@@ -1359,3 +1412,358 @@ def test_no_extra_installed_says_how_to_get_it(tmp_path, capfd, monkeypatch):
     monkeypatch.setitem(sys.modules, "StreamDeck", None)       # `import StreamDeck` now raises ImportError
     assert deck.main(["--sock", str(tmp_path / "nope.sock")]) == 2
     assert "install with: uv pip install -e '.[deck]'" in capfd.readouterr().out
+
+
+# ------------------------------------------------------------------------------------------------- scroll layout
+#
+# The other way the top row can carry more rows than it has keys for: `scroll_window(n, o)` is the whole scheme in
+# one pure function — a window of consecutive rows that one arrow moves along by exactly one row — and `Layout.plan`,
+# `on_press` and `DeckApp.offset` read it the way they read `pages()`.
+
+
+def test_four_rows_scroll_as_they_stand_with_no_arrows():
+    four = board_state(rows=[row(n, state="idle") for n in range(1, 5)])
+    assert deck.scroll_window(4, 0) == ([1, 2, 3, 4, None], 0), "five rows or fewer need no arrows at all"
+    faces = Layout().plan(four, 0.0, {}, 0, None, "scroll", 0)
+    assert [faces[i].lines[0] for i in range(4)] == ["1", "2", "3", "4"]
+    assert faces[4].dim and faces[4].lines == ("5",), "a board that fits is the same top row it always had"
+    assert Layout().on_press(four, 3, 0, "scroll", 0) == [{"cmd": "slot", "n": 4}]
+    assert Layout().on_press(four, 4, 0, "scroll", 0) == [], "a free slot key says nothing, scrolled or paged"
+
+
+@pytest.mark.parametrize("offset,want", [(0, [1, 2, 3, 4, "next"]), (1, ["prev", 2, 3, 4, "next"]),
+                                         (2, ["prev", 3, 4, 5, 6])])
+def test_six_rows_scroll_one_row_to_the_far_right(offset, want):
+    assert deck.scroll_window(6, offset) == (want, min(offset, 2))
+
+
+def test_nine_rows_scroll_one_at_a_time_and_end_on_the_last_four():
+    assert deck.scroll_window(9, 0) == ([1, 2, 3, 4, "next"], 0)
+    assert deck.scroll_window(9, 3) == (["prev", 4, 5, 6, "next"], 3)
+    assert deck.scroll_window(9, 5) == (["prev", 6, 7, 8, 9], 5), "the far right drops ▶ and shows the last four"
+
+
+def test_a_scroll_offset_past_either_end_is_pulled_back_to_the_nearest_window():
+    assert deck.scroll_window(9, 99) == (["prev", 6, 7, 8, 9], 5), "the last window is the one ending on row 9"
+    assert deck.scroll_window(9, -3) == ([1, 2, 3, 4, "next"], 0)
+    assert deck.scroll_window(0, 4) == ([None] * 5, 0), "and a board with no rows has no window to move"
+
+
+@pytest.mark.parametrize("n", list(range(14)))
+def test_every_offset_shows_a_window_of_consecutive_rows_that_one_arrow_moves_by_one(n):
+    """The scheme, rather than the table: five keys, no repeats, the rows on show one after another, and every press
+    that has somewhere to go landing exactly one row along. Nothing is ever shown that isn't a row there is."""
+    last = max(0, n - 4)
+    for o in range(-1, last + 2):
+        entries, at = deck.scroll_window(n, o)
+        assert len(entries) == 5 and at == max(0, min(o, last)), f"{n} rows at {o}: {entries} at {at}"
+        assert all(e is None or isinstance(e, int) or e in ("prev", "next") for e in entries)
+        assert sum(1 for e in entries if e == "prev") <= 1 and sum(1 for e in entries if e == "next") <= 1
+        rows = [e for e in entries if isinstance(e, int)]
+        if rows:
+            assert rows == list(range(rows[0], rows[0] + len(rows))), f"{n} at {o}: {entries}"
+        assert all(1 <= r <= n for r in rows), f"{n} at {o} shows a row that isn't there: {entries}"
+        if n > 5:
+            assert entries[0] == "prev" if at else entries[4] == "next", f"{n} at {at} has no arrow: {entries}"
+        for delta in (-1, 1):
+            nxt, moved = deck.scroll_window(n, at + delta)
+            assert moved == max(0, min(at + delta, last)), f"{n} at {at} {'◀' if delta < 0 else '▶'}: {nxt}"
+
+
+def test_a_scrolled_window_says_which_rows_are_under_the_keys():
+    """A scroll has no page numbers, so the line under an arrow counts rows instead: the ones on screen, of how many.
+    Both arrows on one window say the same thing, because they are looking at the same window."""
+    nine = board_state(rows=[row(n, state="idle") for n in range(1, 10)])
+    L = Layout()
+    middle = L.plan(nine, 0.0, {}, 0, None, "scroll", 3)
+    assert [middle[i].lines[0] for i in range(5)] == ["◀", "4", "5", "6", "▶"]
+    assert middle[0].lines == ("◀", "4–6/9") and middle[4].lines == ("▶", "4–6/9")
+    assert [middle[i].bg for i in (1, 2, 3)] == list(SLOT_BG[1:4]), "a key keeps its colour wherever it lands"
+    assert L.plan(nine, 0.0, {}, 0, None, "scroll", 0)[4].lines == ("▶", "1–4/9")
+    assert L.plan(nine, 0.0, {}, 0, None, "scroll", 5)[0].lines == ("◀", "6–9/9")
+    assert L.plan(nine, 0.0, {}, 0, None, "scroll", 7)[0].lines == ("◀", "6–9/9"), "and it says so clamped too"
+
+
+def test_a_scrolled_key_names_the_row_it_shows():
+    nine = board_state(rows=[row(n, visible=(n == 5), selected=(n == 5), state="waiting" if n == 5 else "idle")
+                             for n in range(1, 10)])
+    shown = Layout().plan(nine, 0.0, {}, 0, None, "scroll", 3)[2]
+    assert shown.lines == ("5", "session 5")
+    assert shown.top_bar and shown.bottom_bar and shown.border == deck.WAIT_BG
+    assert shown.bg == SLOT_BG[2], "the breath is on the key's own colour, wherever the window has put the row"
+
+
+def test_only_the_window_on_show_is_worth_animating_when_scrolled():
+    """The same rule the pages have, on the other axis: a busy row outside the window costs nothing, and the window
+    that shows it is a frame."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    rows[6] = row(7, state="busy")
+    assert Layout().animating(board_state(rows=rows), {}, 0, None, "scroll", 0) is False
+    assert Layout().animating(board_state(rows=rows), {}, 0, None, "scroll", 4) is True
+
+
+def test_a_scrolled_press_asks_for_its_row_or_moves_the_window():
+    nine = board_state(rows=[row(n, state="idle") for n in range(1, 10)])
+    L = Layout()
+    assert [L.on_press(nine, k, 0, "scroll", 3) for k in (1, 2, 3)] == \
+        [[{"cmd": "slot", "n": 4}], [{"cmd": "slot", "n": 5}], [{"cmd": "slot", "n": 6}]]
+    assert L.on_press(nine, 4, 0, "scroll", 3) == [{"deck": "scroll", "delta": 1}], "▶ is the deck's own: no cmd"
+    assert L.on_press(nine, 0, 0, "scroll", 3) == [{"deck": "scroll", "delta": -1}]
+    assert L.on_press(nine, 4, 0, "scroll", 5) == [{"cmd": "slot", "n": 9}], \
+        "at the far right the key that used to be ▶ is row 9, so it opens it"
+    assert L.on_press(nine, 0, 0, "scroll", 0) == [{"cmd": "slot", "n": 1}], "at the left end ◀ isn't a key yet"
+    assert L.on_press(nine, 11, 0, "scroll", 3) == [{"cmd": "move", "delta": 1}], "and the rest is unchanged"
+
+
+async def test_the_scroll_key_moves_the_window_and_sends_nothing():
+    """`▶` and `◀` scrolled: one row along per press, and the board never hears about it."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 62.0,
+                           **_settings({"top_row": "scroll"}))
+    try:
+        assert (app.mode, app.offset) == ("scroll", 0)
+        assert d.images[4] == render(Layout().plan(app.state, 62.0, {}, 0, None, "scroll", 0)[4], d)
+        app.press(4)
+        assert b.seen == [], f"the board was told about a scroll: {b.seen}"
+        assert app.offset == 1 and [app.faces[i].lines[0] for i in range(5)] == ["◀", "2", "3", "4", "▶"]
+        app.press(0)
+        assert app.offset == 0 and b.seen == []
+        b.seen.clear()
+        app.press(0)
+        assert app.offset == 0, "at the left end there is no ◀ key: key 0 is row 1, and opening it is all it does"
+        assert b.seen == [{"cmd": "slot", "n": 1}], b.seen
+        b.seen.clear()
+        for _ in range(5):                                        # one row a press, and it stops at home
+            app.press(4)
+        assert app.offset == 5, f"the window ran past the far right: {app.offset}"
+        assert [app.faces[i].lines[0] for i in range(5)] == ["◀", "6", "7", "8", "9"]
+        assert b.seen == []
+        b.seen.clear()
+        app.press(4)                                              # the key that was ▶ is row 9 now: it opens it
+        assert b.seen == [{"cmd": "slot", "n": 9}] and app.offset == 5, b.seen
+    finally:
+        await app.stop()
+
+
+async def test_a_scrolled_key_opens_the_row_it_shows():
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 63.0,
+                           **_settings({"top_row": "scroll"}))
+    try:
+        app.press(4)                                              # ▶: the window is on rows 2–4 and ▶
+        b.seen.clear()
+        app.press(1)                                              # the key showing row 2
+        assert b.seen == [{"cmd": "slot", "n": 2}], b.seen
+    finally:
+        await app.stop()
+
+
+async def test_the_scroll_follows_the_highlight_by_the_least_it_can():
+    """▲▼ walking the highlight out of the window brings the window along — by the least it can move, which is the
+    window that puts the row on the last key it has for rows, and not one row further than it has to."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 64.0,
+                           **_settings({"top_row": "scroll"}))
+    try:
+        assert app.offset == 0
+        b.cb(board_state(rows=rows, selected_key=rows[6]["key"]))  # row 7: o=4 shows 5 6 7, so no further
+        assert app.offset == 4, f"row 7 needed o=4: {[app.faces[i].lines[0] for i in range(5)]}"
+        assert [app.faces[i].lines[0] for i in range(5)] == ["◀", "5", "6", "7", "▶"]
+        b.cb(board_state(rows=rows, selected_key=rows[5]["key"]))  # row 6, already on screen: the window stays
+        assert app.offset == 4, "a highlight the window already shows shouldn't move it"
+        b.cb(board_state(rows=rows, selected_key=rows[1]["key"]))  # and back to the left, again only as far as needed
+        assert app.offset == 1, "o=1 shows rows 2–4: o=0 would be one further than the row needed"
+        b.cb(board_state(rows=rows, selected_key=rows[8]["key"]))  # row 9: only the far right shows it
+        assert app.offset == 5
+    finally:
+        await app.stop()
+
+
+async def test_the_scroll_clamps_when_the_rows_shrink():
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 65.0,
+                           **_settings({"top_row": "scroll"}))
+    try:
+        app.offset = 5
+        b.cb(board_state(rows=rows[:4], selected_key=rows[0]["key"]))
+        assert app.offset == 0, "four rows are no window at all: the deck was showing rows that aren't there"
+        assert [app.faces[i].lines[0] for i in range(4)] == ["1", "2", "3", "4"]
+    finally:
+        await app.stop()
+
+
+# --------------------------------------------------------------------------------------- the settings file, live
+#
+# One JSON file the board's `D` screen writes (`common/deck_settings.py`, docs/deck-settings.md) and the deck reads
+# at start and once a second after that. A test hands the app a path and a clock, so "once a second" is 20 `_tick()`s
+# and a rewrite of the file is the only thing that can change how the deck behaves.
+
+
+def _settings(values: dict) -> dict:
+    """A settings file in a temporary directory of its own — every call its own file, so one test's `top_row` can
+    never be read back by the next one — and the two `DeckApp` arguments that point a deck at it: the path, and no
+    `--brightness`, which is what makes the file the deck's only word on the lights."""
+    where = Path(tempfile.mkdtemp(prefix="ctx-deck-settings-"))
+    atexit.register(shutil.rmtree, str(where), True)
+    path = where / "deck-settings"
+    save_settings(path, values)
+    return {"settings_path": path, "brightness_override": None}
+
+
+async def test_a_file_that_says_scroll_makes_the_top_row_scroll():
+    """The settings the deck starts with are the file's, not the defaults: the first `▶` is already a scroll."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 66.0,
+                           **_settings({"top_row": "scroll"}))
+    try:
+        assert (app.mode, app.offset) == ("scroll", 0), "the file's mode, before a single key has been painted"
+        assert app.settings["top_row"] == "scroll"
+        assert app.faces[4].lines == ("▶", "1–4/9"), "the first paint was laid out in pages all the same"
+        app.press(4)
+        assert app.offset == 1 and b.seen == [], f"a scroll reached the board: {b.seen}"
+    finally:
+        await app.stop()
+
+
+async def test_a_settings_change_applies_on_the_next_second():
+    """The board's `D` screen rewrote the file while the deck was running: the next second's tick reads it, switches
+    the mode, moves the window to the highlighted row, and says so in one line."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    settings = _settings({"top_row": "pages"})
+    said: list[str] = []
+    d = FakeDeck()
+    app = DeckApp(d, FakeBoardSync(board_state(rows=rows)), fps=20.0, log=said.append, **settings)
+    app.start()
+    try:
+        assert app.mode == "pages" and d.paints == deck.KEY_COUNT
+        app._check_settings()
+        assert said == [], f"a file nobody changed said something: {said}"
+        assert d.paints == deck.KEY_COUNT, "an untouched file cost a repaint every second"
+        save_settings(Path(app.settings_path), {"top_row": "scroll"})      # the board writes it: a new mtime
+        app._check_settings()
+        assert app.mode == "scroll", "a rewritten file didn't reach the deck"
+        assert app.offset == 5, f"the window should be the one showing row 9, the highlighted row: {app.offset}"
+        assert rows[-1]["key"] in [r["key"] for r in app._page_rows()]
+        assert sum(1 for line in said if "scroll" in line) == 1, said
+        app._check_settings()
+        assert sum(1 for line in said if "scroll" in line) == 1, f"the same file said it twice: {said}"
+        save_settings(Path(app.settings_path), {"top_row": "pages"})
+        for _ in range(deck.SETTINGS_TICKS):                                # the tick finds it by itself, 1 s in 20
+            app._tick()
+        assert app.mode == "pages", "the animation tick never looked at the file"
+        assert app.page == 2, f"pages mode centres on the highlighted row too: page {app.page}"
+    finally:
+        await app.stop()
+
+
+async def test_a_brightness_in_the_file_lights_the_keys_it_says():
+    """The file's number reaches the device, once per change rather than once a second."""
+    settings = _settings({"brightness": 60})
+    d = FakeDeck()
+    said: list[str] = []
+    app = DeckApp(d, FakeBoardSync(), fps=0.0, log=said.append, **settings)
+    app.start()
+    try:
+        assert d.brightness == 60, "start didn't take the file's brightness"
+        save_settings(Path(app.settings_path), {"brightness": 30})
+        app._check_settings()
+        assert d.brightness == 30, "the file's brightness never reached the deck"
+        assert sum(1 for line in said if "brightness" in line) == 1, said
+        app._check_settings()
+        assert sum(1 for line in said if "brightness" in line) == 1, f"the same brightness said twice: {said}"
+    finally:
+        await app.stop()
+
+
+async def test_a_brightness_said_on_the_command_line_beats_the_file():
+    """`--brightness` is the operator speaking now; the file is the board's `D` screen speaking for every run. Now
+    wins for the run, at start and on every check after it — the file can't take the lights back."""
+    settings = _settings({"brightness": 20})
+    d = FakeDeck()
+    app = DeckApp(d, FakeBoardSync(), fps=0.0, log=lambda m: None,
+                  settings_path=settings["settings_path"], brightness_override=80)
+    app.start()
+    try:
+        assert d.brightness == 80, "--brightness lost to the file"
+        save_settings(Path(app.settings_path), {"brightness": 10})
+        app._check_settings()
+        assert d.brightness == 80, "a rewritten file overrode an explicit --brightness"
+    finally:
+        await app.stop()
+
+
+async def test_animations_off_leaves_the_faces_still_but_the_state_moving():
+    """`animations: false` is the quiet deck: no breath, no sweep, no white, no pulse drawn — but a switch this deck
+    asked for is still tracked until the board answers it, and a state that changes still repaints its keys."""
+    st = board_state(rows=[row(1, state="waiting"), row(2, state="busy"), row(3, state="idle")])
+    clock = {"t": 200.0}
+    app, d, b = await _app(st, clock=lambda: clock["t"], **_settings({"animations": False}))
+    try:
+        assert app.anim_on is False
+        assert app.layout.animating(app.state, app._key_wipes(), app.page, app.pending, app.mode, app.offset,
+                                    app.anim_on) is False, "the deck still thinks its own clock is moving"
+        painted = d.paints
+        for _ in range(2 * deck.FPS):
+            clock["t"] += 1 / deck.FPS
+            assert app._tick() == 0, "a static deck put a key on the wire"
+        assert d.paints == painted, f"the still faces were repainted {d.paints - painted} times"
+        assert app.faces[0] == Layout().plan(st, 0.0)[0], "a waiting row shows the face it would show at t=0"
+        assert app.faces[1].edge == Layout().plan(st, 0.0)[1].edge, "a busy row keeps the bar its t=0 face has"
+        assert app.faces[0].border == deck.WAIT_BG and app.faces[0].dot == deck.WAIT_BG, "the state still reads"
+        app.press(1)                                              # a press is still a press, and still tracked
+        assert list(app.pending) == [st["rows"][1]["key"]], "the switch stopped being tracked, not just drawn"
+        assert app.faces[1] == Layout().plan(app.state, 0.0)[1], "…and its key is its normal face, not white"
+        assert app._anim_count() == 0, "the heartbeat says keys are moving when nothing is"
+        b.cb(board_state(rows=[row(1, state="waiting"), row(2, state="busy"), row(3, state="ended")]))
+        assert d.paints > painted, "a state that changed still repaints, animations off or not"
+    finally:
+        await app.stop()
+
+
+async def test_animations_switch_off_and_on_while_the_deck_runs():
+    """The same file, changed under a deck that is already breathing: the keys stop moving and come back to their
+    still faces, and switching it on again starts the same frames up."""
+    st = board_state(rows=[row(1, state="waiting"), row(2, state="idle")])
+    clock = {"t": 300.0}
+    app, d, b = await _app(st, clock=lambda: clock["t"], **_settings({"animations": True}))
+    try:
+        assert app.anim_on is True
+        save_settings(Path(app.settings_path), {"animations": False})
+        app._check_settings()
+        assert app.anim_on is False and app.faces[0].bg == SLOT_BG[0], "the breath kept going"
+        assert app._tick() == 0
+        save_settings(Path(app.settings_path), {"animations": True})
+        app._check_settings()
+        assert app.anim_on is True
+        clock["t"] += deck.BREATHE_S / 4
+        assert app._tick() == 1, "the breath didn't start again"
+        assert app.faces[0].bg == deck.blend(SLOT_BG[0], deck.WAIT_BG, deck.breathe(clock["t"])) != SLOT_BG[0]
+    finally:
+        await app.stop()
+
+
+def test_a_brightness_said_on_the_command_line_reaches_the_device_in_main(tmp_path, monkeypatch, capfd):
+    """`ctx deck --brightness 90` lights the keys to 90 before the loop starts; said nothing, and the file does."""
+    path = tmp_path / "deck-settings"
+    save_settings(path, {"brightness": 20})
+    monkeypatch.setattr(deck, "SETTINGS_FILE", path)      # main reads it the way it imports it, not via the env
+    lit: list[int] = []
+
+    class Deck(FakeDeck):
+        def set_brightness(self, percent: int) -> None:
+            lit.append(percent)
+            super().set_brightness(percent)
+
+    real_start = deck._start
+
+    async def _start_once(app, loop) -> None:
+        await real_start(app, loop)                  # the app is what lights the keys, from the file or from now
+        loop.call_later(0.05, loop.stop)              # …and this test stops there: main() runs until Ctrl-C
+
+    monkeypatch.setattr(deck, "open_deck", lambda log=None: Deck())
+    monkeypatch.setattr(deck, "_start", _start_once)
+    assert deck.main(["--sock", str(tmp_path / "nope.sock"), "--brightness", "90"]) == 0
+    assert lit == [90], f"the deck was lit to {lit}"
+    capfd.readouterr()
+    assert deck.main(["--sock", str(tmp_path / "nope.sock")]) == 0
+    assert lit[-1] == 20, f"with nothing said the file lights the keys, got {lit}"

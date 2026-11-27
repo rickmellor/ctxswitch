@@ -76,6 +76,7 @@ LIT_BG = "#1f4f7a"                 # an action key whose thing is on: the panel 
 END_BG = "#5a1a1a"
 CONFIRM_BG = "#d62728"             # the KILL ✓ key, while a confirm is up
 OPTION_BG = "#2b2b2b"
+TYPE_HINT = "type on\nthe board"        # the three bottom-row keys while the board's text box has focus
 BLACK = "#000000"
 WHITE = "#ffffff"
 
@@ -141,6 +142,7 @@ class KeyFace:
     dim: bool = False
     ink: str | None = None                    # text in this colour instead of white: a white key's own palette colour
     edge: tuple[int, int, str] | None = None   # a sweep bar on the key's left edge: (y0, y1, colour)
+    small: bool = False                        # every line in the 11 px board text size (the input box's prompt and text)
 
 
 def pulse(t: float) -> float:
@@ -177,20 +179,33 @@ def scroll_window(n_rows: int, offset: int) -> tuple[list[int | str | None], int
     """How ``n_rows`` rows lie under the top row's five keys when the row *scrolls* instead of paging: the five
     entries for the window that starts at 0-based ``offset``, and that offset as it actually stands.
 
-    A window is four rows and, once there are more rows than fit, one arrow — so five rows or fewer is simply
-    ``[1 2 3 4 5]`` with no arrows, whatever the offset. Past that, one arrow press moves the window by exactly one
-    row: rows ``o+1…o+4`` when the whole row fits inside the board, `▶` on the last key while rows remain beyond it
-    (keys 0–3 show ``o+1…o+4``) and `◀` on the first once they don't (keys 1–4 show the tail, and the far right is
-    exactly the last four rows). An offset past either end is pulled back to the nearest one that means something —
-    the last window is the one that ends on row N — and the window handed back is the one that offset draws, so a
-    caller can keep its own number and still get a legal top row."""
+    Five rows or fewer fit as they are, with no arrows at all. Past that one arrow press moves the window along by
+    exactly one row, and which keys the arrows cost depends on where the window is: rows ``1–4`` and `▶` at the left
+    end, `◀` plus rows ``o+1…o+3`` plus `▶` in the middle, and `◀` plus the last four rows at the far right — so one
+    row comes on at one end as one goes off at the other, until the far right, where the `▶` is the key that stops
+    being needed and the fifth row comes out. An offset past either end is pulled back to the nearest one that means
+    something, and the window handed back is the one that offset draws, so a caller can keep its own number and still
+    get a legal top row."""
     n = max(0, int(n_rows))
-    o = min(max(0, int(offset)), max(0, n - 4))              # the first row that can be shown at all
+    o = min(max(0, int(offset)), max(0, n - 4))              # the first row a window can start at
     if n <= 5:
         return [i + 1 if i < n else None for i in range(5)], o
-    if o + 4 < n:                                            # rows still waiting beyond the right hand end
-        return [i + 1 if i < 4 else "next" for i in range(5)], o
-    return ["prev"] + [n - 3 + i for i in range(4)], o     # the far right is exactly the last four rows
+    if o == 0:
+        return [1, 2, 3, 4, "next"], o
+    if o + 4 < n:                                            # rows behind *and* ahead: an arrow at each end
+        return ["prev"] + [o + 1 + i for i in range(3)] + ["next"], o
+    return ["prev"] + [n - 3 + i for i in range(4)], o       # …and the far right is exactly the last four rows
+
+
+def scroll_to(n_rows: int, n: int, offset: int) -> int:
+    """The offset nearest ``offset`` whose scroll window shows row ``n``: the least the window can move to follow the
+    highlight, rather than the page it would need if the row paged. A row no window shows at all leaves it at 0."""
+    best = None
+    for o in range(max(0, int(n_rows)) - 3):
+        if n in scroll_window(n_rows, o)[0]:
+            if best is None or abs(o - offset) < abs(best - offset):
+                best = o
+    return 0 if best is None else best
 
 
 # --------------------------------------------------------------------------------------------- the layout table
@@ -228,10 +243,15 @@ class Layout:
         return self._normal(state, t, page, pending, mode, offset)
 
     def animating(self, state: dict | None, wipes: dict[int, float] | None = None, page: int = 0,
-                  pending: dict[str, float] | None = None, mode: str = "pages", offset: int = 0) -> bool:
+                  pending: dict[str, float] | None = None, mode: str = "pages", offset: int = 0,
+                  animating: bool = True) -> bool:
         """Whether the next frame can differ from this one: a session on show waiting (it breathes) or busy (it
         sweeps), a switch on it waiting to be confirmed (it pulses), or a wipe still running. A board that is all
-        idle and settling paints nothing until it next changes, and a row that isn't on show costs nothing."""
+        idle and settling paints nothing until it next changes, and a row that isn't on show costs nothing. With the
+        animations switched off in the settings file nothing ever moves on the clock, which is what `animating=False`
+        says — the deck asks rather than assuming, so nothing on the tick's path still thinks it is moving."""
+        if not animating:
+            return False
         if wipes:
             return True
         here = set(self._page_keys(state or {}, page, mode, offset).values())   # the row positions on show
@@ -353,11 +373,21 @@ class Layout:
 
     def _typing(self, state: dict, t: float, page: int = 0, pending: dict[str, float] | None = None,
                 mode: str = "pages", offset: int = 0) -> dict[int, KeyFace]:
-        """The board's text Input has focus (`/`, `m`, `a`, a directory prompt): no key here can help, so say so.
-        The rows underneath are still doing what they do, so they keep moving."""
+        """The board's text Input has focus (`/`, `m`, `a`, a directory prompt). The rows underneath are still doing
+        what they do, so they keep moving; the bottom row becomes the box's own two keys and a reminder.
+
+        `enter` accepts the box with whatever is in it and `cancel` drops it — the two keys the box answers to, where
+        the text goes in is on the board, not here. The three keys between them say so, and the middle one of those
+        carries the box itself when the state carries it: the prompt it's asking and the text typed so far, in the
+        small size the slot titles use. A board that says nothing about either keeps the plain reminder instead."""
         faces = self._normal(state, t, page, pending, mode, offset)
         for i in range(ROW2, KEY_COUNT):
-            faces[i] = KeyFace(bg=ACTION_BG, lines=("type on\nthe board",))
+            faces[i] = KeyFace(bg=ACTION_BG, lines=(TYPE_HINT,))
+        faces[10] = KeyFace(bg=ACTION_BG, lines=("cancel",))
+        faces[14] = KeyFace(bg=ACTION_BG, lines=("enter",))
+        prompt, text = state.get("input_prompt"), state.get("input_text")
+        if isinstance(prompt, str) or isinstance(text, str):
+            faces[12] = KeyFace(bg=ACTION_BG, lines=(_title(prompt), _title(text)), small=True)
         return faces
 
     def _arrow(self, glyph: str, mode: str, entries: list, offset: int, n_rows: int,
@@ -379,7 +409,10 @@ class Layout:
 
         A top-row key asks for the row it is showing, which past the first page is not the key's own number. An arrow
         is the deck's own business: it answers a `deck` request with no `cmd` — `page` in pages mode, `scroll` in
-        scroll mode — which `DeckApp._send` turns a window over without the board ever hearing about it."""
+        scroll mode — which `DeckApp._send` turns a window over without the board ever hearing about it.
+
+        While the board's text box has focus only its two keys answer: `enter` accepts the box (`submit`, which the
+        board takes as Enter — it accepts the Input with the text it holds) and `cancel` drops it."""
         if key not in range(KEY_COUNT) or state is None:
             return []
         modal = state.get("modal")
@@ -392,6 +425,11 @@ class Layout:
                 return [{"cmd": "confirm", "yes": True}]
             return [{"cmd": "cancel"}] if key >= ROW2 else []
         if modal == "input":
+            # the text goes in on the board; these are the box's own two keys, and nothing else is anyone's to run
+            if key == 14:
+                return [{"cmd": "submit"}]
+            if key == 10:
+                return [{"cmd": "cancel"}]
             return []
         if modal == "spend":
             # the spend screen has the whole pane and its own Esc: key 7 is the $ that opened it, and everything
@@ -468,7 +506,7 @@ def render(face: KeyFace, deck) -> bytes:
     ink = _hex(face.ink or (DIM_GREY if face.dim else WHITE))
     y = 6
     for i, line in enumerate(face.lines):
-        size = label_size(line, i, w)
+        size = 11 if face.small else label_size(line, i, w)
         d.multiline_text((5, y), "\n".join(_wrap(line, w, size)), fill=ink, font=_font(size, bold=size == 26),
                          spacing=2)
         y += size + 7
@@ -494,7 +532,8 @@ def label_size(line: str, index: int, width: int = KEY_W) -> int:
     ask without a device: the size it picks is the biggest one whose measured text still fits the key."""
     if index == 0 and len(line.strip()) <= 2:
         return 26
-    if index:
+    if index or not line.strip():
+        # …and a line with nothing on it: it can only move the next one down, so let it move it as little as possible
         return 11
     first = line.split("\n")[0]                        # what `_wrap` draws as its own line; Pillow can't measure two
     size = 15
@@ -784,12 +823,15 @@ class DeckApp:
         self.page = 0                               # which page of the rows the top row is showing
         self.mode = "pages"                         # …or the other way that row can move: "pages" / "scroll"
         self.offset = 0                             # …scroll's: 0-based index of the first row the window shows
+        # (both come from the settings file a few lines below: which one the top row does is the file's business)
         self.settings_path = Path(settings_path) if settings_path else SETTINGS_FILE
         self.brightness_override = brightness_override          # an explicit --brightness beats the file, for this run
         self.settings = load_settings(self.settings_path)
+        self.mode = self.settings["top_row"]                  # the file's, before the first state has been painted
         self.anim_on = bool(self.settings["animations"])        # False: static faces, the state still updating
         self._checked_tick = 0                        # the animation tick counts itself, so the file is read 1 s in 20
         self._last_mtime: float | None = None
+        self._lit: bool | None = None         # what the device was last told for its lights: None, never yet
         self._settings_error: str | None = None       # the same unreadable file every second isn't worth printing twice
         self.wipes: dict[str, float] = {}           # session key → when its fade started; dropped when it's done
         self.pending: dict[str, float] = {}         # …and the switch the board hasn't confirmed yet, by key
@@ -816,7 +858,7 @@ class DeckApp:
         if self.heartbeat_s:                                    # at least one line every 30 s, however quiet it is
             self._timers.append(self.loop.create_task(self._heartbeat()))
         self.refresh(self.board.state)
-        self._apply_settings(self.settings)                     # the file's word on how this deck behaves
+        self._apply_settings(self.settings, first=True)         # the file's word on how this deck behaves
 
     async def _heartbeat(self) -> None:
         """One line every ``heartbeat_s`` saying the deck is alive — and a redraw in passing, in case a push was
@@ -885,7 +927,7 @@ class DeckApp:
         if self.mode == "scroll":
             entries, self.offset = scroll_window(n_rows, self.offset)
             if n not in entries:
-                self.offset = scroll_window(n_rows, n - 4)[1]     # the least that brings row n into the window
+                self.offset = scroll_to(n_rows, n, self.offset)   # the least that brings row n into the window
             return
         for i, entries in enumerate(pages(n_rows)):
             if n in entries:
@@ -976,10 +1018,9 @@ class DeckApp:
         self._checked_tick += 1
         if self._checked_tick % SETTINGS_TICKS == 0:
             self._check_settings()
-        if not self.anim_on:
-            return 0                                            # static faces: only a state can move a key now
         t = self.clock()
-        if not self.layout.animating(self.state, self._key_wipes(), self.page, self.pending, self.mode, self.offset):
+        if not self.layout.animating(self.state, self._key_wipes(), self.page, self.pending, self.mode, self.offset,
+                                     self.anim_on):
             return 0                                            # the tick still runs, and still costs nothing
         return self._paint(t)
 
@@ -1075,22 +1116,25 @@ class DeckApp:
         self._settings_error = None
         self._apply_settings(got)
 
-    def _apply_settings(self, got: dict) -> None:
-        """One second's worth of the settings file, against what this deck is doing: a mode, a brightness, or the
-        animations going quiet. One line each, so the log says what the deck did about it."""
-        before = (self.mode, self.settings.get("brightness"), self.anim_on)
+    def _apply_settings(self, got: dict, first: bool = False) -> None:
+        """One look at the settings file, against what this deck is doing: which way the top row moves, how bright
+        the keys are, and whether the faces animate. One line each, so the log says what the deck did about it. The
+        first look is the deck starting up rather than anything changing, so it says nothing and repaints nothing —
+        `__init__` read the file before the first key was laid out."""
+        was_mode, was_anim = self.mode, self.anim_on
         self.settings = got
         self.anim_on = bool(got["animations"])
-        if got["top_row"] != before[0]:
+        if got["top_row"] != was_mode:
             self.mode = got["top_row"]
             self._show_highlighted()
             self.log(f"deck settings: the top row {'scrolls' if self.mode == 'scroll' else 'pages'}")
         want = self.brightness_override if self.brightness_override is not None else got["brightness"]
-        if before[1] is not None and want != before[1]:
-            self._set_brightness(want)
-        if self.anim_on != before[2]:
-            self.log(f"deck settings: animations {"on" if self.anim_on else "off"}")
-        self._paint(self.clock())
+        if self._lit != want:                                 # once at start, then whenever the number moves
+            self._set_brightness(want, say=not first)
+        if self.anim_on != was_anim:
+            self.log(f"deck settings: animations {'on' if self.anim_on else 'off'}")
+        if not first:
+            self._paint(self.clock())
 
     def _show_highlighted(self) -> None:
         """Where the top row starts after the mode changes: the window that shows the highlighted row, which is the
@@ -1099,20 +1143,22 @@ class DeckApp:
         n = next((r.get("n", i + 1) for i, r in enumerate((self.state or {}).get("rows") or [])
                   if r and r.get("key") == self.state.get("selected_key")), None) if self.state else None
         if self.mode == "scroll":
-            self.offset = 0 if n is None else scroll_window(n_rows, n - 4)[1]
+            self.offset = 0 if n is None else scroll_to(n_rows, n, self.offset)
             return
         book = pages(n_rows)
         self.page = 0 if n is None else next((i for i, entries in enumerate(book) if n in entries), 0)
 
-    def _set_brightness(self, percent: int) -> None:
-        """The key lights, with a word about it — and the file's number remembered even if the device refused it, so
-        the deck doesn't go back to the device every second with the same answer."""
+    def _set_brightness(self, percent: int, say: bool = True) -> None:
+        """The key lights, and a line saying so when it was a change rather than the deck lighting up in the first
+        place. The number is remembered even if the device refused it, so the deck doesn't go back to the device
+        every second with the same answer."""
         try:
             self.deck.set_brightness(percent)
         except Exception as e:                                  # noqa: BLE001 - a deck without controllable lights
             self.log(f"brightness: {e}")
-        self.settings["brightness"] = percent
-        self.log(f"deck settings: brightness {percent}")
+        self._lit = percent
+        if say:
+            self.log(f"deck settings: brightness {percent}")
 
     def press(self, key: int) -> None:
         """A key going down, for a hand-driven fake deck."""
@@ -1184,12 +1230,8 @@ def main(argv=None) -> int:
         print(f"{e}"); return 1
     if a.no_device:
         deck.no_render = True                                   # the faces in words, since there's nothing to draw them on
-    # the lights come from the settings file unless they were said on the command line, which wins for this run
-    brightness = a.brightness if a.brightness is not None else load_settings(SETTINGS_FILE)["brightness"]
-    try:
-        deck.set_brightness(brightness)
-    except Exception as e:                                      # noqa: BLE001 - the keys work without the lights dimmed
-        print(f"brightness: {e}")
+    # the lights are the settings file's unless they were said on the command line, which wins for this run; the
+    # deck's own first look at the file is what puts them on the keys, so it says nothing about it
     board = BoardClient(path, log=lambda m: print(m, file=sys.stderr))
     app = DeckApp(deck, board, log=lambda m: print(m, file=sys.stderr), heartbeat_s=HEARTBEAT_S,
                   echo=lambda m: print(m, file=sys.stderr, flush=True), brightness_override=a.brightness)
