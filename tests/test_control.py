@@ -89,6 +89,8 @@ def _board(monkeypatch, tmp_path, rows, *, visible=None, in_tmux=True, sock=None
     # says the panel is up — so a board here would open it on mount and fetch from a client that has no metrics()
     monkeypatch.setattr(tui, "METRICS_FILE", tmp_path / "metrics-panel")
     monkeypatch.setattr(tui, "_pool_panel_state", lambda: False)     # else P's panel runs the operator's saint-pool
+    # and the Stream Deck's settings: state now carries them, so no board here may read or write the live file
+    monkeypatch.setattr(tui.control.deck_settings, "FILE", tmp_path / "deck-settings")
     monkeypatch.setattr(tui.tmux, "in_tmux", lambda: in_tmux)
     monkeypatch.setattr(tui.tmux, "reap_viewer", lambda *a, **k: None)
     monkeypatch.setattr(tui.tmux, "restore_viewer", lambda *a, **k: None)

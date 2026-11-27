@@ -53,6 +53,7 @@ from ctxswitch.client.tui import control
 from ctxswitch.client.tui import pool_panel
 from ctxswitch.client.tui.pool_panel import PoolPanel
 from ctxswitch.common.config import Config
+from ctxswitch.common import deck_settings
 from ctxswitch.hub.tracker.recap import anchor_of as _anchor
 
 STATE_STYLE = {"busy": "bold green", "waiting": "bold yellow", "idle": "cyan", "shell": "magenta", "unknown": "dim", "ended": "dim"}
@@ -367,6 +368,9 @@ HELP_KEYS = [
     (("R",), "R", "the pool panel: the next verified reviewer (`saint-pool config set reviewer …`)"),
     (("plus", "minus"), "+ −", "the pool panel: one more / one fewer review round, 1–5 "
      "(`saint-pool config set rounds …`)"),
+    (("D",), "D", "Stream Deck: its settings, one key each — t the top row (pages ⇄ scroll), + − the backlight "
+                  "(10–100, 10 at a time), a the animations on/off. Each one is saved as you set it, and `ctx deck` "
+                  "picks it up within a second (Esc, D or q closes it)"),
     (("question_mark",), "?", "this help (Esc, ? or q closes it)"),
     (("q",), "q", "detach: leave tmux, everything keeps running; `ctx tmux` brings it back"),
     (("Q",), "Q", "quit all: end the tmux session and every agent in it, after a y"),
@@ -679,6 +683,82 @@ class SpendScreen(Screen):
         self.app.pop_screen()
 
 
+DECK_BRIGHT_STEP = 10                                    # + and − a press, within deck_settings' 10..100
+
+
+class DeckSettingsScreen(Screen):
+    """D : the Stream Deck's settings, one key each, each saved to the file the deck watches as you set it (see
+    docs/deck-settings.md). The board is the only writer; `ctx deck` reads the same file and applies a change within
+    a second. Esc (or D or q) closes it."""
+    BINDINGS = [Binding("escape", "close", show=False), Binding("D", "close", show=False),
+                Binding("q", "close", show=False), Binding("t", "top_row", show=False),
+                Binding("plus", "brightness_up", show=False), Binding("minus", "brightness_down", show=False),
+                Binding("a", "animations", show=False)]
+    DEFAULT_CSS = """
+    DeckSettingsScreen > VerticalScroll { padding: 0 1; }
+    DeckSettingsScreen > VerticalScroll > #deck_path { color: $text-muted; padding-top: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="deck_settings"):
+            yield Static(self.body(), id="deck_text")
+            yield Static(str(deck_settings.FILE), id="deck_path", markup=False)
+
+    def on_mount(self) -> None:
+        self.settings = deck_settings.load_settings(deck_settings.FILE)      # fresh: the deck may have it changed
+        self.refresh_body()
+
+    def refresh_body(self) -> None:
+        try:
+            self.query_one("#deck_text", Static).update(self.body())
+        except Exception:                               # noqa: BLE001 - closed between the key and the redraw
+            pass
+
+    def body(self) -> Text:
+        s = getattr(self, "settings", None) or dict(deck_settings.DEFAULTS)
+        t = Text.assemble(("Stream Deck", "bold"), ("   t ⇄ · + − · a · Esc closes\n", "dim"), "\n")
+        t.append("  top row     ")
+        for i, name in enumerate(deck_settings.TOP_ROW):
+            if i:
+                t.append("  ")
+            t.append(name, "bold" if s["top_row"] == name else "dim")
+        t.append("\n  backlight ")
+        for step in range(10, 101, 10):                 # one block per step, filled to where it's set
+            t.append("█" if step <= s["brightness"] else "░", "bright_white" if step <= s["brightness"] else "dim")
+        t.append(f" {s['brightness']}\n", "bold")
+        t.append("  animations ")
+        t.append("on" if s["animations"] else "off", "bold")
+        return t
+
+    def _set(self, **changes) -> None:
+        """Save one setting at once — the deck reads the file, not this screen — and re-render the line it changed."""
+        self.settings = {**(getattr(self, "settings", None) or deck_settings.load_settings(deck_settings.FILE)),
+                         **changes}
+        deck_settings.save_settings(deck_settings.FILE, changes)
+        self.refresh_body()
+
+    def action_top_row(self) -> None:
+        """t: pages of rows ⇄ one row that scrolls, for more sessions than the deck has keys."""
+        other = next(x for x in deck_settings.TOP_ROW if x != self.settings["top_row"])
+        self._set(top_row=other)
+
+    def _brightness(self, delta: int) -> None:
+        self._set(brightness=min(100, max(10, int(self.settings["brightness"]) + delta)))
+
+    def action_brightness_up(self) -> None:
+        self._brightness(DECK_BRIGHT_STEP)
+
+    def action_brightness_down(self) -> None:
+        self._brightness(-DECK_BRIGHT_STEP)
+
+    def action_animations(self) -> None:
+        """a: the breathe/sweep/wipe animations, or static faces that still follow the state."""
+        self._set(animations=not self.settings["animations"])
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+
 START_KEYS = "↑↓ move · Space mark · Enter resume marked (or this one) · 1-9 start new · Esc close"
 
 
@@ -833,6 +913,7 @@ class CtxApp(App):
         Binding("v", "mark_viewed", "viewed"), Binding("w", "toggle_ws", "group"), Binding("r", "refresh", "refresh"),
         Binding("p", "toggle_popups", "pop-ups"), Binding("x", "exchange", "exchange"), Binding("i", "retire", "retire"),
         Binding("dollar_sign", "spend", "spend"), Binding("g", "metrics", "gpu"),
+        Binding("D", "deck_settings", "deck"),                   # D: the Stream Deck's settings, saved as you set them
         Binding("question_mark", "help", "help"),
         Binding("G", "metrics_host", show=False),                      # G: pick the hosts the CPU/GPU panel stacks
         Binding("P", "pool_panel", "pool"),                            # P: this machine's local-pool panel
@@ -1978,6 +2059,10 @@ class CtxApp(App):
     def fetch_spend(self, screen: SpendScreen) -> None:
         reports = spend_windows(self.client, self.host_filter)
         self.call_from_thread(screen.loaded, reports)
+
+    def action_deck_settings(self) -> None:
+        """D: the Stream Deck's settings. It reads and writes the file the deck watches, so there's nothing to fetch."""
+        self.push_screen(DeckSettingsScreen())
 
     def tip_for(self, key: str) -> str | None:
         if key.startswith("ws:"):

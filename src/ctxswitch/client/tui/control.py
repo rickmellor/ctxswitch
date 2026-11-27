@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ctxswitch.client import fmt
+from ctxswitch.common import deck_settings
 
 if TYPE_CHECKING:                                        # only for the annotations: no cycle at runtime
     from ctxswitch.client.tui.app import CtxApp
@@ -39,10 +40,11 @@ def under_test() -> bool:
 def top_modal(app: "CtxApp"):
     """The screen on top, when it's one the control protocol can answer: the Picker, the Start screen or the y/n.
     The board pushes others (help, the host picker) and those are nobody's to drive from outside — except the Spend
-    screen, which answers `cancel` (its own Esc) without becoming anybody's option list."""
-    from ctxswitch.client.tui.app import Confirm, Picker, SpendScreen, StartScreen
+    screen and the Stream Deck's settings screen, which answer `cancel` (their own Esc) without becoming anybody's
+    option list."""
+    from ctxswitch.client.tui.app import Confirm, DeckSettingsScreen, Picker, SpendScreen, StartScreen
     top = app.screen_stack[-1] if len(app.screen_stack) > 1 else None
-    return top if isinstance(top, (Picker, StartScreen, Confirm, SpendScreen)) else None
+    return top if isinstance(top, (Picker, StartScreen, Confirm, SpendScreen, DeckSettingsScreen)) else None
 
 
 def input_focused(app: "CtxApp") -> bool:
@@ -56,12 +58,15 @@ def input_focused(app: "CtxApp") -> bool:
 
 
 def modal_of(app: "CtxApp") -> str | None:
-    """What's on top of the screen stack, as state names it: picker / start / confirm / spend / input, or None."""
+    """What's on top of the screen stack, as state names it: picker / start / confirm / spend / deck_settings /
+    input, or None."""
     top = top_modal(app)
     if top is not None:
-        from ctxswitch.client.tui.app import Confirm, Picker, SpendScreen
+        from ctxswitch.client.tui.app import Confirm, DeckSettingsScreen, Picker, SpendScreen
         if isinstance(top, SpendScreen):
             return "spend"
+        if isinstance(top, DeckSettingsScreen):
+            return "deck_settings"
         if isinstance(top, Picker):
             return "picker"
         return "start" if not isinstance(top, Confirm) else "confirm"
@@ -102,6 +107,7 @@ ACTIONS = {
     "list_shorter": "action_list_shorter", "list_taller": "action_list_taller", "list_auto": "action_list_auto",
     "clear_filter": "action_clear_filter", "metrics": "action_metrics", "exchange": "action_exchange",
     "spend": "action_spend",                                   # $ toggles: served in dispatch(), which can close
+    "deck_settings": "action_deck_settings",                   # D likewise, and `deck_set` writes what it shows
     "new_session": "action_new_session", "end_session": "action_end_session", "start": "action_start",
     # the two names this protocol answered before the whole keyboard was wired up, kept for its first client
     "new": "action_new_session", "end": "action_end_session",
@@ -153,7 +159,7 @@ def board_state(app: "CtxApp") -> dict:
                      "selected": key == app.selected, "pool_jobs": kids.get(key, 0)})
     out = {"proto": PROTO, "rows": rows, "slots": slots, "visible_key": app.visible_key,
            "selected_key": app.selected, "modal": modal_of(app), "options": options_of(app),
-           "panels": panels_of(app)}
+           "panels": panels_of(app), "settings": deck_settings.load_settings(deck_settings.FILE)}
     if out["modal"] == "confirm":
         out["prompt"] = prompt_of(app)
     return out
@@ -286,7 +292,7 @@ class ControlServer:
         """Run one request on the app's loop and say what came of it. The reply is sent after the action ran."""
         app = self.app
         cmd = req.get("cmd")
-        from ctxswitch.client.tui.app import SpendScreen    # the one screen that is a modal but has no cancel()
+        from ctxswitch.client.tui.app import DeckSettingsScreen, SpendScreen    # modals with no cancel() of their own
         if cmd == "hello":
             return {"ok": True, "proto": PROTO, "state": board_state(app)}
         if cmd == "state":
@@ -333,7 +339,7 @@ class ControlServer:
                 app.action_clear_filter()
                 return {"ok": True, "state": board_state(app)}
             top = top_modal(app)
-            if isinstance(top, SpendScreen):           # its Esc — the screen has no cancel of its own
+            if isinstance(top, (SpendScreen, DeckSettingsScreen)):   # their own Esc — neither has a cancel of its own
                 app.pop_screen()
             elif top is not None:
                 top.cancel()
@@ -344,6 +350,33 @@ class ControlServer:
             else:
                 app.action_spend()
             return {"ok": True, "state": board_state(app)}
+        if cmd == "deck_settings":                     # D's own toggle, same as $'s
+            if isinstance(app.screen, DeckSettingsScreen):
+                app.pop_screen()
+            else:
+                app.action_deck_settings()
+            return {"ok": True, "state": board_state(app)}
+        if cmd == "deck_set":                          # the deck's settings, with or without the screen up
+            changes, bad = {}, False
+            for key in ("top_row", "brightness", "animations"):
+                if key not in req:
+                    continue
+                value = deck_settings._valid(key, req[key])
+                if value is None:
+                    bad = True
+                else:
+                    changes[key] = value
+            if bad:
+                return {"ok": False, "error": "bad setting"}
+            if changes:                              # nothing to change is no change: say what stands
+                deck_settings.save_settings(deck_settings.FILE, changes)
+                self.push_state()                    # subscribers mirror the settings, so say they changed
+                top = app.screen_stack[-1] if len(app.screen_stack) > 1 else None
+                if isinstance(top, DeckSettingsScreen):
+                    top.settings = deck_settings.load_settings(deck_settings.FILE)   # the screen shows the file
+                    top.refresh_body()
+            return {"ok": True, "settings": deck_settings.load_settings(deck_settings.FILE),
+                    "state": board_state(app)}
         action = ALIASES.get(cmd) or ACTIONS.get(cmd)
         if action is not None:
             if cmd in NEEDS_SELECTION and not has_target(app, cmd):

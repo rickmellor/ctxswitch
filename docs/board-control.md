@@ -22,10 +22,12 @@ Every request is `{"cmd": "<name>", ...}`; an optional `"id"` (any JSON value) i
 | `end` | | same as `k` (`action_end_session`): opens the y/n Confirm |
 | `pick` | `n` 1..9 | while a Picker or StartScreen is on top: choose option n, as pressing that digit does |
 | `confirm` | `yes` bool | while a Confirm is on top: answer it |
-| `cancel` | | dismiss what is on top — the Picker / StartScreen / Confirm / Spend screen, or the board's text box — as Esc / "no" does; `ok` even if none is open |
+| `cancel` | | dismiss what is on top — the Picker / StartScreen / Confirm / Spend screen / Stream Deck settings screen, or the board's text box — as Esc / "no" does; `ok` even if none is open |
 | `gpu` | | `g`: the CPU/GPU panel on or off (also `metrics`) |
 | `pool` | | `P`: this machine's local-pool panel on or off (also `pool_panel`) |
 | `spend` | | `$`: the spend screen. A toggle — while it is the top screen this closes it, anywhere else it opens one |
+| `deck_settings` | | `D`: the Stream Deck's settings screen. A toggle, the same way `spend` is |
+| `deck_set` | any of `top_row` / `brightness` / `animations` | one or more of the deck's settings, validated by the same rules the settings file has (see `docs/deck-settings.md`): `top_row` `"pages"` or `"scroll"`, `brightness` an int 10..100, `animations` a bool. Saves what is valid and replies `{"ok": true, "settings": {…}, "state": {…}}` with the whole set as it now stands; one bad value saves nothing and replies `{"ok": false, "error": "bad setting"}`. Works with or without the screen up, and re-renders it when it is |
 | `exchange` | | `x`: send the selected session elsewhere (opens a Picker, which `pick` / `cancel` then drive). Needs a selected session |
 | `detach` | | `q`: inside tmux detach (everything keeps running); outside it, quit the board |
 
@@ -61,6 +63,7 @@ The commands in the first table cover the rest of the keyboard: `new` (`n`), `st
 | `T` | `pool_review` | the pool panel: review on, or off |
 | `R` | `pool_reviewer` | the pool panel: the next verified reviewer |
 | `+` / `-` | `pool_rounds_up` / `pool_rounds_down` | the pool panel: one review round more / fewer, 1–5 |
+| `D` | `deck_settings` | the Stream Deck's settings: `t` the top row (`pages` ⇄ `scroll`), `+` / `-` the backlight ±10 (10..100), `a` the animations on/off. Each one is written to the settings file as it is set; `deck_set` is the same from the wire |
 | `<` / `>` | `wider` / `narrower` | the board 5 columns wider / narrower (inside ctx tmux) |
 | `[` / `]` | `list_shorter` / `list_taller` | the session list one line shorter / taller |
 | `\` | `list_auto` | the list's height back to automatic |
@@ -93,7 +96,8 @@ the reply is sent after the action has run.
   "selected_key": "laptop/claude/def",
   "modal": null,
   "options": [],
-  "panels": {"gpu": false, "pool": false}
+  "panels": {"gpu": false, "pool": false},
+  "settings": {"top_row": "pages", "brightness": 60, "animations": true}
 }
 ```
 
@@ -102,11 +106,14 @@ the reply is sent after the action has run.
   while `slot` / `select` accept any `n` listed here. `state` is
   `fmt.session_state()`: `busy | waiting | idle | shell | unknown | ended`. `visible` = this session is in the main
   pane (`▶`), `selected` = the highlighted row. `title` = `fmt.display_title`, `harness` = `fmt.harness_label`.
-- `modal`: `null | "picker" | "start" | "confirm" | "spend" | "input"` — what is on top of the screen stack
-  (`"input"` = the board's text Input has focus: `/`, `m`, `a` or a directory prompt). `cancel` closes any of them,
-  the Spend screen included.
+- `modal`: `null | "picker" | "start" | "confirm" | "spend" | "deck_settings" | "input"` — what is on top of the
+  screen stack (`"input"` = the board's text Input has focus: `/`, `m`, `a` or a directory prompt). `cancel` closes any
+  of them, the Spend and Stream Deck settings screens included.
 - `options`: when `modal` is `picker` or `start`, `[{"n": 1, "label": "claude (max)"}, ...]` for the numbered
   choices a `pick` accepts; otherwise `[]`. For `confirm`, `prompt` carries the question text.
 - `panels`: the two panels a key shows and hides — `gpu` is `g`'s CPU/GPU panel (`action_metrics`), `pool` is `P`'s
   local-pool panel (`action_pool_panel`). Both bool, and they follow the key: a client that lights a key while its
   panel is up can ask the board whether it is.
+- `settings`: the Stream Deck's settings as the settings file has them (defaults filled, values checked), so a client
+  can read them without touching the file — `deck_set` is how it changes them. Read off the file each time, so it is
+  current even when something else wrote it.
