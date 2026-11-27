@@ -384,9 +384,17 @@ that goes `waiting`. They move on a 20 fps clock of their own: a waiting session
 red, a busy one sweeps a gold bar down its left edge, and the key a switch has just made visible fades out of white.
 More than five sessions don't get squashed: the top row pages, four rows and a `▶` on the first page, `◀` and three
 on a middle one, `◀` and the rest on the last, with the page count under each arrow and ▲▼ bringing the page along
-when the highlight walks off it. Pressing a session key whites it at once and lets its own colour pulse back in while
-the board swaps the pane over, then fades it to normal the moment that row is the one showing.
-It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board, and takes `--brightness 0-100` (60),
+when the highlight walks off it — or, with `top_row: scroll` in the settings file, it scrolls instead: a window of
+consecutive rows that one arrow moves along by exactly one row, `▶` at one end and `◀` at the other while rows remain
+off screen and the last four at the far right, with the rows on show under each arrow (`5–7/9`). Pressing a session
+key whites it at once and lets its own colour pulse back in while the board swaps the pane over, then fades it to
+normal the moment that row is the one showing.
+How the top row moves, how bright the keys are (`brightness`) and whether the faces move at all (`animations`) come
+from one JSON file — `~/.local/state/ctxswitch/deck-settings` — that the board's `D` screen writes: `ctx deck` reads
+it at start and watches its mtime once a second, so a change made on the board is applied to a deck that is already
+running. A `--brightness` said on the command line wins over the file for that run.
+It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board, and takes `--brightness 0-100` (the
+file's, 60 until the board's D screen says otherwise),
 `--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
 drawing them, to try the wiring by hand). ▲▼ move the highlight the moment you press them; hold one for 0.6 s before
 letting go and it opens the row the highlight ends up on, so one key both walks the list and enters it. Ctrl-C resets
