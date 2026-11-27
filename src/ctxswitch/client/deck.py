@@ -420,7 +420,7 @@ def render(face: KeyFace, deck) -> bytes:
         d.rectangle((0, h - 4, w - 1, h - 1), fill=_hex(WHITE))
     if face.dot:
         # upper right, level with the number, ringed in white so it reads on every palette colour
-        d.ellipse((w - 15, 7, w - 5, 17), fill=_hex(face.dot), outline=_hex(WHITE), width=1)
+        d.ellipse((w - 19, 7, w - 9, 17), fill=_hex(face.dot), outline=_hex(WHITE), width=1)   # 9 px in: clear of the key bevel
     ink = _hex(face.ink or (DIM_GREY if face.dim else WHITE))
     y = 6
     for i, line in enumerate(face.lines):
