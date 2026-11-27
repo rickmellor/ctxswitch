@@ -143,6 +143,8 @@ class KeyFace:
     ink: str | None = None                    # text in this colour instead of white: a white key's own palette colour
     edge: tuple[int, int, str] | None = None   # a sweep bar on the key's left edge: (y0, y1, colour)
     small: bool = False                        # every line in the 11 px board text size (the input box's prompt and text)
+    sub: str | None = None                     # one more line under `lines`, always 11 px: a label that keeps its own
+                                               # size and says something small underneath it
 
 
 def pulse(t: float) -> float:
@@ -242,8 +244,10 @@ class Layout:
             faces[7] = KeyFace(lines=("no board",), dim=True)      # grey on black, in the centre
             return faces
         modal = state.get("modal")
-        if modal in ("picker", "start"):
+        if modal == "picker":
             return self._picker(state)                             # a picker's five keys are its options: no paging
+        if modal == "start":
+            return self._start(state)                              # …and so are the Start screen's, with four keys more
         if modal == "confirm":
             return self._confirm()
         if modal == "input":
@@ -373,6 +377,38 @@ class Layout:
             faces[i] = KeyFace(bg=ACTION_BG, lines=("cancel",))
         return faces
 
+    def _start(self, state: dict) -> dict[int, KeyFace]:
+        """The Start screen (`s`): its profile keys along the top, and under them the screen's own four keys — ▲▼
+        over the sessions to resume, `select` to mark the one the cursor is on, `cancel`, and `enter` to resume them.
+
+        The bottom row's two say what the screen would do: `select` carries the cursor row's title and wears the lit
+        colour while that row is marked, and `enter` says how many it would bring back. A board whose state has no
+        `start` field — an older one — leaves both saying only what they are."""
+        faces: dict[int, KeyFace] = {}
+        options = state.get("options") or []
+        for i in range(5):
+            opt = next((o for o in options if o.get("n") == i + 1), None)
+            faces[i] = KeyFace(bg=OPTION_BG, lines=(str(i + 1), _title(opt.get("label")))) \
+                if opt else KeyFace()
+        for i in range(ROW2, 10):
+            faces[i] = KeyFace()                       # nothing of the board's runs under this screen: no cancel
+        start = state.get("start") if isinstance(state.get("start"), dict) else None
+        recents = (start or {}).get("recents") or []
+        cursor = (start or {}).get("cursor")
+        row = recents[cursor] if isinstance(cursor, int) and 0 <= cursor < len(recents) else {}
+        # marked: its own count, or the cursor row's own mark on a board that only says which ones are marked
+        marked = bool((start or {}).get("marked")) or bool(row.get("marked"))
+        n_marked = (start or {}).get("marked") or sum(1 for r in recents if r.get("marked"))
+        under = None if start is None else (f"resume {n_marked or 1}" if (n_marked or recents) else "nothing")
+        faces[10] = KeyFace(bg=ARROW_BG, lines=("▲",))
+        faces[11] = KeyFace(bg=ARROW_BG, lines=("▼",))
+        faces[12] = KeyFace(bg=LIT_BG if marked else ACTION_BG, lines=("select",),
+                            sub=_title(row.get("title")) if start else None)
+        faces[13] = KeyFace(bg=ACTION_BG, lines=("cancel",))
+        faces[14] = KeyFace(bg=ACTION_BG, lines=("enter",), sub=under,
+                            dim=bool(start) and not recents)   # nothing to bring back: the key says so, in grey
+        return faces
+
     def _confirm(self) -> dict[int, KeyFace]:
         faces = {i: KeyFace() for i in range(ROW2)}
         self._cancel_row2(faces)
@@ -426,10 +462,18 @@ class Layout:
         if key not in range(KEY_COUNT) or state is None:
             return []
         modal = state.get("modal")
-        if modal in ("picker", "start"):
+        if modal == "picker":
             if key < 5:
                 return [{"cmd": "pick", "n": key + 1}]
             return [{"cmd": "cancel"}] if key >= ROW2 else []
+        if modal == "start":
+            # the screen's own four keys, and nothing else: the middle row's commands are the board's, and the board
+            # is not asking them under this screen
+            if key < 5:
+                return [{"cmd": "pick", "n": key + 1}]
+            if key in (10, 11):
+                return [{"cmd": "move", "delta": -1 if key == 10 else 1}]
+            return [{"cmd": {12: "mark", 13: "cancel", 14: "submit"}[key]}] if key >= 12 else []
         if modal == "confirm":
             if key == 14:
                 return [{"cmd": "confirm", "yes": True}]
@@ -515,8 +559,11 @@ def render(face: KeyFace, deck) -> bytes:
         d.ellipse((w - 19, 7, w - 9, 17), fill=_hex(face.dot), outline=_hex(WHITE), width=1)   # 9 px in: clear of the key bevel
     ink = _hex(face.ink or (DIM_GREY if face.dim else WHITE))
     y = 6
-    for i, line in enumerate(face.lines):
-        size = 11 if face.small else label_size(line, i, w)
+    text = list(face.lines) + ([face.sub] if face.sub is not None else [])
+    n_lines = len(face.lines)
+    for i, line in enumerate(text):
+        # past the key's own lines there's only the `sub`, and that is board text at whatever it hangs under
+        size = 11 if (face.small or i >= n_lines) else label_size(line, i, w)
         d.multiline_text((5, y), "\n".join(_wrap(line, w, size)), fill=ink, font=_font(size, bold=size == 26),
                          spacing=2)
         y += size + 7
@@ -528,6 +575,7 @@ def describe(face: KeyFace) -> str:
     animation for anyone watching by eye; the edge says where a sweep bar is."""
     marks = "".join("T" if face.top_bar else "") + ("B" if face.bottom_bar else "")
     return (f"{face.bg} {'|'.join(' '.join(line.split()) for line in face.lines)!r}"
+            + (f" sub={face.sub!r}" if face.sub else "")
             + (f" edge={face.edge}" if face.edge else "")
             + (f" dot={face.dot}" if face.dot else "") + (f" border={face.border}" if face.border else "")
             + (f" ink={face.ink}" if face.ink else "")

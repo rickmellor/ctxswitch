@@ -203,6 +203,46 @@ async def test_enter_with_nothing_marked_resumes_the_row_under_the_cursor(monkey
         assert screen.cursor == len(recents) - 1
 
 
+async def test_the_three_methods_move_mark_and_accept_as_the_keys_do(monkeypatch):
+    """The methods the control socket drives: the cursor clamped at both ends, a mark that toggles, and an accept
+    that takes what is marked. Each one redraws, so they are only any good on a mounted screen."""
+    recents = [_sess(K1), _sess(K2, ago=2880), _sess(K3)]
+    app = _board(monkeypatch, recents)
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(0.4)
+        screen, seen = _push(app, recents)
+        await pilot.pause(0.3)
+        for _ in range(3):
+            screen.move_cursor(1)
+        assert screen.cursor == 2, "clamped at the last row"
+        for _ in range(4):
+            screen.move_cursor(-1)
+        assert screen.cursor == 0, "…and at the first"
+        assert screen.toggle_mark() is True and screen.marked == {K1}
+        assert screen.toggle_mark() is True and screen.marked == set(), "space marks and unmarks"
+        screen.move_cursor(2)
+        assert screen.toggle_mark() is True and screen.marked == {K3}
+        assert screen.accept() is True
+        await pilot.pause(0.3)
+        assert seen == [("resume", [K3])] and not isinstance(app.screen, tui.StartScreen)
+
+
+async def test_the_methods_say_no_when_there_is_nothing_to_resume(monkeypatch):
+    """A screen with no recents has no row to mark and nothing to resume: the two answer False and dismiss nothing,
+    which is what lets the socket say so rather than reporting a success that did nothing."""
+    app = _board(monkeypatch, [])
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(0.4)
+        screen, seen = _push(app, [])
+        await pilot.pause(0.3)
+        screen.move_cursor(1); screen.move_cursor(-1)
+        assert screen.cursor == 0
+        assert screen.toggle_mark() is False and screen.marked == set()
+        assert screen.accept() is False
+        await pilot.pause(0.3)
+        assert seen == [] and isinstance(app.screen, tui.StartScreen)
+
+
 async def test_escape_q_and_s_close_it_with_nothing(monkeypatch):
     app = _board(monkeypatch, [_sess(K1)])
     async with app.run_test(size=(70, 30)) as pilot:

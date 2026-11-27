@@ -840,17 +840,14 @@ class StartScreen(Screen):
     def on_key(self, ev) -> None:
         ev.stop(); ev.prevent_default()                # nothing here is the board's key, not even s or q
         if ev.key in ("up", "k"):
-            self.cursor = max(0, self.cursor - 1)
+            self.move_cursor(-1); return               # each of these three redraws itself
         elif ev.key in ("down", "j"):
-            self.cursor = min(max(0, len(self.recents) - 1), self.cursor + 1)
+            self.move_cursor(1); return
         elif ev.key == "space":
-            if self.recents:
-                key = self.recents[self.cursor]["key"]
-                self.marked ^= {key}
+            self.toggle_mark(); return
         elif ev.key == "enter":
-            keys = [s["key"] for s in self.recents if s["key"] in self.marked] or \
-                   ([self.recents[self.cursor]["key"]] if self.recents else [])
-            self.dismiss(("resume", keys) if keys else None)
+            if not self.accept():
+                self.dismiss(None)                    # nothing to resume: the key still closes the screen
             return
         elif ev.key in ("escape", "q", "s"):
             self.dismiss(None)
@@ -863,6 +860,32 @@ class StartScreen(Screen):
         else:
             return
         self.redraw()
+
+    def move_cursor(self, delta: int) -> None:
+        """The cursor ``delta`` rows up or down, clamped at both ends of the list, which is what ▲▼ (or k/j) do a row
+        at a time. A screen with no recents has no cursor to move: it stays at 0."""
+        self.cursor = min(max(0, len(self.recents) - 1), max(0, self.cursor + delta))
+        self.redraw()
+
+    def toggle_mark(self) -> bool:
+        """Mark or unmark the row under the cursor, as Space does. False when there are no recents to mark, so the
+        control socket can say so instead of doing nothing quietly."""
+        if not self.recents:
+            return False
+        self.marked ^= {self.recents[self.cursor]["key"]}
+        self.redraw()
+        return True
+
+    def accept(self) -> bool:
+        """Enter: resume what's marked, or the row under the cursor when none are. False, and nothing dismissed, when
+        there is nothing to resume — the keyboard's own key still closes the screen on that (see `on_key`); the
+        control socket takes it as a no rather than a dismissal."""
+        keys = [s["key"] for s in self.recents if s["key"] in self.marked] or \
+               ([self.recents[self.cursor]["key"]] if self.recents else [])
+        if not keys:
+            return False
+        self.dismiss(("resume", keys))
+        return True
 
     def choose(self, n: int) -> bool:
         """Profile option n, as its digit key does — the numbered ones only, never a recent row. False when there is

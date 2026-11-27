@@ -117,6 +117,35 @@ def options_of(app: "CtxApp") -> list[dict]:
     return [{"n": n, "label": str(label)} for n, (label, _, _) in enumerate(opts, 1)]
 
 
+START_RECENTS = 20                                        # a Start screen's rows a client can be shown, newest first
+
+
+def start_of(app: "CtxApp") -> dict | None:
+    """The Start screen's own state while it is on top — where its cursor is, how many rows it has marked, and its
+    recent rows in screen order — so a client can drive it without the screen. Null with no Start screen up. Its
+    profile choices are `options`, not here."""
+    from ctxswitch.client.tui.app import StartScreen
+    top = top_modal(app)
+    if not isinstance(top, StartScreen):
+        return None
+    marked = set(top.marked)
+    return {"cursor": top.cursor, "marked": len(marked),
+            "recents": [{"key": str(s.get("key") or ""), "title": fmt.display_title(s),
+                         "marked": s.get("key") in marked} for s in list(top.recents)[:START_RECENTS]]}
+
+
+def move_highlight_or_cursor(app: "CtxApp", delta: int) -> bool:
+    """One ▲▼ (or k/j) press, whichever of the two it is: while a Start screen is on top it moves that screen's
+    cursor over the sessions to resume; otherwise it moves the board's highlight. True when there was a row to move
+    onto — one of the screen's recents, or one of the board's slots — which is when `move` says it moved."""
+    from ctxswitch.client.tui.app import StartScreen
+    top = top_modal(app)
+    if isinstance(top, StartScreen):
+        top.move_cursor(delta)
+        return bool(top.recents)
+    return app.move_selection(delta)
+
+
 def prompt_of(app: "CtxApp") -> str:
     """The y/n's question, "" for anything else."""
     from ctxswitch.client.tui.app import Confirm
@@ -194,7 +223,8 @@ def board_state(app: "CtxApp") -> dict:
                      "selected": key == app.selected, "pool_jobs": kids.get(key, 0)})
     out = {"proto": PROTO, "rows": rows, "slots": slots, "visible_key": app.visible_key,
            "selected_key": app.selected, "modal": modal_of(app), "options": options_of(app),
-           "panels": panels_of(app), "settings": deck_settings.load_settings(deck_settings.FILE),
+           "start": start_of(app), "panels": panels_of(app),
+           "settings": deck_settings.load_settings(deck_settings.FILE),
            "input_text": input_text_of(app), "input_prompt": input_prompt_of(app)}
     if out["modal"] == "confirm":
         out["prompt"] = prompt_of(app)
@@ -328,7 +358,8 @@ class ControlServer:
         """Run one request on the app's loop and say what came of it. The reply is sent after the action ran."""
         app = self.app
         cmd = req.get("cmd")
-        from ctxswitch.client.tui.app import DeckSettingsScreen, SpendScreen    # modals with no cancel() of their own
+        from ctxswitch.client.tui.app import DeckSettingsScreen, SpendScreen, StartScreen
+        # the first two are modals with no cancel() of their own; the third answers move / submit / mark itself
         if cmd == "hello":
             return {"ok": True, "proto": PROTO, "state": board_state(app)}
         if cmd == "state":
@@ -348,7 +379,8 @@ class ControlServer:
             delta = req.get("delta")
             if not isinstance(delta, int) or isinstance(delta, bool) or delta not in (-1, 1):
                 return {"ok": False, "error": "bad request"}
-            return ({"ok": True, "state": board_state(app)} if app.move_selection(delta)
+            # a Start screen on top owns the cursor: its ▲▼ walk the sessions to resume, not the board's rows
+            return ({"ok": True, "state": board_state(app)} if move_highlight_or_cursor(app, delta)
                     else {"ok": False, "error": "no such slot"})
         if cmd in ("new", "start", "end"):
             {"new": app.action_new_session, "start": app.action_start, "end": app.action_end_session}[cmd]()
@@ -370,9 +402,19 @@ class ControlServer:
                 return {"ok": False, "error": "no confirm open"}
             top.answer(bool(req.get("yes")))
             return {"ok": True, "state": board_state(app)}
-        if cmd == "submit":                            # Enter inside the board's Input, on its current text
-            return ({"ok": True, "state": board_state(app)} if submit_input(app)
+        if cmd == "submit":
+            top = top_modal(app)
+            if isinstance(top, StartScreen):           # Enter on the Start screen: resume what it has marked
+                return ({"ok": True, "state": board_state(app)} if top.accept()
+                        else {"ok": False, "error": "nothing to resume"})
+            return ({"ok": True, "state": board_state(app)} if submit_input(app)   # Enter inside the board's Input
                     else {"ok": False, "error": "no input open"})
+        if cmd == "mark":                              # Space on the Start screen: mark the row its cursor is on
+            top = top_modal(app)
+            if not isinstance(top, StartScreen):
+                return {"ok": False, "error": "no start screen open"}
+            return ({"ok": True, "state": board_state(app)} if top.toggle_mark()
+                    else {"ok": False, "error": "nothing to resume"})
         if cmd == "cancel":
             if modal_of(app) == "input":               # Esc out of the box: what the Esc binding itself does
                 app.action_clear_filter()
