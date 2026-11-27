@@ -219,6 +219,8 @@ def render(face: KeyFace, deck) -> bytes:
     y = 6
     for i, line in enumerate(face.lines):
         size = _size(line, i)
+        while size > 10 and i == 0 and d.textlength(line, font=_font(size)) > w - 10:
+            size -= 1                                           # a long label ("restart") shrinks rather than wraps
         d.multiline_text((5, y), "\n".join(_wrap(line, w, size)), fill=ink, font=_font(size, bold=size == 26),
                          spacing=2)
         y += size + 7
@@ -265,7 +267,7 @@ def _wrap(line: str, width: int, size: int) -> list[str]:
     """A key's text in at most two lines: wrapped at whole words, the second one ended with an ellipsis."""
     if "\n" in line:
         return [p.strip() for p in line.split("\n") if p.strip()][:2]
-    limit = max(4, int((width - 10) / 11.0 * (1.85 if size <= 11 else 1.0)))
+    limit = max(4, int((width - 10) / (0.55 * size)))     # DejaVu averages ~0.55 em per glyph
     if len(line) <= limit:
         return [line]
     out, cur = [], ""
