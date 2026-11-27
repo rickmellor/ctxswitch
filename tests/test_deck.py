@@ -1525,7 +1525,7 @@ async def test_the_scroll_key_moves_the_window_and_sends_nothing():
         assert d.images[4] == render(Layout().plan(app.state, 62.0, {}, 0, None, "scroll", 0)[4], d)
         app.press(4)
         assert b.seen == [], f"the board was told about a scroll: {b.seen}"
-        assert app.offset == 1 and [app.faces[i].lines[0] for i in range(5)] == ["◀", "2", "3", "4", "▶"]
+        assert app.offset == 2 and [app.faces[i].lines[0] for i in range(5)] == ["◀", "3", "4", "5", "▶"]
         app.press(0)
         assert app.offset == 0 and b.seen == []
         b.seen.clear()
@@ -1533,7 +1533,7 @@ async def test_the_scroll_key_moves_the_window_and_sends_nothing():
         assert app.offset == 0, "at the left end there is no ◀ key: key 0 is row 1, and opening it is all it does"
         assert b.seen == [{"cmd": "slot", "n": 1}], b.seen
         b.seen.clear()
-        for _ in range(5):                                        # one row a press, and it stops at home
+        for _ in range(4):                                        # two rows the first press, then one a press, to the far right
             app.press(4)
         assert app.offset == 5, f"the window ran past the far right: {app.offset}"
         assert [app.faces[i].lines[0] for i in range(5)] == ["◀", "6", "7", "8", "9"]
@@ -1550,10 +1550,10 @@ async def test_a_scrolled_key_opens_the_row_it_shows():
     app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 63.0,
                            **_settings({"top_row": "scroll"}))
     try:
-        app.press(4)                                              # ▶: the window is on rows 2–4 and ▶
+        app.press(4)                                              # ▶: the first step goes two, to rows 3–5 and ▶
         b.seen.clear()
-        app.press(1)                                              # the key showing row 2
-        assert b.seen == [{"cmd": "slot", "n": 2}], b.seen
+        app.press(1)                                              # the key showing row 3
+        assert b.seen == [{"cmd": "slot", "n": 3}], b.seen
     finally:
         await app.stop()
 
@@ -1620,7 +1620,7 @@ async def test_a_file_that_says_scroll_makes_the_top_row_scroll():
         assert app.settings["top_row"] == "scroll"
         assert app.faces[4].lines == ("▶", "1–4/9"), "the first paint was laid out in pages all the same"
         app.press(4)
-        assert app.offset == 1 and b.seen == [], f"a scroll reached the board: {b.seen}"
+        assert app.offset == 2 and b.seen == [], f"a scroll reached the board: {b.seen}"
     finally:
         await app.stop()
 
@@ -1767,3 +1767,19 @@ def test_a_brightness_said_on_the_command_line_reaches_the_device_in_main(tmp_pa
     capfd.readouterr()
     assert deck.main(["--sock", str(tmp_path / "nope.sock")]) == 0
     assert lit[-1] == 20, f"with nothing said the file lights the keys, got {lit}"
+
+
+@pytest.mark.parametrize("offset,delta,want", [
+    (0, 1, 2),      # the first step right skips the offset where nothing would move
+    (2, -1, 0),     # and the step back from there comes all the way home
+    (1, -1, 0),     # a window left at 1 by follow-the-highlight also goes home
+    (2, 1, 3), (3, -1, 2), (5, 1, 6), (0, -1, 0),
+])
+def test_the_first_scroll_right_goes_two_so_the_rows_visibly_move(offset, delta, want):
+    assert deck.scroll_step(offset, delta) == want
+
+
+def test_scroll_from_the_far_left_shows_rows_three_to_five():
+    rows = _rows(9) if "_rows" in globals() else None
+    assert deck.scroll_window(9, deck.scroll_step(0, 1))[0] == ["prev", 3, 4, 5, "next"]
+    assert deck.scroll_window(9, deck.scroll_step(2, -1))[0] == [1, 2, 3, 4, "next"]

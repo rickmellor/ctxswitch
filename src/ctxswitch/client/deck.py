@@ -175,6 +175,16 @@ def pages(n_rows: int) -> list[list[int | str]]:
     return out
 
 
+def scroll_step(offset: int, delta: int) -> int:
+    """Where one arrow press takes the scroll offset. At the far left the window is rows 1-4 on keys 0-3; one step
+    right would put rows 2-4 on keys 1-3 - the same keys they were on - so the only visible change would be row 1
+    going away. The first step right goes two instead, to rows 3-5, and the step back from there returns to 0."""
+    if delta > 0 and offset == 0:
+        return 2
+    new = offset + delta
+    return 0 if (delta < 0 and new <= 1) else new
+
+
 def scroll_window(n_rows: int, offset: int) -> tuple[list[int | str | None], int]:
     """How ``n_rows`` rows lie under the top row's five keys when the row *scrolls* instead of paging: the five
     entries for the window that starts at 0-based ``offset``, and that offset as it actually stands.
@@ -1091,7 +1101,7 @@ class DeckApp:
         delta = int(req.get("delta") or 0)
         n_rows = len((self.state or {}).get("rows") or [])
         if kind == "scroll" or self.mode == "scroll":
-            self.offset = scroll_window(n_rows, self.offset + delta)[1]
+            self.offset = scroll_window(n_rows, scroll_step(self.offset, delta))[1]
         else:
             self.page = min(max(0, self.page + delta), self._pages() - 1)
         self._paint(self.clock())
