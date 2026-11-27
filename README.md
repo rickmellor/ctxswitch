@@ -379,8 +379,10 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
 `ctx deck` turns an Elgato Stream Deck MK.2 (15 keys) into physical buttons for the board: it reads the board over
 the same control socket the keyboard shortcuts use (`~/.local/state/ctxswitch/board.sock`, `CTXSWITCH_BOARD_SOCK`),
 so a press does exactly what the key on the board does, and the keys follow the board both ways — including a session
-that goes `waiting`, which flashes red. It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board,
-and takes `--brightness 0-100` (60), `--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
+that goes `waiting`. They move on a 20 fps clock of their own: a waiting session breathes between its own colour and
+red, a busy one sweeps a gold bar down its left edge, and the key a switch has just made visible fades out of white.
+It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board, and takes `--brightness 0-100` (60),
+`--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
 drawing them, to try the wiring by hand). ▲▼ move the highlight the moment you press them; hold one for 0.6 s before
 letting go and it opens the row the highlight ends up on, so one key both walks the list and enters it. Ctrl-C resets
 the keys and closes the deck.

@@ -9,12 +9,16 @@ one exception being `spend` while the spend screen is showing, which closes it.
 
 Everything that decides *what a key looks like* or *what a press sends* lives in `Layout`, which needs neither
 Pillow, nor a device, nor a board — so that is the part the tests read. `render` and `DeckApp` only carry it out.
+
+The faces move: a waiting session breathes, a busy one sweeps a bar down its left edge, and the key a switch just
+made visible fades out of white. All three are a function of the state and one clock, so the tests read them too.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import math
 import os
 import signal
 import sys
@@ -26,15 +30,23 @@ COLS = 5
 ROWS = 3
 KEY_COUNT = COLS * ROWS
 KEY_W = 72                         # an MK.2 key, in pixels: what a label is fitted to
+KEY_H = 72                         # …and how tall it is, which is what an animation moves along
 ROW2 = 5                           # the middle row's first key: keys 5…9 are the board's panels and its exits
 ROW2_CMDS = ("gpu", "pool", "spend", "exchange", "detach")     # what each of those keys is, and what it sends
 HOLD_MS = 600                      # ▲/▼ held this long opens the highlighted row on release
 RECONNECT_S = 2.0                  # how often to retry the board while it is unreachable
-BLINK_S = 0.5                      # waiting sessions flash: how often the phase flips
 HEARTBEAT_S = 20.0                 # `ctx deck` runs for hours: one line of proof it's still awake, every 20 s
+FPS = 20                           # the animation clock: measured on the device, a full board repaint fits in one
+BREATHE_S = 1.6                    # a waiting session breathes: dark to red and back, once over this long
+SWEEP_S = 1.2                      # a busy session sweeps: the bar takes this long down, and the same back up
+WIPE_S = 0.25                      # the key a switch just made visible fades out of white over this long
+SWEEP_H = 16                       # how tall the sweep bar is, in pixels, on a 72 px key
+SWEEP_W = 2                        # its rightmost pixel column: 3 px along the key's left edge, clear of the text
+SWEEP_TOP = 4                      # where the bar's top edge starts, and stops at the far end: h - SWEEP_BOTTOM
+SWEEP_BOTTOM = 20                  # …so a 72 px key gives it 48 px of travel, top bar to bottom bar
 
 SLOT_BG = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd")   # fixed per slot key
-WAIT_BG = "#ff3b30"                # a waiting slot on the flashing half of the cycle
+WAIT_BG = "#ff3b30"                # a waiting slot at the top of its breath (and the border it always wears)
 DOT = {"busy": "#ffd700", "waiting": WAIT_BG, "idle": "#34c759",
        "shell": "#8e8e93", "unknown": "#8e8e93", "ended": "#3a3a3c"}
 DIM_GREY = "#3a3a3c"               # the text of a key the board says nothing about
@@ -64,6 +76,39 @@ def _hex(c: str) -> tuple[int, int, int]:
     return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
 
 
+def _rgb(t: tuple[int, int, int]) -> str:
+    return "#%02x%02x%02x" % t
+
+
+def blend(c1: str, c2: str, a: float) -> str:
+    """Two colours, mixed per channel: all of ``c1`` at 0, all of ``c2`` at 1, and straight between.
+
+    The animation's one colour routine, so it is the one place the ends have to be exact: a face is compared by
+    value to decide whether a key needs repainting, and a mix that drifted at a=0 or a=1 would repaint a still key."""
+    a = min(1.0, max(0.0, a))
+    one, two = _hex(c1), _hex(c2)
+    return _rgb(tuple(round(x + (y - x) * a) for x, y in zip(one, two)))
+
+
+def breathe(t: float) -> float:
+    """How red a waiting session is right now: 0 at the bottom of a breath, 1 at the top, back to 0, over
+    ``BREATHE_S`` seconds. Smooth at both ends — a cosine, so the turn around costs nothing to the eye.
+
+    Quantized to 1/32 steps: at 20 fps several frames in a row land on the same shade, and two frames that look the
+    same must compare equal or the key goes back on the wire for nothing."""
+    return round((0.5 - 0.5 * math.cos(2 * math.pi * (t % BREATHE_S) / BREATHE_S)) * 32) / 32
+
+
+def sweep_y(t: float, h: int) -> int:
+    """The top edge of a busy key's sweep bar: down the key's left edge over ``SWEEP_S`` seconds and back up over
+    the next, as a triangle wave, in whole pixels — which is as fine as a frame can move anyway.
+
+    It travels between ``SWEEP_TOP`` and ``h - SWEEP_BOTTOM`` so the bar stays inside the key's own bars."""
+    lo, hi = SWEEP_TOP, max(SWEEP_TOP, h - SWEEP_BOTTOM)
+    phase = (t % (2 * SWEEP_S)) / SWEEP_S
+    return round(lo + (hi - lo) * (phase if phase <= 1.0 else 2.0 - phase))
+
+
 @dataclass
 class KeyFace:
     """Everything needed to paint one key — and everything a test wants to know about it."""
@@ -74,15 +119,26 @@ class KeyFace:
     dot: str | None = None
     border: str | None = None
     dim: bool = False
+    edge: tuple[int, int, str] | None = None   # a sweep bar on the key's left edge: (y0, y1, colour)
 
 
 # --------------------------------------------------------------------------------------------- the layout table
 
 
 class Layout:
-    """What the keys look like for a board state, and what a press sends. Pure functions of the state."""
+    """What the keys look like for a board state at a moment in time, and what a press sends. Pure functions of the
+    state, the clock, and the wipes still running."""
 
-    def plan(self, state: dict | None, blink: bool = False) -> dict[int, KeyFace]:
+    def plan(self, state: dict | None, t: float = 0.0, wipes: dict[int, float] | None = None) -> dict[int, KeyFace]:
+        faces = self._base(state, t)
+        for key, t0 in (wipes or {}).items():         # the key a switch just made visible: white, fading back
+            face = faces.get(key)
+            if face is not None:
+                face.bg = blend(WHITE, face.bg, min(1.0, (t - t0) / WIPE_S))   # its text stays white: it re-emerges
+        return faces
+
+    def _base(self, state: dict | None, t: float) -> dict[int, KeyFace]:
+        """The faces as they would stand still, with the clock only deciding the breathing and the sweep."""
         if state is None:
             faces = {i: KeyFace() for i in range(KEY_COUNT)}
             faces[7] = KeyFace(lines=("no board",), dim=True)      # grey on black, in the centre
@@ -93,16 +149,23 @@ class Layout:
         if modal == "confirm":
             return self._confirm()
         if modal == "input":
-            return self._typing(state)
+            return self._typing(state, t)
         if modal == "spend":
             return self._spend(state)
-        return self._normal(state, blink)
+        return self._normal(state, t)
+
+    def animating(self, state: dict | None, wipes: dict[int, float] | None = None) -> bool:
+        """Whether the next frame can differ from this one: a session waiting (it breathes), one busy (it sweeps),
+        or a wipe still running. A board that is all idle and settling paints nothing until it next changes."""
+        if wipes:
+            return True
+        return any((r or {}).get("state") in ("waiting", "busy") for r in (state or {}).get("rows") or [])
 
     def _rows(self, state: dict) -> dict[int, dict]:
         """Board rows by key index: ``n`` is the number on the board, so slot ``n`` is key ``n-1``."""
         return {r.get("n", i + 1) - 1: r for i, r in enumerate(state.get("rows") or [])}
 
-    def _normal(self, state: dict, blink: bool) -> dict[int, KeyFace]:
+    def _normal(self, state: dict, t: float) -> dict[int, KeyFace]:
         faces: dict[int, KeyFace] = {}
         rows = self._rows(state)
         for i in range(5):
@@ -110,12 +173,16 @@ class Layout:
             if r is None:
                 faces[i] = KeyFace(lines=(str(i + 1),), dim=True)   # black, the number in dark grey only
                 continue
-            waiting = r.get("state") == "waiting"
-            faces[i] = KeyFace(bg=WAIT_BG if (waiting and blink) else SLOT_BG[i % len(SLOT_BG)],
+            row_state = r.get("state")
+            waiting = row_state == "waiting"
+            dot = DOT.get(row_state, DOT["unknown"])
+            faces[i] = KeyFace(bg=blend(SLOT_BG[i % len(SLOT_BG)], WAIT_BG, breathe(t)) if waiting else
+                               SLOT_BG[i % len(SLOT_BG)],
                                lines=(str(i + 1), _title(r.get("title"))),
                                top_bar=bool(r.get("visible")), bottom_bar=bool(r.get("selected")),
-                               dot=DOT.get(r.get("state"), DOT["unknown"]),
-                               border=WAIT_BG if waiting else None)
+                               dot=dot, border=WAIT_BG if waiting else None,
+                               edge=(sweep_y(t, KEY_H), sweep_y(t, KEY_H) + SWEEP_H - 1, dot)
+                               if row_state == "busy" else None)
         for i, face in enumerate(self._row2(state)):
             faces[ROW2 + i] = face
         faces[10] = KeyFace(bg=ARROW_BG, lines=("▲",))
@@ -171,9 +238,10 @@ class Layout:
         faces[14] = KeyFace(bg=CONFIRM_BG, lines=("KILL", "✓"))
         return faces
 
-    def _typing(self, state: dict) -> dict[int, KeyFace]:
-        """The board's text Input has focus (`/`, `m`, `a`, a directory prompt): no key here can help, so say so."""
-        faces = self._normal(state, blink=False)
+    def _typing(self, state: dict, t: float) -> dict[int, KeyFace]:
+        """The board's text Input has focus (`/`, `m`, `a`, a directory prompt): no key here can help, so say so.
+        The rows underneath are still doing what they do, so they keep moving."""
+        faces = self._normal(state, t)
         for i in range(ROW2, KEY_COUNT):
             faces[i] = KeyFace(bg=ACTION_BG, lines=("type on\nthe board",))
         return faces
@@ -251,6 +319,9 @@ def render(face: KeyFace, deck) -> bytes:
     d = ImageDraw.Draw(img)
     if face.border:
         d.rectangle((1, 1, w - 2, h - 2), outline=_hex(face.border), width=2)
+    if face.edge:                                   # the busy sweep, along the key's left edge, under the text.
+        y0, y1, colour = face.edge                  # the top and bottom bars may cross its ends: that's fine
+        d.rectangle((0, y0, SWEEP_W, y1), fill=_hex(colour))
     if face.top_bar:
         d.rectangle((0, 0, w - 1, 3), fill=_hex(WHITE))
     if face.bottom_bar:
@@ -268,9 +339,11 @@ def render(face: KeyFace, deck) -> bytes:
 
 
 def describe(face: KeyFace) -> str:
-    """A face in words — what ``ctx deck --no-device`` prints instead of painting."""
+    """A face in words — what ``ctx deck --no-device`` prints instead of painting. The background carries the
+    animation for anyone watching by eye; the edge says where a sweep bar is."""
     marks = "".join("T" if face.top_bar else "") + ("B" if face.bottom_bar else "")
     return (f"{face.bg} {'|'.join(' '.join(line.split()) for line in face.lines)!r}"
+            + (f" edge={face.edge}" if face.edge else "")
             + (f" dot={face.dot}" if face.dot else "") + (f" border={face.border}" if face.border else "")
             + (f" bars={marks}" if marks else "") + (" dim" if face.dim else ""))
 
@@ -557,23 +630,27 @@ class FakeDeck:
 class DeckApp:
     """The device, the board, and the redraw that keeps one showing the other."""
 
-    def __init__(self, deck, board, layout: Layout | None = None, log=print, blink_s: float = BLINK_S,
+    def __init__(self, deck, board, layout: Layout | None = None, log=print, fps: float = FPS,
                  heartbeat_s: float = 0.0, echo=print, clock=time.monotonic):
         self.deck = deck
         self.board = board
         self.layout = layout or Layout()
         self.log = log
         self.echo = echo                                        # the running commentary, not the problems
-        self.blink_s = blink_s
+        self.fps = fps
         self.heartbeat_s = heartbeat_s
-        self.blink = False
         self.state: dict | None = None
         self.faces: dict[int, KeyFace] = {}
+        self.wipes: dict[int, float] = {}       # key → when its wipe started; dropped when the fade is done
         self.loop: asyncio.AbstractEventLoop | None = None
         self._timers: list[asyncio.Task] = []
         self._last_paint = 0.0
         self._down: dict[int, float] = {}       # when each key went down, so a release can be timed
-        self.clock = clock                                      # how a key's hold is timed; a test may hand its own
+        self.clock = clock                                      # the animation's clock, and how a key's hold
+        #                                                       is timed: a test may hand its own
+        self._last_visible: str | None = None   # the visible_key of the state before this one: a switch is off it
+        self._had_state = False                 # …and whether there was one at all: the first state is not a switch
+        self._paint_times: list[float] = []     # when each repaint went out, so the heartbeat can count the last 20 s
 
     def start(self, loop=None) -> None:
         """Wire the device up and paint what the board says now."""
@@ -583,8 +660,8 @@ class DeckApp:
         except Exception as e:                                  # noqa: BLE001 - keys that don't report are the worst case
             self.log(f"key callback: {e}")
         self.board.subscribe(self._state, loop=self.loop)
-        if self.blink_s:
-            self._timers.append(self.loop.create_task(self._flash()))
+        if self.fps:                                            # one tick drives every animation
+            self._timers.append(self.loop.create_task(self._animate()))
         if self.heartbeat_s:                                    # at least one line every 30 s, however quiet it is
             self._timers.append(self.loop.create_task(self._heartbeat()))
         self.refresh(self.board.state)
@@ -597,8 +674,11 @@ class DeckApp:
             await asyncio.sleep(self.heartbeat_s)
             painted = self.refresh(self.state)
             board = "the board" if getattr(self.board, "connected", True) else "no board yet"
-            self.echo(f"[deck] {time.monotonic() - since:.0f}s up: {board}, {len(self.faces)} keys, "
-                      f"{painted} repainted ({self._last_paint:.0f} ms)")
+            now = time.monotonic()
+            self._paint_times = [t for t in self._paint_times if now - t <= HEARTBEAT_S]
+            self.echo(f"[deck] {now - since:.0f}s up: {board}, {len(self.faces)} keys, {painted} repainted "
+                      f"({self._last_paint:.0f} ms), {len(self._paint_times)} in the last {HEARTBEAT_S:.0f} s, "
+                      f"{self._anim_count()} keys animating")
 
     async def stop(self) -> None:
         timers, self._timers = self._timers, []
@@ -621,10 +701,29 @@ class DeckApp:
             self.log(f"close: {e}")
 
     def refresh(self, state: dict | None) -> int:
-        """Paint every key whose face changed since the last plan; returns how many were painted."""
-        started = time.monotonic()
+        """Take a state the board sent: start any wipe it calls for, then paint every key whose face changed.
+        Returns how many were painted."""
         self.state = state
-        plan = self.layout.plan(state, self.blink)
+        self._wipes(state)
+        return self._paint(self.clock())
+
+    def _wipes(self, state: dict | None) -> None:
+        """A state whose `visible_key` isn't the one before it is a switch, and the key that came out is wiped. The
+        first state says nothing moved — there is nothing before it to have moved from."""
+        visible = (state or {}).get("visible_key")
+        if self._had_state and visible is not None and visible != self._last_visible:
+            index = next((r.get("n", i + 1) - 1 for i, r in enumerate((state or {}).get("rows") or [])
+                          if r.get("key") == visible), None)
+            if index in range(KEY_COUNT):                       # a row off the top of the deck has no key to wipe
+                self.wipes[index] = self.clock()
+        self._last_visible = visible
+        self._had_state = True
+
+    def _paint(self, t: float) -> int:
+        """Plan the board as it stands at ``t`` and send the keys whose face differs from what they show."""
+        started = time.monotonic()
+        self.wipes = {key: t0 for key, t0 in self.wipes.items() if (t - t0) / WIPE_S < 1.0}
+        plan = self.layout.plan(self.state, t, self.wipes)
         drawn = 0
         for key in sorted(plan):
             face = plan[key]
@@ -637,19 +736,30 @@ class DeckApp:
                 continue
             drawn += 1
             self.faces[key] = face
-        self._last_paint = (time.monotonic() - started) * 1000
+        now = time.monotonic()
+        self._paint_times.extend([now] * drawn)
+        self._last_paint = (now - started) * 1000
         return drawn
 
-    def set_blink(self, blink: bool) -> int:
-        """The other half of the flash: the same state, waiting keys in red. Returns how many keys changed."""
-        self.blink = blink
-        return self.refresh(self.state)
+    def _anim_count(self) -> int:
+        """How many keys the animations are moving right now: the rows that breathe or sweep, plus any wiping."""
+        rows = (self.state or {}).get("rows") or []
+        live = sum(1 for r in rows if (r or {}).get("state") in ("waiting", "busy"))
+        return live + len(self.wipes)
 
-    async def _flash(self) -> None:
-        """Waiting sessions flash; when none are the timer still runs and the face cache paints nothing."""
+    async def _animate(self) -> None:
+        """The animation's own clock. Nothing else moves on it: when no session is waiting or busy and no wipe is
+        running, the tick looks, finds nothing to do, and costs nothing."""
         while True:
-            await asyncio.sleep(self.blink_s)
-            self.set_blink(not self.blink)
+            await asyncio.sleep(1.0 / self.fps)
+            self._tick()
+
+    def _tick(self) -> int:
+        """One frame, if there is one to be had. Returns how many keys it sent."""
+        t = self.clock()
+        if not self.layout.animating(self.state, self.wipes):
+            return 0                                            # the tick still runs, and still costs nothing
+        return self._paint(t)
 
     def _state(self, state: dict) -> None:
         self.refresh(state)

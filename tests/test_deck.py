@@ -30,10 +30,13 @@ def row(n: int, **kw) -> dict:
     return {**r, **kw}
 
 
-def board_state(rows=None, modal=None, options=None, panels=None) -> dict:
-    """A `state` object as PROTOCOL.md describes it: three live rows unless told otherwise, both panels off."""
+def board_state(rows=None, modal=None, options=None, panels=None, visible_key=None) -> dict:
+    """A `state` object as PROTOCOL.md describes it: three live rows unless told otherwise, both panels off.
+    `visible_key` is the row in the main pane — the one the top bar is on, unless a test says otherwise."""
     rows = rows if rows is not None else [row(1), row(2), row(3)]
-    return {"proto": 1, "rows": rows, "slots": [r["key"] for r in rows], "visible_key": rows[0]["key"],
+    if visible_key is None:
+        visible_key = next((r["key"] for r in rows if r.get("visible")), rows[0]["key"])
+    return {"proto": 1, "rows": rows, "slots": [r["key"] for r in rows], "visible_key": visible_key,
             "selected_key": rows[-1]["key"], "modal": modal, "options": options or [],
             "panels": {"gpu": False, "pool": False, **(panels or {})}}
 
@@ -162,15 +165,50 @@ def test_each_session_state_has_its_dot(session_state, colour):
     assert faces[0].border == (deck.WAIT_BG if session_state == "waiting" else None)
 
 
-def test_a_waiting_session_wears_a_red_border_and_flashes():
-    waiting = board_state(rows=[row(1, state="waiting"), row(2, state="busy")])
-    on = Layout().plan(waiting, blink=True)
-    off = Layout().plan(waiting, blink=False)
-    assert on[0].bg == deck.WAIT_BG and off[0].bg == SLOT_BG[0]
-    assert on[0].border == off[0].border == deck.WAIT_BG, "the border is the steady half of the flash"
-    assert on[0].dot == off[0].dot == deck.WAIT_BG
-    assert on[0].lines == off[0].lines, "the flash changes the colour, not what the key says"
-    assert on[1].bg == off[1].bg == SLOT_BG[1], "a session that isn't waiting doesn't flash"
+def test_a_waiting_session_breathes_between_its_colour_and_red():
+    """No flash: the key eases from its own colour to the waiting red and back, so it catches the eye without
+    strobing. The border and the dot are the steady half — they are on whatever the background is doing."""
+    waiting = board_state(rows=[row(1, state="waiting"), row(2, state="idle")])
+    off = Layout().plan(waiting, 0.0)
+    on = Layout().plan(waiting, deck.BREATHE_S / 2)
+    assert off[0].bg == SLOT_BG[0] and on[0].bg == deck.WAIT_BG
+    assert off[0].border == on[0].border == deck.WAIT_BG, "the border is on for the whole breath"
+    assert off[0].dot == on[0].dot == deck.WAIT_BG
+    assert off[0].lines == on[0].lines, "the breath changes the colour, not what the key says"
+    assert off[1].bg == on[1].bg == SLOT_BG[1], "a session that isn't waiting doesn't breathe"
+    assert off[1].edge is None
+
+
+def test_the_breath_is_smooth_and_holds_still_when_it_looks_still():
+    """20 frames a second over a 1.6 s cycle is 32 frames, so a shade has to last more than one frame — otherwise
+    every tick puts a key back on the wire for a difference nobody can see."""
+    waiting = board_state(rows=[row(1, state="waiting")])
+    L = Layout()
+    cycle = [L.plan(waiting, i / deck.FPS)[0].bg for i in range(int(deck.BREATHE_S * deck.FPS))]
+    assert len(set(cycle)) > 1, "the breath never moves"
+    assert len(set(cycle)) < len(cycle), "every frame is its own shade, so every frame is a repaint"
+    assert cycle[0] == cycle[-1] == SLOT_BG[0], "a cycle of frames has to end where it started"
+    assert L.plan(waiting, 0.799)[0].bg == L.plan(waiting, 0.8)[0].bg, "two frames 50 ms apart look the same here"
+
+
+def test_a_busy_session_sweeps_down_its_left_edge():
+    busy = board_state(rows=[row(1, state="busy"), row(2, state="idle")])
+    L = Layout()
+    at_zero, later = L.plan(busy, 0.0), L.plan(busy, 0.3)
+    assert at_zero[0].edge == (deck.SWEEP_TOP, deck.SWEEP_TOP + deck.SWEEP_H - 1, deck.DOT["busy"])
+    assert later[0].edge[0] > at_zero[0].edge[0], "the bar didn't move down the key"
+    assert later[0].edge[2] == deck.DOT["busy"]
+    assert all(deck.SWEEP_TOP <= y <= deck.KEY_H - deck.SWEEP_BOTTOM
+               for y in (at_zero[0].edge[0], later[0].edge[0])), "the bar left the key"
+    assert at_zero[0].lines == later[0].lines and at_zero[0].dot == later[0].dot, "nothing else on the face moves"
+    assert at_zero[1].edge is None, "a session that isn't busy has nothing sweeping"
+
+
+@pytest.mark.parametrize("t", [0.0, 0.3, 0.6, 1.2, 1.8, 2.4, 3.7])
+def test_the_sweep_bar_is_only_ever_where_a_key_can_show_it(t):
+    y = deck.sweep_y(t, 72)
+    assert deck.SWEEP_TOP <= y <= 72 - deck.SWEEP_BOTTOM, f"at t={t} the bar sits at y={y}"
+    assert 0 <= y + deck.SWEEP_H - 1 <= 72, f"at t={t} the bar runs off the key"
 
 
 def test_a_long_title_is_wrapped_or_shortened():
@@ -270,6 +308,95 @@ def test_typing_mode_leaves_row_2_alone():
     for i in range(deck.ROW2, deck.KEY_COUNT):
         assert faces[i].lines == ("type on\nthe board",) and faces[i].bg == deck.ACTION_BG
     assert Layout().on_press(board_state(modal="input"), 5) == []
+
+
+# --------------------------------------------------------------------------------------------------- animations
+#
+# All three are pure functions of (state, t, wipes), so they are read here rather than watched on the device:
+# `blend` mixes a colour, `breathe` says how red a waiting session is, `sweep_y` where the busy bar has got to,
+# and a wipe is `plan`'s third argument.
+
+
+def test_blend_mixes_straight_between_two_colours_and_is_exact_at_both_ends():
+    assert deck.blend("#000000", "#ffffff", 0.5) == "#808080"
+    assert deck.blend("#1f77b4", "#ff3b30", 0.0) == "#1f77b4", "at 0 the first colour, unchanged"
+    assert deck.blend("#1f77b4", "#ff3b30", 1.0) == "#ff3b30", "at 1 the second, unchanged"
+    assert deck.blend("#ff3b30", "#1f77b4", 1.0) == "#1f77b4"
+    assert deck.blend("#000000", "#ffffff", 0.25) == "#404040"
+    assert deck.blend("#1f77b4", "#ff3b30", -0.5) == "#1f77b4", "a mix outside 0…1 is clamped, not wrapped"
+    assert deck.blend("#1f77b4", "#ff3b30", 1.5) == "#ff3b30"
+    assert deck.blend("#ffffff", "#ffffff", 0.37) == "#ffffff"
+
+
+def test_breathe_goes_from_zero_to_one_and_back_over_one_cycle():
+    assert deck.breathe(0.0) == 0.0
+    assert abs(deck.breathe(deck.BREATHE_S / 2) - 1.0) < 1e-6
+    assert abs(deck.breathe(deck.BREATHE_S) - 0.0) < 1e-6
+    assert abs(deck.breathe(3 * deck.BREATHE_S + deck.BREATHE_S / 2) - 1.0) < 1e-6, "the cycle keeps repeating"
+    assert all(0.0 <= deck.breathe(t / deck.FPS) <= 1.0 for t in range(400)), "it never leaves 0…1"
+
+
+def test_breathe_holds_a_shade_long_enough_that_a_still_frame_is_not_a_repaint():
+    """Quantized to 1/32: two frames that mix to the same colour compare equal, and the face cache keeps the key
+    off the wire. Unquantized, every one of the 32 frames in a cycle would be a shade of its own."""
+    assert deck.breathe(0.799) == deck.breathe(0.8)
+    assert deck.breathe(0.0) == deck.breathe(0.015)
+    assert deck.breathe(0.8) == deck.breathe(0.81)
+
+
+def test_sweep_y_runs_down_the_key_and_back_as_a_triangle():
+    assert deck.sweep_y(0.0, 72) == 4
+    assert deck.sweep_y(deck.SWEEP_S, 72) == 72 - deck.SWEEP_BOTTOM
+    assert deck.sweep_y(2 * deck.SWEEP_S, 72) == 4
+    assert deck.sweep_y(0.6, 72) == 28, "half way down at half the time, both ways"
+    assert deck.sweep_y(1.8, 72) == 28, "…and half way back up"
+    assert deck.sweep_y(0.3, 72) == 16 and deck.sweep_y(0.9, 72) == 40, "down at a steady pace"
+    assert deck.sweep_y(2.4, 72) == deck.sweep_y(0.0, 72) == deck.sweep_y(4.8, 72), "the cycle repeats"
+
+
+def test_a_wipe_fades_the_key_that_just_came_out_of_white():
+    """`visible_key` moved, so the key that gained it says so: white at once, its own colour after WIPE_S, and
+    something between in between. The text is white the whole while, so it re-emerges as the background comes down."""
+    st = board_state(rows=[row(1, state="idle"), row(2, state="idle")])
+    t0 = 10.0
+    normal = Layout().plan(st, t0)[1]
+    assert Layout().plan(st, t0, {1: t0})[1].bg == deck.WHITE
+    mid = Layout().plan(st, t0 + deck.WIPE_S / 2, {1: t0})[1]
+    assert mid.bg == deck.blend(deck.WHITE, normal.bg, 0.5) != normal.bg != deck.WHITE
+    done = Layout().plan(st, t0 + deck.WIPE_S, {1: t0})[1]
+    assert done == normal, "at the end of the wipe the face is the face"
+    assert done.bg == normal.bg and done.lines == normal.lines and done.dot == normal.dot, "bars and dot as normal"
+    assert Layout().plan(st, t0, {1: t0 - deck.WIPE_S})[1] == normal, "a wipe that finished changes nothing"
+    assert Layout().plan(st, t0, {})[1] == normal, "no wipes: the plan is the plain one"
+
+
+def test_a_wipe_does_not_disturb_the_key_it_is_not_on():
+    st = board_state(rows=[row(1, state="waiting"), row(2, state="idle")])
+    t = 0.4
+    wiped = Layout().plan(st, t, {1: t})
+    plain = Layout().plan(st, t)
+    assert wiped[0] == plain[0], "the breathing key breathes whether another one is wiping or not"
+
+
+def test_animating_is_true_only_while_something_is_moving():
+    L = Layout()
+    assert L.animating(board_state(rows=[row(1, state="idle"), row(2, state="idle")])) is False
+    assert L.animating(board_state(rows=[row(1, state="busy")])) is True
+    assert L.animating(board_state(rows=[row(1, state="waiting")])) is True
+    assert L.animating(board_state(rows=[row(1, state="shell"), row(2, state="ended")])) is False
+    assert L.animating(board_state(rows=[row(1, state="idle")]), {3: 1.0}) is True, "a wipe is movement of its own"
+    assert L.animating(board_state()) is True, "the default state's rows are busy"
+    assert L.animating(None) is False, "with no board nothing moves"
+    assert L.animating(board_state(rows=[row(1, state="idle")], modal="confirm")) is False
+
+
+def test_the_rows_behind_a_modal_are_still_rows():
+    """A modal covers the pane, but the state still carries its rows and what they are doing — which is what lets
+    the keys behind it keep breathing and sweeping while the middle row and the bottom one say `cancel`."""
+    for modal in ("picker", "confirm", "spend", "input"):
+        st = board_state(modal=modal, rows=[row(1, state="waiting", visible=True), row(2, state="busy")])
+        assert st["visible_key"] == st["rows"][0]["key"], f"a {modal} state still says which row is in the pane"
+        assert Layout().animating(st) is True, f"a {modal} shouldn't stop the top row moving"
 
 
 # ------------------------------------------------------------------------------------------ what a press sends
@@ -388,6 +515,25 @@ def test_the_longest_label_on_the_board_is_not_cut_off():
     ink = max(rows, key=lambda r: (r[-1] - r[0]) if r else 0, default=[])
     assert ink, "nothing was drawn on the key at all"
     assert min(ink) >= 4 and max(ink) < im.size[0] - 4, f"the word ran to the key's edge: cols {min(ink)}…{max(ink)}"
+
+
+def test_a_face_that_is_sweeping_still_draws_a_jpeg():
+    """The one thing an animation must not do to the wire: the deck takes JPEGs and nothing else, however many of
+    them a second one key asks for."""
+    face = Layout().plan(board_state(rows=[row(1, state="busy")]), 0.6)[0]
+    assert face.edge is not None, "the face should have a bar to draw"
+    img = render(face, FakeDeck())
+    assert img[:2] == b"\xff\xd8", "an animating key didn't come out as JPEG"
+    from PIL import Image
+    opened = Image.open(io.BytesIO(img))
+    assert opened.size == (72, 72) and opened.format == "JPEG"
+    im = opened.convert("RGB")
+    y0, y1, colour = face.edge
+    want = deck._hex(colour)
+    lo, hi = 71 - y1, 71 - y0            # the deck's own flip is already in these bytes: left is right, y is upside down
+    on_edge = [im.getpixel((x, y)) for x in (71, 70, 69) for y in range(lo + 4, hi - 3)]
+    assert any(sum(abs(a - b) for a, b in zip(px, want)) < 90 for px in on_edge), \
+        "the sweep bar isn't down the left edge of the key the deck shows"
 
 
 def test_the_image_comes_back_flipped_the_way_the_deck_wants():
@@ -604,9 +750,10 @@ async def test_replies_are_matched_and_pushes_are_not_missed():
 # ------------------------------------------------------------------- the app: a deck and a board, keeping in step
 
 
-async def _app(state=None, blink_s: float = 0.0) -> tuple[DeckApp, FakeDeck, FakeBoardSync]:
+async def _app(state=None, fps: float = 0.0, clock=None) -> tuple[DeckApp, FakeDeck, FakeBoardSync]:
     d, b = FakeDeck(), FakeBoardSync(state if state is not None else board_state())
-    app = DeckApp(d, b, blink_s=blink_s, log=lambda m: None)
+    kw = {"clock": clock} if clock is not None else {}
+    app = DeckApp(d, b, fps=fps, log=lambda m: None, **kw)
     app.start()
     return app, d, b
 
@@ -621,7 +768,8 @@ async def test_the_first_draw_paints_every_key():
 
 
 async def test_a_state_that_changes_one_row_repaints_only_that_row():
-    app, d, b = await _app()
+    """The face cache, on its own: the clock is held still, so the only thing that can move a key is the state."""
+    app, d, b = await _app(clock=lambda: 30.0)
     try:
         assert d.paints == 15
         first = dict(d.images)
@@ -659,7 +807,7 @@ async def test_an_arrow_held_opens_the_row_it_left_the_highlight_on():
             self.cb(state)
 
     d, b = FakeDeck(), Held()
-    app = DeckApp(d, b, blink_s=0.0, log=lambda m: None, clock=lambda: clock["t"])
+    app = DeckApp(d, b, fps=0.0, log=lambda m: None, clock=lambda: clock["t"])
     app.start()
     try:
         d.cb(d, 11, True)                                       # ▼ down: the move goes now
@@ -696,7 +844,7 @@ async def test_a_press_on_the_loop_thread_does_not_wait_for_itself():
             return {"ok": True}
 
     d, b = FakeDeck(), AsyncBoard()
-    app = DeckApp(d, b, blink_s=0.0, log=lambda m: None)
+    app = DeckApp(d, b, fps=0.0, log=lambda m: None)
     app.start()
     try:
         await asyncio.wait_for(asyncio.to_thread(d.cb, d, 0, True), timeout=5)
@@ -715,7 +863,7 @@ async def test_a_board_that_says_no_is_said_out_loud():
 
     d, b = FakeDeck(), Rude()
     said: list[str] = []
-    app = DeckApp(d, b, blink_s=0.0, log=said.append)
+    app = DeckApp(d, b, fps=0.0, log=said.append)
     app.start()
     try:
         d.cb(d, 4, True)
@@ -724,26 +872,83 @@ async def test_a_board_that_says_no_is_said_out_loud():
         await app.stop()
 
 
-async def test_blinking_repaints_the_waiting_key_alone():
-    app, d, _b = await _app(state=board_state(rows=[row(1, state="waiting"), row(2)]))
+async def test_a_tick_repaints_only_the_key_that_moves():
+    """The animation clock, turned by the test instead of by `asyncio.sleep`: one busy key is repainted frame after
+    frame and nothing else on the deck is — and a board that is all idle is not repainted at all, however many
+    ticks go by. The face cache is what makes the second half cost nothing."""
+    idle = [row(1, state="idle"), row(2, state="idle"), row(3, state="idle")]
+    clock = {"t": 500.0}
+    app, d, _b = await _app(state=board_state(rows=[row(1, state="busy"), *idle[1:]]), clock=lambda: clock["t"])
     try:
-        assert d.paints == 15
-        before = dict(d.images)
-        assert app.set_blink(True) == 1, "only the waiting key should change on the flash"
-        assert d.paints == 16 and d.images[0] != before[0] and d.images[1] == before[1]
-        assert app.set_blink(False) == 1
-        assert d.images[0] == before[0], "the flash should come back to the slot's own colour"
-        app._state(board_state(rows=[row(1, state="busy"), row(2)]))
-        painted = d.paints
-        assert app.set_blink(True) == 0 and d.paints == painted, "nothing is waiting, so nothing repaints"
+        assert d.paints == deck.KEY_COUNT and app._anim_count() == 1
+        moved: set[int] = set()
+        for _ in range(10):
+            clock["t"] += 1 / deck.FPS
+            before = dict(d.images)
+            assert app._tick() == 1, "a busy session is one repainted key per frame"
+            moved |= {k for k, v in d.images.items() if before.get(k) != v}
+        assert moved == {0}, f"the ticks repainted keys {sorted(moved)} as well as the busy one"
+    finally:
+        await app.stop()
+
+    app, d, _b = await _app(state=board_state(rows=idle), clock=lambda: clock["t"])
+    try:
+        for _ in range(10):
+            clock["t"] += 1 / deck.FPS
+            assert app._tick() == 0, "nothing is waiting or busy, so a tick has nothing to send"
+        assert d.paints == deck.KEY_COUNT, f"an idle board was repainted {d.paints - deck.KEY_COUNT} more times"
     finally:
         await app.stop()
 
 
-async def test_the_blink_timer_runs_by_itself():
-    app, _d, _b = await _app(state=board_state(rows=[row(1, state="waiting")]), blink_s=0.05)
+async def test_a_breathing_key_is_not_repainted_every_frame():
+    """The breath is quantized, so some frames in a cycle are the shade the key already shows — which is the whole
+    reason to quantize it: those ticks cost nothing."""
+    clock = {"t": 12.0}
+    app, d, _b = await _app(state=board_state(rows=[row(1, state="waiting"), row(2, state="idle")]),
+                            clock=lambda: clock["t"])
     try:
-        await until("the blink phase to flip", lambda: app.blink, timeout=1.0)
+        frames = int(deck.BREATHE_S * deck.FPS)
+        painted = 0
+        for _ in range(frames):
+            clock["t"] += 1 / deck.FPS
+            painted += app._tick()
+        assert 0 < painted < frames, f"a {frames}-frame cycle repainted {painted} times: no quantization"
+        assert app.faces[0].bg in (SLOT_BG[0], deck.WAIT_BG) or deck.SLOT_BG[0] < app.faces[0].bg, "still a colour"
+    finally:
+        await app.stop()
+
+
+async def test_the_animation_timer_ticks_by_itself():
+    """The one timer the animations have: `fps` frames a second, and it needs nothing else to make it move."""
+    app, d, _b = await _app(state=board_state(rows=[row(1, state="busy")]), fps=20.0)
+    try:
+        painted = d.paints
+        await until("the animation timer to repaint the busy key", lambda: d.paints > painted, timeout=1.0)
+    finally:
+        await app.stop()
+
+
+async def test_a_switch_wipes_the_key_that_came_out():
+    """`refresh` is what notices a switch: the state whose `visible_key` isn't the one before it puts a wipe on the
+    key that gained it and on the one that lost it, and the tick drops it once the fade is done."""
+    clock = {"t": 100.0}
+    rows = [row(1, visible=True), row(2), row(3)]
+    app, d, b = await _app(state=board_state(rows=rows), clock=lambda: clock["t"])
+    try:
+        assert app.wipes == {}, "the first state the deck sees says nothing has moved"
+        b.cb(board_state(rows=[row(1), row(2, title="renamed"), row(3)], visible_key=rows[0]["key"]))
+        assert app.wipes == {}, "a row that was renamed isn't a switch"
+        b.cb(board_state(rows=[row(1), row(2, visible=True), row(3)], visible_key=row(2)["key"]))
+        assert list(app.wipes) == [1], f"key 1 came out, so key 1 wipes: {app.wipes}"
+        assert app.faces[1].bg == deck.WHITE, "at the start of a wipe the key is white"
+        clock["t"] += deck.WIPE_S / 2
+        app._tick()
+        assert app.faces[1].bg != deck.WHITE and 1 in app.wipes, "half way through it is neither"
+        clock["t"] += deck.WIPE_S
+        app._tick()
+        assert app.wipes == {}, "a wipe that has run its WIPE_S is dropped, not left to fade forever"
+        assert app.faces[1].bg != deck.WHITE
     finally:
         await app.stop()
 
@@ -756,17 +961,21 @@ async def test_stopping_resets_the_deck_and_closes_it():
 
 async def test_the_heartbeat_says_the_deck_is_alive():
     """`ctx deck` runs for hours, so it prints a line of proof now and then — and repaints in passing, which the
-    face cache makes cost nothing when nothing changed."""
-    d, b = FakeDeck(), FakeBoardSync(board_state())
+    face cache makes cost nothing when nothing changed. The line also counts what the animations have been doing,
+    so a deck that has gone quiet can be told apart from one that has stopped."""
+    d, b = FakeDeck(), FakeBoardSync(board_state(rows=[row(1, state="idle"), row(2, state="idle")]))
     said: list[str] = []
-    app = DeckApp(d, b, blink_s=0.0, log=lambda m: None, heartbeat_s=0.05, echo=said.append)
+    app = DeckApp(d, b, fps=0.0, log=lambda m: None, heartbeat_s=0.05, echo=said.append)
     app.start()
     try:
         await until("a heartbeat line", lambda: any("keys" in line for line in said), timeout=2)
-        assert d.paints == 15, "the heartbeat's redraw found nothing changed, so it painted nothing extra"
+        assert d.paints == deck.KEY_COUNT, "the heartbeat's redraw found nothing changed, so it painted nothing extra"
     finally:
         await app.stop()
-    assert "the board" in " ".join(said)
+    line = " ".join(said)
+    assert "the board" in line
+    assert "in the last" in line and "animating" in line, f"the heartbeat says nothing about the animations: {line}"
+    assert "0 keys animating" in line, f"an idle board is not animating: {line}"
 
 
 def test_no_deck_attached_says_so(monkeypatch, capfd):
