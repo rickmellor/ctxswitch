@@ -10,8 +10,14 @@ one exception being `spend` while the spend screen is showing, which closes it.
 Everything that decides *what a key looks like* or *what a press sends* lives in `Layout`, which needs neither
 Pillow, nor a device, nor a board — so that is the part the tests read. `render` and `DeckApp` only carry it out.
 
-The faces move: a waiting session breathes, a busy one sweeps a bar down its left edge, and the key a switch just
-made visible fades out of white. All three are a function of the state and one clock, so the tests read them too.
+The board can have more rows than the five the top row has keys for, so the top row pages: `pages()` lays a row
+count out over as many pages of five keys as it needs, four rows plus a `▶` on the first, `◀` plus three on a middle
+one, `◀` plus what is left on the last. The page is the deck's own business — a `▶` press never reaches the board —
+and the deck follows the highlight, so walking ▲▼ off the edge of a page brings the page along.
+
+The faces move: a waiting session breathes, a busy one sweeps a bar down its left edge, a key whose switch the board
+hasn't confirmed yet pulses white, and the switch itself fades out of white when the pane comes round. All four are a
+function of the state, the page and one clock, so the tests read them too.
 """
 from __future__ import annotations
 
@@ -40,6 +46,9 @@ FPS = 20                           # the animation clock: measured on the device
 BREATHE_S = 1.6                    # a waiting session breathes: dark to red and back, once over this long
 SWEEP_S = 1.2                      # a busy session sweeps: the bar takes this long down, and the same back up
 WIPE_S = 0.25                      # the key a switch just made visible fades out of white over this long
+PENDING_S = 6.0                    # how long to keep waiting for a switch this deck asked the board to make
+PULSE_S = 0.8                      # a key waiting on that switch pulses on this cycle while it thinks
+PULSE_DEPTH = 0.15                 # …barely: white, with the key's own colour let back in this far
 SWEEP_H = 16                       # how tall the sweep bar is, in pixels, on a 72 px key
 SWEEP_W = 2                        # its rightmost pixel column: 3 px along the key's left edge, clear of the text
 SWEEP_TOP = 4                      # where the bar's top edge starts, and stops at the far end: h - SWEEP_BOTTOM
@@ -119,7 +128,38 @@ class KeyFace:
     dot: str | None = None
     border: str | None = None
     dim: bool = False
+    ink: str | None = None                    # text in this colour instead of white: a white key's own palette colour
     edge: tuple[int, int, str] | None = None   # a sweep bar on the key's left edge: (y0, y1, colour)
+
+
+def pulse(t: float) -> float:
+    """How far a key waiting on the board has let its colour back in: 0 at white, 1 at the most tinted it goes, on a
+    ``PULSE_S`` cycle. The same cosine as the breath — so the turn round costs nothing to the eye — scaled down to
+    ``PULSE_DEPTH``, because this key is white first and only thinks in shades."""
+    return PULSE_DEPTH * round((0.5 - 0.5 * math.cos(2 * math.pi * (t % PULSE_S) / PULSE_S)) * 32) / 32
+
+
+def pages(n_rows: int) -> list[list[int | str]]:
+    """How ``n_rows`` rows lie out over the top row's five keys, page by page: five entries to a page, each one a
+    1-based row number, ``"prev"`` / ``"next"`` for an arrow, or ``None`` for a key with nothing on it.
+
+    Up to five rows fit as they are. Past that a page gives up its last key to `▶` — and every page after the first
+    gives up its first to `◀` — so four rows, three, then whatever is left land on the keys: 6 rows is
+    ``[1 2 3 4 ▶]`` and ``[◀ 5 6 · ·]``, 9 is three pages, 12 is four."""
+    n = max(0, int(n_rows))
+    if n <= 5:
+        return [[i + 1 if i < n else None for i in range(5)]]
+    out: list[list[int | str]] = [[i + 1 for i in range(4)] + ["next"]]
+    shown = 4
+    while shown < n:
+        rest = n - shown
+        if rest <= 4:                                       # what is left fits one page, arrows and all: that's the
+            out.append(["prev"] + [shown + i + 1 for i in range(rest)] + [None] * (4 - rest))   # last one
+            break
+        else:
+            out.append(["prev"] + [shown + i + 1 for i in range(3)] + ["next"])
+            shown += 3
+    return out
 
 
 # --------------------------------------------------------------------------------------------- the layout table
@@ -127,17 +167,19 @@ class KeyFace:
 
 class Layout:
     """What the keys look like for a board state at a moment in time, and what a press sends. Pure functions of the
-    state, the clock, and the wipes still running."""
+    state, the clock, the page on show, the wipes still running and the switches waiting to be confirmed."""
 
-    def plan(self, state: dict | None, t: float = 0.0, wipes: dict[int, float] | None = None) -> dict[int, KeyFace]:
-        faces = self._base(state, t)
+    def plan(self, state: dict | None, t: float = 0.0, wipes: dict[int, float] | None = None, page: int = 0,
+             pending: dict[str, float] | None = None) -> dict[int, KeyFace]:
+        faces = self._base(state, t, page, pending)
         for key, t0 in (wipes or {}).items():         # the key a switch just made visible: white, fading back
             face = faces.get(key)
             if face is not None:
                 face.bg = blend(WHITE, face.bg, min(1.0, (t - t0) / WIPE_S))   # its text stays white: it re-emerges
         return faces
 
-    def _base(self, state: dict | None, t: float) -> dict[int, KeyFace]:
+    def _base(self, state: dict | None, t: float, page: int = 0, pending: dict[str, float] | None = None) \
+            -> dict[int, KeyFace]:
         """The faces as they would stand still, with the clock only deciding the breathing and the sweep."""
         if state is None:
             faces = {i: KeyFace() for i in range(KEY_COUNT)}
@@ -145,40 +187,75 @@ class Layout:
             return faces
         modal = state.get("modal")
         if modal in ("picker", "start"):
-            return self._picker(state)
+            return self._picker(state)                             # a picker's five keys are its options: no paging
         if modal == "confirm":
             return self._confirm()
         if modal == "input":
-            return self._typing(state, t)
+            return self._typing(state, t, page, pending)
         if modal == "spend":
             return self._spend(state)
-        return self._normal(state, t)
+        return self._normal(state, t, page, pending)
 
-    def animating(self, state: dict | None, wipes: dict[int, float] | None = None) -> bool:
-        """Whether the next frame can differ from this one: a session waiting (it breathes), one busy (it sweeps),
-        or a wipe still running. A board that is all idle and settling paints nothing until it next changes."""
+    def animating(self, state: dict | None, wipes: dict[int, float] | None = None, page: int = 0,
+                  pending: dict[str, float] | None = None) -> bool:
+        """Whether the next frame can differ from this one: a session on this page waiting (it breathes) or busy
+        (it sweeps), a switch on it waiting to be confirmed (it pulses), or a wipe still running. A board that is all
+        idle and settling paints nothing until it next changes, and a page that isn't the one on show costs nothing."""
         if wipes:
             return True
-        return any((r or {}).get("state") in ("waiting", "busy") for r in (state or {}).get("rows") or [])
+        here = set(self._page_keys(state or {}, page).values())         # the row positions this page draws
+        rows = [r for i, r in enumerate((state or {}).get("rows") or []) if r and r.get("n", i + 1) in here]
+        if any(r.get("key") in (pending or {}) for r in rows):
+            return True
+        return any(r.get("state") in ("waiting", "busy") for r in rows)
 
-    def _rows(self, state: dict) -> dict[int, dict]:
-        """Board rows by key index: ``n`` is the number on the board, so slot ``n`` is key ``n-1``."""
-        return {r.get("n", i + 1) - 1: r for i, r in enumerate(state.get("rows") or [])}
+    def _row_of(self, state: dict, n: int) -> dict | None:
+        """The row with position ``n``, as the state lists them."""
+        return next((r for i, r in enumerate(state.get("rows") or []) if (r or {}).get("n", i + 1) == n), None)
 
-    def _normal(self, state: dict, t: float) -> dict[int, KeyFace]:
+    def _page(self, state: dict | None, page: int) -> list:
+        """The five entries the top row shows on ``page`` of this many rows."""
+        all_pages = pages(len((state or {}).get("rows") or []))
+        return all_pages[min(max(0, int(page)), len(all_pages) - 1)]
+
+    def _entry(self, state: dict, page: int, key: int):
+        """What key ``key`` of the top row stands for on ``page``: a row number, "prev", "next", or None."""
+        return self._page(state, page)[key]
+
+    def _page_keys(self, state: dict, page: int) -> dict[int, int]:
+        """Which key shows which row on ``page``: key index → 1-based row position, for the row the state has. A row
+        the state doesn't carry isn't on a key, and a key showing an arrow or nothing isn't either."""
+        entries = self._page(state, page)
+        return {i: n for i, n in enumerate(entries)
+                if isinstance(n, int) and self._row_of(state, n) is not None}
+
+    def _normal(self, state: dict, t: float, page: int = 0, pending: dict[str, float] | None = None) \
+            -> dict[int, KeyFace]:
         faces: dict[int, KeyFace] = {}
-        rows = self._rows(state)
+        entries = self._page(state, page)
+        total = len(pages(len(state.get("rows") or [])))
+        only = total == 1                                # one page: its empty keys are the slots that are free
         for i in range(5):
-            r = rows.get(i)
+            entry = entries[i]
+            if entry in ("next", "prev"):
+                faces[i] = self._arrow("▶" if entry == "next" else "◀",
+                                       min(max(0, int(page)) + 1, total), total)
+                continue
+            r = self._row_of(state, entry) if isinstance(entry, int) else None
             if r is None:
-                faces[i] = KeyFace(lines=(str(i + 1),), dim=True)   # black, the number in dark grey only
+                # nothing on this key: on a single page, the number it would have been, in dark grey only; once the
+                # rows are paged the keys belong to the rows and a spare one is plain black
+                faces[i] = KeyFace(lines=(str(i + 1),), dim=True) if only else KeyFace()
                 continue
             row_state = r.get("state")
             waiting = row_state == "waiting"
             dot = DOT.get(row_state, DOT["unknown"])
-            faces[i] = KeyFace(bg=blend(SLOT_BG[i % len(SLOT_BG)], WAIT_BG, breathe(t)) if waiting else
-                               SLOT_BG[i % len(SLOT_BG)],
-                               lines=(str(i + 1), _title(r.get("title"))),
+            own = blend(SLOT_BG[i % len(SLOT_BG)], WAIT_BG, breathe(t)) if waiting else SLOT_BG[i % len(SLOT_BG)]
+            t0 = (pending or {}).get(r.get("key"))           # when the press went: the pulse starts there, at white
+            faces[i] = KeyFace(bg=blend(WHITE, own, pulse(t - t0)) if t0 is not None else own,
+                               lines=(str(entry), _title(r.get("title"))),
+                               # white on white says nothing: while it thinks, the key's own colour does the text
+                               ink=SLOT_BG[i % len(SLOT_BG)] if t0 is not None else None,
                                top_bar=bool(r.get("visible")), bottom_bar=bool(r.get("selected")),
                                dot=dot, border=WAIT_BG if waiting else None,
                                edge=(sweep_y(t, KEY_H), sweep_y(t, KEY_H) + SWEEP_H - 1, dot)
@@ -238,17 +315,27 @@ class Layout:
         faces[14] = KeyFace(bg=CONFIRM_BG, lines=("KILL", "✓"))
         return faces
 
-    def _typing(self, state: dict, t: float) -> dict[int, KeyFace]:
+    def _typing(self, state: dict, t: float, page: int = 0, pending: dict[str, float] | None = None) \
+            -> dict[int, KeyFace]:
         """The board's text Input has focus (`/`, `m`, `a`, a directory prompt): no key here can help, so say so.
         The rows underneath are still doing what they do, so they keep moving."""
-        faces = self._normal(state, t)
+        faces = self._normal(state, t, page, pending)
         for i in range(ROW2, KEY_COUNT):
             faces[i] = KeyFace(bg=ACTION_BG, lines=("type on\nthe board",))
         return faces
 
-    def on_press(self, state: dict | None, key: int) -> list[dict]:
+    def _arrow(self, glyph: str, page: int, total: int) -> KeyFace:
+        """A page key: the arrow big, and under it where in the book this is — `▶` says where it goes, `◀` where it
+        came from, which is the page the operator is looking at either way."""
+        return KeyFace(bg=ARROW_BG, lines=(glyph, f"{page}/{total}"))
+
+    def on_press(self, state: dict | None, key: int, page: int = 0) -> list[dict]:
         """The requests to send the moment key ``key`` goes down. Nothing at all for a blank key, or while the
-        board is unreachable: with no state there is nothing to act on and no one to send it to."""
+        board is unreachable: with no state there is nothing to act on and no one to send it to.
+
+        A top-row key asks for the row it is showing, which past the first page is not the key's own number. An arrow
+        is the deck's own business: it answers a `deck` request with no `cmd`, which `DeckApp._send` turns a page
+        without the board ever hearing about it."""
         if key not in range(KEY_COUNT) or state is None:
             return []
         modal = state.get("modal")
@@ -269,7 +356,12 @@ class Layout:
                 return [{"cmd": "spend"}]
             return [] if key < ROW2 else [{"cmd": "cancel"}]
         if key < 5:
-            return [{"cmd": "slot", "n": key + 1}]
+            entry = self._entry(state, page, key)
+            if entry == "next":
+                return [{"deck": "page", "delta": 1}]
+            if entry == "prev":
+                return [{"deck": "page", "delta": -1}]
+            return [{"cmd": "slot", "n": entry}] if isinstance(entry, int) else []
         if ROW2 <= key < ROW2 + COLS:
             return [{"cmd": ROW2_CMDS[key - ROW2]}]
         if key == 10:
@@ -294,7 +386,7 @@ class Layout:
             return []
         for i, r in enumerate(state.get("rows") or []):
             if r.get("selected"):
-                return [{"cmd": "slot", "n": r.get("n", i + 1)}]     # the same row → key numbering as `_rows`
+                return [{"cmd": "slot", "n": r.get("n", i + 1)}]     # the row's own position, whatever page shows it
         return []
 
 
@@ -327,8 +419,9 @@ def render(face: KeyFace, deck) -> bytes:
     if face.bottom_bar:
         d.rectangle((0, h - 4, w - 1, h - 1), fill=_hex(WHITE))
     if face.dot:
-        d.ellipse((w - 11, h - 11, w - 1, h - 1), fill=_hex(face.dot))
-    ink = _hex(DIM_GREY) if face.dim else _hex(WHITE)
+        # upper right, level with the number, ringed in white so it reads on every palette colour
+        d.ellipse((w - 15, 7, w - 5, 17), fill=_hex(face.dot), outline=_hex(WHITE), width=1)
+    ink = _hex(face.ink or (DIM_GREY if face.dim else WHITE))
     y = 6
     for i, line in enumerate(face.lines):
         size = label_size(line, i, w)
@@ -345,14 +438,16 @@ def describe(face: KeyFace) -> str:
     return (f"{face.bg} {'|'.join(' '.join(line.split()) for line in face.lines)!r}"
             + (f" edge={face.edge}" if face.edge else "")
             + (f" dot={face.dot}" if face.dot else "") + (f" border={face.border}" if face.border else "")
+            + (f" ink={face.ink}" if face.ink else "")
             + (f" bars={marks}" if marks else "") + (" dim" if face.dim else ""))
 
 
 def label_size(line: str, index: int, width: int = KEY_W) -> int:
-    """How big one line of a key's text is drawn: 26 px for a slot number or an arrow, 15 px for the key's own label,
-    11 px for board text under it. A label too long for the key shrinks rather than wraps ("restart", "exchange"),
-    down to 10 px at the least, so a whole word always comes out whole — which is also what a test can ask without a
-    device: the size it picks is the biggest one whose measured text still fits the key."""
+    """How big one line of a key's text is drawn: 26 px for a slot number or an arrow (a row number past nine is two
+    digits, which fits at that size), 15 px for the key's own label, 11 px for board text under it — which is also
+    what the page count under an arrow gets. A label too long for the key shrinks rather than wraps ("restart",
+    "exchange"), down to 10 px at the least, so a whole word always comes out whole — which is also what a test can
+    ask without a device: the size it picks is the biggest one whose measured text still fits the key."""
     if index == 0 and len(line.strip()) <= 2:
         return 26
     if index:
@@ -641,7 +736,9 @@ class DeckApp:
         self.heartbeat_s = heartbeat_s
         self.state: dict | None = None
         self.faces: dict[int, KeyFace] = {}
-        self.wipes: dict[int, float] = {}       # key → when its wipe started; dropped when the fade is done
+        self.page = 0                               # which page of the rows the top row is showing
+        self.wipes: dict[str, float] = {}           # session key → when its fade started; dropped when it's done
+        self.pending: dict[str, float] = {}         # …and the switch the board hasn't confirmed yet, by key
         self.loop: asyncio.AbstractEventLoop | None = None
         self._timers: list[asyncio.Task] = []
         self._last_paint = 0.0
@@ -701,21 +798,47 @@ class DeckApp:
             self.log(f"close: {e}")
 
     def refresh(self, state: dict | None) -> int:
-        """Take a state the board sent: start any wipe it calls for, then paint every key whose face changed.
-        Returns how many were painted."""
+        """Take a state the board sent: follow the highlight if it moved, start the fade a confirmed switch calls
+        for, then paint every key whose face changed. Returns how many were painted."""
+        previous = self.state
         self.state = state
+        self._page_to(state, previous)
         self._wipes(state)
         return self._paint(self.clock())
 
+    def _pages(self) -> int:
+        """How many pages the rows on show need."""
+        return len(pages(len((self.state or {}).get("rows") or [])))
+
+    def _page_to(self, state: dict | None, previous: dict | None) -> None:
+        """Keep the top row on a page that exists, and follow the highlight: when the board has moved it to a row
+        this page doesn't show, go and show that one — which is what carries ▲▼ walking off the edge of a page
+        along. Only a state that *moved* it counts: a page the operator flipped by hand stays put until it does."""
+        self.page = min(self.page, self._pages() - 1)
+        if not state or previous is None or state.get("selected_key") == previous.get("selected_key"):
+            return
+        n = next((r.get("n", i + 1) for i, r in enumerate(state.get("rows") or [])
+                  if r and r.get("key") == state.get("selected_key")), None)
+        if n is None:
+            return
+        for i, entries in enumerate(pages(len(state.get("rows") or []))):
+            if n in entries:
+                self.page = i
+                return
+
     def _wipes(self, state: dict | None) -> None:
-        """A state whose `visible_key` isn't the one before it is a switch, and the key that came out is wiped. The
-        first state says nothing moved — there is nothing before it to have moved from."""
+        """A state whose `visible_key` isn't the one before it is a switch, and the row that came out fades in. A
+        switch this deck asked for is confirmed by that same state: its key stops pulsing and starts fading, so the
+        pulse lasts exactly as long as the board took. A switch that didn't come from this deck gets the plain fade
+        with no pulse before it. The first state says nothing moved — there is nothing before it to have moved
+        from."""
         visible = (state or {}).get("visible_key")
-        if self._had_state and visible is not None and visible != self._last_visible:
-            index = next((r.get("n", i + 1) - 1 for i, r in enumerate((state or {}).get("rows") or [])
-                          if r.get("key") == visible), None)
-            if index in range(KEY_COUNT):                       # a row off the top of the deck has no key to wipe
-                self.wipes[index] = self.clock()
+        switched = self._had_state and visible is not None and visible != self._last_visible
+        if visible is not None and visible in self.pending:
+            self.pending.pop(visible)
+            self.wipes[visible] = self.clock()
+        elif switched:
+            self.wipes[visible] = self.clock()
         self._last_visible = visible
         self._had_state = True
 
@@ -723,7 +846,9 @@ class DeckApp:
         """Plan the board as it stands at ``t`` and send the keys whose face differs from what they show."""
         started = time.monotonic()
         self.wipes = {key: t0 for key, t0 in self.wipes.items() if (t - t0) / WIPE_S < 1.0}
-        plan = self.layout.plan(self.state, t, self.wipes)
+        # a switch the board never answered — refused, or lost: the key goes back the way it came, quietly
+        self.pending = {key: t0 for key, t0 in self.pending.items() if t - t0 < PENDING_S}
+        plan = self.layout.plan(self.state, t, self._key_wipes(), self.page, self.pending)
         drawn = 0
         for key in sorted(plan):
             face = plan[key]
@@ -741,15 +866,30 @@ class DeckApp:
         self._last_paint = (now - started) * 1000
         return drawn
 
+    def _page_rows(self) -> list[dict]:
+        """The rows the page on show actually draws, in key order."""
+        here = set(self.layout._page_keys(self.state or {}, self.page).values())
+        return [r for i, r in enumerate((self.state or {}).get("rows") or []) if r and r.get("n", i + 1) in here]
+
+    def _key_wipes(self) -> dict[int, float]:
+        """The fades as `plan` wants them: by the key index that shows the row right now. A row on another page has
+        no key here to fade, which is the point — paging must never move a fade onto the wrong key."""
+        here = self.layout._page_keys(self.state or {}, self.page)          # key index → row position
+        at = {n: key for key, n in here.items()}
+        position = {(r or {}).get("key"): (r or {}).get("n", i + 1)
+                    for i, r in enumerate((self.state or {}).get("rows") or [])}
+        return {at[position[key]]: t0 for key, t0 in self.wipes.items() if position.get(key) in at}
+
     def _anim_count(self) -> int:
-        """How many keys the animations are moving right now: the rows that breathe or sweep, plus any wiping."""
-        rows = (self.state or {}).get("rows") or []
-        live = sum(1 for r in rows if (r or {}).get("state") in ("waiting", "busy"))
-        return live + len(self.wipes)
+        """How many keys the animations are moving right now, on the page on show: the rows that breathe or sweep or
+        are waiting on the board, plus any fading in."""
+        live = sum(1 for r in self._page_rows()
+                   if r.get("state") in ("waiting", "busy") or r.get("key") in self.pending)
+        return live + len(self._key_wipes())
 
     async def _animate(self) -> None:
-        """The animation's own clock. Nothing else moves on it: when no session is waiting or busy and no wipe is
-        running, the tick looks, finds nothing to do, and costs nothing."""
+        """The animation's own clock. Nothing else moves on it: when no session on the page is waiting or busy or
+        thinking, and nothing is fading, the tick looks, finds nothing to do, and costs nothing."""
         while True:
             await asyncio.sleep(1.0 / self.fps)
             self._tick()
@@ -757,7 +897,7 @@ class DeckApp:
     def _tick(self) -> int:
         """One frame, if there is one to be had. Returns how many keys it sent."""
         t = self.clock()
-        if not self.layout.animating(self.state, self.wipes):
+        if not self.layout.animating(self.state, self._key_wipes(), self.page, self.pending):
             return 0                                            # the tick still runs, and still costs nothing
         return self._paint(t)
 
@@ -771,7 +911,8 @@ class DeckApp:
         state = self.board.state
         if pressed:
             self._down[key] = now
-            reqs = self.layout.on_press(state, key)
+            reqs = self.layout.on_press(state, key, self.page)
+            self._armed(key, state, reqs, now)
         else:
             t0 = self._down.pop(key, None)
             if t0 is None:
@@ -779,16 +920,50 @@ class DeckApp:
             reqs = self.layout.on_release(state, key, (now - t0) * 1000)
         self._send(key, reqs)
 
-    def _send(self, key: int, reqs: list[dict]) -> None:
-        """Get the layout's requests to the board, from whichever thread the device callback arrived on."""
+    def _armed(self, key: int, state: dict | None, reqs: list[dict], now: float) -> None:
+        """A key that asked the board to switch to one of its rows says so now, before the board has had a turn: the
+        key goes white and pulses until the state arrives with that row in the pane (or until it stops being worth
+        waiting for). Painting here, rather than waiting on the reply, is what makes the key answer the finger."""
         for req in reqs:
-            cmd, fields = req.get("cmd"), {k: v for k, v in req.items() if k != "cmd"}
+            if req.get("cmd") != "slot":
+                continue
+            r = self.layout._row_of(state or {}, req.get("n"))
+            # a row already in the pane has nothing to confirm: it would pulse until the timeout gave up on it
+            if r and r.get("key") and r["key"] != (state or {}).get("visible_key"):
+                self.pending[r["key"]] = now
+                self._paint(now)
+
+    def _send(self, key: int, reqs: list[dict]) -> None:
+        """Get the layout's requests to the board, from whichever thread the device callback arrived on. A request
+        with no `cmd` is the deck's own: a page turn, which the board is never told about."""
+        for req in reqs:
+            if "cmd" not in req:
+                self._local(req)
+                continue
+            cmd, fields = req["cmd"], {k: v for k, v in req.items() if k != "cmd"}
             try:
                 reply = _request(self.board, cmd, fields, self.loop, self.log)
             except Exception as e:                              # noqa: BLE001 - a key press is not worth a traceback
                 reply = {"ok": False, "error": str(e)}
             if reply is not None and not reply.get("ok"):
                 self.log(f"key {key}: {reply.get('error') or 'the board said no'}")
+                if cmd == "slot" and self._refused(key, req):
+                    self._paint(self.clock())
+
+    def _refused(self, key: int, req: dict) -> bool:
+        """A `slot` the board said no to: stop that row pulsing, since it is never going to come."""
+        r = self.layout._row_of(self.state or {}, req.get("n"))
+        if r and r.get("key") in self.pending:
+            self.pending.pop(r["key"], None)
+            return True
+        return False
+
+    def _local(self, req: dict) -> None:
+        """A request the deck answers itself. `page` turns the top row over to the next or previous page of rows and
+        repaints; the board sees nothing, because there is nothing for it to have done."""
+        if req.get("deck") == "page":
+            self.page = min(max(0, self.page + int(req.get("delta") or 0)), self._pages() - 1)
+            self._paint(self.clock())
 
     def press(self, key: int) -> None:
         """A key going down, for a hand-driven fake deck."""

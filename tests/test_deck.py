@@ -30,14 +30,16 @@ def row(n: int, **kw) -> dict:
     return {**r, **kw}
 
 
-def board_state(rows=None, modal=None, options=None, panels=None, visible_key=None) -> dict:
+def board_state(rows=None, modal=None, options=None, panels=None, visible_key=None, selected_key=None) -> dict:
     """A `state` object as PROTOCOL.md describes it: three live rows unless told otherwise, both panels off.
     `visible_key` is the row in the main pane — the one the top bar is on, unless a test says otherwise."""
     rows = rows if rows is not None else [row(1), row(2), row(3)]
     if visible_key is None:
         visible_key = next((r["key"] for r in rows if r.get("visible")), rows[0]["key"])
+    if selected_key is None:
+        selected_key = rows[-1]["key"]
     return {"proto": 1, "rows": rows, "slots": [r["key"] for r in rows], "visible_key": visible_key,
-            "selected_key": rows[-1]["key"], "modal": modal, "options": options or [],
+            "selected_key": selected_key, "modal": modal, "options": options or [],
             "panels": {"gpu": False, "pool": False, **(panels or {})}}
 
 
@@ -536,6 +538,18 @@ def test_a_face_that_is_sweeping_still_draws_a_jpeg():
         "the sweep bar isn't down the left edge of the key the deck shows"
 
 
+def test_a_page_key_and_a_thinking_key_draw():
+    """Two faces the paging and the press-to-confirm added: an arrow with its page count under it, and a white key
+    whose text is a colour rather than white."""
+    nine = board_state(rows=[row(n) for n in range(1, 10)])
+    faces = [Layout().plan(nine, 0.0, {}, 1)[0],
+             Layout().plan(nine, 0.0, {}, 0, {row(1)["key"]: 0.0})[0]]
+    for face in faces:
+        img = render(face, FakeDeck())
+        assert img[:2] == b"\xff\xd8", f"{face.lines} didn't come out as JPEG"
+    assert deck.describe(faces[1]).endswith("ink=#1f77b4"), deck.describe(faces[1])
+
+
 def test_the_image_comes_back_flipped_the_way_the_deck_wants():
     d = FakeDeck()
     from PIL import Image
@@ -866,7 +880,7 @@ async def test_a_board_that_says_no_is_said_out_loud():
     app = DeckApp(d, b, fps=0.0, log=said.append)
     app.start()
     try:
-        d.cb(d, 4, True)
+        d.cb(d, 0, True)                                        # a row the deck is showing: the board says no to it
         assert any("no such slot" in line for line in said), said
     finally:
         await app.stop()
@@ -929,9 +943,10 @@ async def test_the_animation_timer_ticks_by_itself():
         await app.stop()
 
 
-async def test_a_switch_wipes_the_key_that_came_out():
+async def test_a_switch_wipes_the_row_that_came_out():
     """`refresh` is what notices a switch: the state whose `visible_key` isn't the one before it puts a wipe on the
-    key that gained it and on the one that lost it, and the tick drops it once the fade is done."""
+    row that gained it, and the tick drops it once the fade is done. It is keyed by session key, not by key index, so
+    the page on show decides which key draws it — see `test_a_wipe_on_another_page_waits_for_its_page`."""
     clock = {"t": 100.0}
     rows = [row(1, visible=True), row(2), row(3)]
     app, d, b = await _app(state=board_state(rows=rows), clock=lambda: clock["t"])
@@ -940,15 +955,369 @@ async def test_a_switch_wipes_the_key_that_came_out():
         b.cb(board_state(rows=[row(1), row(2, title="renamed"), row(3)], visible_key=rows[0]["key"]))
         assert app.wipes == {}, "a row that was renamed isn't a switch"
         b.cb(board_state(rows=[row(1), row(2, visible=True), row(3)], visible_key=row(2)["key"]))
-        assert list(app.wipes) == [1], f"key 1 came out, so key 1 wipes: {app.wipes}"
+        assert list(app.wipes) == [row(2)["key"]], f"row 2 came out, so row 2 wipes: {app.wipes}"
         assert app.faces[1].bg == deck.WHITE, "at the start of a wipe the key is white"
         clock["t"] += deck.WIPE_S / 2
         app._tick()
-        assert app.faces[1].bg != deck.WHITE and 1 in app.wipes, "half way through it is neither"
+        assert app.faces[1].bg != deck.WHITE and row(2)["key"] in app.wipes, "half way through it is neither"
         clock["t"] += deck.WIPE_S
         app._tick()
         assert app.wipes == {}, "a wipe that has run its WIPE_S is dropped, not left to fade forever"
         assert app.faces[1].bg != deck.WHITE
+    finally:
+        await app.stop()
+
+
+# -------------------------------------------------------------------------------------------------- page layout
+#
+# `pages(n)` is the whole paging scheme in one pure function: which row, or which arrow, or nothing, sits on each of
+# the top row's five keys, page by page. `Layout.plan` and `on_press` read it, and `DeckApp.page` is the only state
+# it has, so everything below is read off those three.
+
+
+def test_pages_lays_the_rows_out_over_the_top_row():
+    """Five rows fit as they are. Past that a page pays an arrow for the ones it can't show: four rows and `▶`
+    first, `◀` and three in the middle, `◀` and the remainder last."""
+    assert deck.pages(0) == [[None, None, None, None, None]]
+    assert deck.pages(4) == [[1, 2, 3, 4, None]]
+    assert deck.pages(5) == [[1, 2, 3, 4, 5]]
+    assert deck.pages(6) == [[1, 2, 3, 4, "next"], ["prev", 5, 6, None, None]]
+    assert deck.pages(9) == [[1, 2, 3, 4, "next"], ["prev", 5, 6, 7, "next"], ["prev", 8, 9, None, None]]
+    assert deck.pages(12) == [[1, 2, 3, 4, "next"], ["prev", 5, 6, 7, "next"], ["prev", 8, 9, 10, "next"],
+                              ["prev", 11, 12, None, None]]
+    assert deck.pages(13) == [[1, 2, 3, 4, "next"], ["prev", 5, 6, 7, "next"], ["prev", 8, 9, 10, "next"],
+                              ["prev", 11, 12, 13, None]]
+
+
+@pytest.mark.parametrize("n", list(range(14)))
+def test_every_row_count_is_paged_without_losing_or_repeating_a_row(n):
+    """Every row on exactly one page, every page five keys, and the arrows agreeing with themselves: `▶` on every
+    page but the last, `◀` on every page after the first, and the pages running 4, then 3 at a time."""
+    book = deck.pages(n)
+    assert all(len(page) == 5 for page in book), f"{n} rows gave a page that isn't five keys: {book}"
+    shown = [e for page in book for e in page if isinstance(e, int)]
+    assert shown == list(range(1, n + 1)), f"{n} rows: the rows shown are {shown}"
+    for i, page in enumerate(book):
+        if i:
+            assert page[0] == "prev", f"page {i} has no ◀: {page}"
+        if i < len(book) - 1:
+            assert page[4] == "next", f"page {i} has no ▶: {page}"
+        assert "prev" not in page[1:] and "next" not in page[:4], f"page {i} has an arrow in the middle: {page}"
+        if len(book) > 1 and i == 0:
+            assert page[:4] == [1, 2, 3, 4], f"the first page of {n} rows is {page}"
+
+
+def test_pages_of_five_or_fewer_rows_need_no_arrows():
+    for n in range(6):
+        page = deck.pages(n)[0]
+        assert all(e is None or isinstance(e, int) for e in page), f"{n} rows shouldn't page: {deck.pages(n)}"
+
+
+def test_a_board_of_six_pages_once_each_way():
+    """Six rows: the first page is rows 1–4 and `▶` saying there is another, the second is `◀`, rows 5 and 6, and
+    two keys with nothing on them."""
+    six = board_state(rows=[row(n) for n in range(1, 7)])
+    L = Layout()
+    first = L.plan(six, 0.0, {}, 0)
+    assert [first[i].lines[0] for i in range(5)] == ["1", "2", "3", "4", "▶"]
+    assert first[4].bg == deck.ARROW_BG, "a page key wears the arrow keys' grey"
+    assert first[4].lines == ("▶", "1/2"), f"▶ says nothing about where it goes: {first[4]}"
+    assert [first[i].bg for i in range(4)] == list(SLOT_BG[:4])
+    second = L.plan(six, 0.0, {}, 1)
+    assert second[0].lines == ("◀", "2/2") and second[0].bg == deck.ARROW_BG
+    assert [second[i].lines[0] for i in (1, 2)] == ["5", "6"]
+    assert [second[i].bg for i in (1, 2)] == [SLOT_BG[1], SLOT_BG[2]], "a key keeps its colour wherever it lands"
+    for i in (3, 4):
+        assert second[i] == KeyFace(), f"key {i} on the last page should be a plain black face, not a spare number"
+
+
+def test_page_one_of_nine_shows_three_rows_between_two_arrows():
+    nine = board_state(rows=[row(n) for n in range(1, 10)])
+    faces = Layout().plan(nine, 0.0, {}, 1)
+    assert [faces[i].lines[0] for i in range(5)] == ["◀", "5", "6", "7", "▶"]
+    assert faces[0].lines == ("◀", "2/3") and faces[4].lines == ("▶", "2/3"), "both arrows say which page this is"
+    assert Layout().plan(nine, 0.0, {}, 2)[0].lines == ("◀", "3/3")
+
+
+def test_a_paged_key_names_the_row_it_shows():
+    """The number on the key is the row's — `slot n` is the same `n` the board numbers its rows with, and past nine
+    it is a number the board itself draws nowhere. The bars, the dot and the breath come with the row."""
+    nine = board_state(rows=[row(n, visible=(n == 6), selected=(n == 6), state="waiting" if n == 6 else "idle")
+                              for n in range(1, 10)])
+    shown = Layout().plan(nine, 0.0, {}, 1)[2]
+    assert shown.lines == ("6", "session 6")
+    assert shown.top_bar and shown.bottom_bar and shown.border == deck.WAIT_BG
+
+
+def test_the_page_on_show_clamps_to_the_rows_there_are():
+    """Ask for page 7 of 3 and you get the last one, not a crash or a blank top row."""
+    nine = board_state(rows=[row(n) for n in range(1, 10)])
+    assert Layout().plan(nine, 0.0, {}, 7)[1].lines[0] == "8"
+    assert Layout().on_press(nine, 1, 7) == [{"cmd": "slot", "n": 8}], "and a press reads the page it clamped to"
+
+
+def test_a_picker_never_pages():
+    """Options 1–5 on keys 0–4, whatever the rows are doing underneath: paging an option list would be a list where
+    two of the keys mean the same thing twice."""
+    nine = board_state(rows=[row(n) for n in range(1, 10)], modal="picker",
+                       options=[{"n": 1, "label": "one"}, {"n": 2, "label": "two"}])
+    for page in (0, 1):
+        faces = Layout().plan(nine, 0.0, {}, page)
+        assert faces[0].lines == ("1", "one") and faces[1].lines == ("2", "two")
+        assert faces[4] == KeyFace(), f"page {page} put something where option 5 goes"
+        assert Layout().on_press(nine, 4, page) == [{"cmd": "pick", "n": 5}]
+
+
+# ----------------------------------------------------------------------------------------------- what a press sends
+
+
+def test_a_paged_key_asks_for_the_row_it_shows():
+    nine = board_state(rows=[row(n) for n in range(1, 10)])
+    L = Layout()
+    assert L.on_press(nine, 1, 1) == [{"cmd": "slot", "n": 5}], "key 1 of page 1 shows row 5"
+    assert L.on_press(nine, 3, 1) == [{"cmd": "slot", "n": 7}]
+    assert L.on_press(nine, 1, 2) == [{"cmd": "slot", "n": 8}]
+    assert L.on_press(nine, 4, 0) == [{"deck": "page", "delta": 1}], "▶ is the deck's own: no cmd, so no board"
+    assert L.on_press(nine, 0, 1) == [{"deck": "page", "delta": -1}]
+    assert L.on_press(nine, 3, 2) == [], "an empty key on the last page does nothing"
+    five = board_state(rows=[row(n) for n in range(1, 6)])
+    assert L.on_press(five, 4, 0) == [{"cmd": "slot", "n": 5}], "five rows or fewer page as they always did"
+    assert L.on_press(board_state(), 4, 0) == [], "and a free slot key on a short board still does nothing"
+
+
+# ---------------------------------------------------------------------------------------------------- the app
+
+
+async def _six() -> tuple[DeckApp, FakeDeck, FakeBoardSync]:
+    """A deck on a board of six rows: two pages, and nothing moving on either."""
+    return await _app(board_state(rows=[row(n, state="idle") for n in range(1, 7)]), clock=lambda: 40.0)
+
+
+async def test_the_page_key_flips_the_page_and_sends_nothing():
+    """`▶` and `◀` are the deck's own business: the board is never asked, and the top row comes round."""
+    app, d, b = await _six()
+    try:
+        assert app.page == 0
+        assert d.images[4] == render(Layout().plan(app.state, 40.0, {}, 0)[4], d)
+        app.press(4)
+        assert b.seen == [], f"the board was told about a page turn: {b.seen}"
+        assert app.page == 1 and d.images[0] == render(Layout().plan(app.state, 40.0, {}, 1)[0], d)
+        app.press(4)
+        assert app.page == 1, "▶ on the last page has nowhere to go"
+        app.press(0)
+        assert app.page == 0 and b.seen == []
+        app.press(0)
+        assert app.page == 0, "◀ on the first page is a no-op"
+    finally:
+        await app.stop()
+
+
+async def test_a_paged_key_opens_the_row_it_shows():
+    app, d, b = await _six()
+    try:
+        app.press(4)                                              # ▶ onto page 1
+        b.seen.clear()
+        app.press(1)                                              # the key showing row 5
+        assert b.seen == [{"cmd": "slot", "n": 5}], b.seen
+    finally:
+        await app.stop()
+
+
+async def test_the_page_follows_the_highlight_and_only_the_highlight():
+    """▲▼ walking the highlight off the page brings the page along; a page the operator turned by hand stays put
+    until the highlight actually moves."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 60.0)
+    try:
+        assert app.page == 0
+        b.cb(board_state(rows=rows, selected_key=rows[6]["key"]))   # the highlight is on row 7 now: page 1 shows it
+        assert app.page == 1, "the highlight walked off the page and the page stayed"
+        app.press(4)                                                # ▶ by hand, onto page 2
+        assert app.page == 2
+        b.cb(board_state(rows=rows, selected_key=rows[6]["key"], modal=None))
+        assert app.page == 2, "a state that didn't move the highlight shouldn't move the page back"
+        b.cb(board_state(rows=rows, selected_key=rows[0]["key"]))
+        assert app.page == 0, "and one that moved it back does"
+    finally:
+        await app.stop()
+
+
+async def test_the_page_clamps_when_the_rows_shrink():
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: 61.0)
+    try:
+        app.press(4)
+        app.press(4)
+        assert app.page == 2
+        b.cb(board_state(rows=rows[:4], selected_key=rows[0]["key"]))
+        assert app.page == 0, "four rows are one page: the deck was showing a page that isn't there"
+        assert d.images[4] == render(Layout().plan(app.state, 61.0, {}, 0)[4], d)
+    finally:
+        await app.stop()
+
+
+async def test_a_wipe_on_another_page_waits_for_its_page():
+    """A fade belongs to the row, not to the key index it happened to be on: page 2 draws row 8's fade, and page 1
+    draws no fade at all rather than one on the wrong key."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"], visible_key=rows[0]["key"]),
+                           clock=lambda: 70.0)
+    try:
+        app.press(4)
+        app.press(4)                                                # page 3, whose first row is row 8
+        assert app.page == 2, app.page
+        page = app.page
+        b.cb(board_state(rows=rows, selected_key=rows[0]["key"], visible_key=rows[7]["key"]))
+        assert list(app.wipes) == [rows[7]["key"]], f"keyed by row, not by key: {app.wipes}"
+        faces = Layout().plan(app.state, 70.0, app._key_wipes(), page)
+        assert faces[1].bg == deck.WHITE, f"row 8's fade isn't on the key showing it: {faces[1]}"
+        app.page = 1 - page                                          # the same moment, the other page
+        other = Layout().plan(app.state, 70.0, app._key_wipes(), app.page)
+        assert all(other[i].bg == SLOT_BG[i] for i in range(5) if other[i].bg != deck.ARROW_BG), \
+            f"a fade from another page leaked onto this one: {[other[i].bg for i in range(5)]}"
+    finally:
+        await app.stop()
+
+
+async def test_only_the_page_on_show_is_worth_animating():
+    """A busy row on a page nobody is looking at costs nothing: the tick looks, and there is no frame to be had."""
+    rows = [row(n, state="idle") for n in range(1, 10)]
+    rows[6] = row(7, state="busy")                                   # row 7, on page 1
+    clock = {"t": 80.0}
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"]), clock=lambda: clock["t"])
+    try:
+        assert app.page == 0 and Layout().animating(app.state, {}, 0) is False
+        assert Layout().animating(app.state, {}, 1) is True
+        for _ in range(5):
+            clock["t"] += 1 / deck.FPS
+            assert app._tick() == 0, "a row on another page is putting keys on the wire"
+        assert d.paints == deck.KEY_COUNT
+        assert app._anim_count() == 0
+        app.page = 1
+        app._tick()                                                 # the page itself is new, so it paints
+        assert app._anim_count() == 1, f"the busy row isn't the one moving: {app._anim_count()}"
+        frames = 0
+        for _ in range(8):
+            clock["t"] += 1 / deck.FPS
+            frames += app._tick()
+        assert frames >= 1, "the same row, on the page that shows it, is a frame"
+    finally:
+        await app.stop()
+
+
+async def test_a_press_pulses_until_the_board_confirms_the_switch():
+    """The key answers the finger rather than the state: white at once with its own colour as text, still thinking
+    two seconds on, and only when the pane actually comes round does it fade to normal."""
+    rows = [row(n, state="idle") for n in range(1, 7)]
+    clock = {"t": 90.0}
+    app, d, b = await _app(board_state(rows=rows, selected_key=rows[0]["key"], visible_key=rows[0]["key"]),
+                           clock=lambda: clock["t"])
+    try:
+        app.press(4)                                                 # onto page 1, which shows row 5 on key 1
+        b.seen.clear()
+        app.press(1)
+        assert list(app.pending) == [rows[4]["key"]], app.pending
+        assert app.faces[1].bg == deck.WHITE, f"the key didn't answer: {app.faces[1]}"
+        assert app.faces[1].ink == SLOT_BG[1], "white on white says nothing: the text wears the key's own colour"
+        assert app.faces[1].lines == ("5", "session 5")
+        assert Layout().animating(app.state, {}, 1, app.pending) is True
+        clock["t"] += 2.0                                            # still thinking: the board hasn't swapped it in
+        app._tick()
+        assert list(app.pending) == [rows[4]["key"]], app.pending
+        assert app.faces[1].bg != SLOT_BG[1]
+        b.cb(board_state(rows=[rows[0], rows[1], rows[2], rows[3],
+                               {**rows[4], "visible": True}, rows[5]],
+                         selected_key=rows[0]["key"], visible_key=rows[4]["key"]))
+        assert app.pending == {}, "the pane came round, so there is nothing left to wait on"
+        assert list(app.wipes) == [rows[4]["key"]], f"and now it fades: {app.wipes}"
+        assert app.faces[1].bg == deck.WHITE, "at the top of the fade it is still white"
+        clock["t"] += deck.WIPE_S
+        app._tick()
+        assert app.wipes == {} and app.faces[1].bg == SLOT_BG[1], "the fade ends on the face the key would show"
+    finally:
+        await app.stop()
+
+
+async def test_a_switch_the_board_never_answers_gives_up():
+    """A pulse can't be left running on the off chance: after PENDING_S the key goes back the way it came, and a
+    `slot` the board says no to goes back at once."""
+    rows = [row(n, state="idle") for n in range(1, 4)]
+    clock = {"t": 100.0}
+    app, d, b = await _app(board_state(rows=rows), clock=lambda: clock["t"])
+    try:
+        app.press(1)
+        assert list(app.pending) == [rows[1]["key"]]
+        clock["t"] += deck.PENDING_S
+        app._tick()
+        assert app.pending == {}, "a switch the board never answered is still pulsing"
+        assert app.faces[1].bg == SLOT_BG[1], "the key went back to its own colour"
+        app._send(2, [{"cmd": "slot", "n": 3}])                       # and one it says no to is over at once
+        assert app.pending == {}
+    finally:
+        await app.stop()
+
+
+async def test_a_refused_switch_stops_pulsing_at_once():
+    """A `slot` the board says no to is a switch that isn't coming: the key was white when the answer came back and
+    is its own colour again by the time that answer has been read."""
+    class Rude(FakeBoardSync):
+        def __init__(self, state):
+            super().__init__(state)
+            self.at_answer: KeyFace | None = None
+            self.app = None
+
+        def request(self, cmd, **fields):
+            self.seen.append({"cmd": cmd, **fields})
+            self.at_answer = self.app.faces.get(1)                # what the key showed as the board answered
+            return {"ok": False, "error": "no such slot"}
+
+    rows = [row(n, state="idle") for n in range(1, 4)]
+    said: list[str] = []
+    board = Rude(board_state(rows=rows))
+    app = DeckApp(FakeDeck(), board, fps=0.0, log=said.append, clock=lambda: 110.0)
+    board.app = app
+    app.start()
+    try:
+        app.press(1)
+        assert any("no such slot" in line for line in said), said
+        assert board.at_answer is not None and board.at_answer.bg == deck.WHITE, "the press hadn't armed the key"
+        assert app.pending == {}, "the board said no, so there is nothing left to wait on"
+        assert app.faces[1].bg == SLOT_BG[1] and app.faces[1].ink is None
+    finally:
+        await app.stop()
+
+
+async def test_a_switch_the_deck_didnt_ask_for_still_fades():
+    """A state that puts another row in the pane with nothing pending — the operator used the keyboard — gets the
+    plain fade it always got, with no pulse in front of it."""
+    rows = [row(n, state="idle") for n in range(1, 4)]
+    clock = {"t": 120.0}
+    app, d, b = await _app(board_state(rows=rows, visible_key=rows[0]["key"]), clock=lambda: clock["t"])
+    try:
+        b.cb(board_state(rows=rows, visible_key=rows[2]["key"]))
+        assert app.pending == {}, "nothing was pressed, so there is nothing to wait on"
+        assert list(app.wipes) == [rows[2]["key"]], app.wipes
+        assert app.faces[2].bg == deck.WHITE
+        clock["t"] += deck.WIPE_S
+        app._tick()
+        assert app.faces[2].bg == SLOT_BG[2] and app.wipes == {}
+    finally:
+        await app.stop()
+
+
+async def test_a_state_showing_another_row_leaves_the_key_thinking():
+    """A state whose pane isn't the row this key asked for hasn't answered the press: the key keeps pulsing, and the
+    row that did come out fades the way a switch that came from the board does."""
+    rows = [row(n, state="idle") for n in range(1, 4)]
+    clock = {"t": 130.0}
+    app, d, b = await _app(board_state(rows=rows, visible_key=rows[0]["key"]), clock=lambda: clock["t"])
+    try:
+        app.press(1)                                              # ask for row 2
+        assert list(app.pending) == [rows[1]["key"]]
+        b.cb(board_state(rows=rows, visible_key=rows[2]["key"]))   # the board went to row 3 instead
+        assert list(app.pending) == [rows[1]["key"]], f"row 2 wasn't the pane, so it is still waiting: {app.pending}"
+        assert list(app.wipes) == [rows[2]["key"]], app.wipes
+        assert app.faces[1].bg != SLOT_BG[1], "the key that asked stopped saying so"
     finally:
         await app.stop()
 

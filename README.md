@@ -381,6 +381,10 @@ the same control socket the keyboard shortcuts use (`~/.local/state/ctxswitch/bo
 so a press does exactly what the key on the board does, and the keys follow the board both ways — including a session
 that goes `waiting`. They move on a 20 fps clock of their own: a waiting session breathes between its own colour and
 red, a busy one sweeps a gold bar down its left edge, and the key a switch has just made visible fades out of white.
+More than five sessions don't get squashed: the top row pages, four rows and a `▶` on the first page, `◀` and three
+on a middle one, `◀` and the rest on the last, with the page count under each arrow and ▲▼ bringing the page along
+when the highlight walks off it. Pressing a session key whites it at once and lets its own colour pulse back in while
+the board swaps the pane over, then fades it to normal the moment that row is the one showing.
 It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board, and takes `--brightness 0-100` (60),
 `--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
 drawing them, to try the wiring by hand). ▲▼ move the highlight the moment you press them; hold one for 0.6 s before
@@ -389,7 +393,7 @@ the keys and closes the deck.
 
 | Key | Does | While the board is asking (picker / start) | While a confirm is up |
 |---|---|---|---|
-| 1–5 (top row) | open session slot 1–5 (as `Alt+1`…`Alt+5`): the number, its title, a white bar along the top if it's in the main pane and along the bottom if it's the highlighted row, and a dot for busy / **waiting** / idle / shell / ended | option 1–5 | nothing |
+| 1–5 (top row) | open the session the key is showing (as `Alt+1`…`Alt+5`): the row's number, its title, a white bar along the top if it's in the main pane and along the bottom if it's the highlighted row, and a dot for busy / **waiting** / idle / shell / ended. Past five sessions the outer keys become `◀` / `▶` and page the rows | option 1–5 | nothing |
 | `gpu` `pool` `spend` `exchange` `detach` (middle row) | `g` / `P` / `$` / `x` / `q`. The two panels and the spend screen stay lit while they are up — blue with a white bar along the bottom — and `detach` wears `kill`'s red | cancel | cancel |
 | ▲ / ▼ | move the highlight up / down, and open the highlighted row if held 0.6 s before release | cancel | cancel |
 | `restart` / `new` | `s` / `n` | cancel | cancel |
