@@ -214,8 +214,8 @@ async def _lines(reader, want: int, what: str, tries: int = 250) -> list[dict]:
 
 # -- state --------------------------------------------------------------------------------------------------------
 async def test_the_state_lists_the_numbered_rows_and_counts_a_parent_s_pool_jobs(monkeypatch, tmp_path):
-    """Eleven sessions, one of them a pool job: nine numbered rows (the board numbers 1…9), the job counted on its
-    parent instead of taking a row, and one more slot past the last number."""
+    """Eleven sessions, one of them a pool job: ten rows — every real session, past the nine the board numbers —
+    the job counted on its parent instead of taking a row, and `n` the row's position all the way down."""
     parent, kid = _sess("laptop/claude/parent", status="busy"), None
     rows = _rows(1)
     kid = _job("laptop/claude/kid", parent["key"])
@@ -226,9 +226,9 @@ async def test_the_state_lists_the_numbered_rows_and_counts_a_parent_s_pool_jobs
         assert len(app.slots) == 10                              # the nested job gets no number at all
         st = board_state(app)
         assert st["proto"] == 1 and st["modal"] is None and st["options"] == []
-        assert [r["n"] for r in st["rows"]] == list(range(1, 10))          # nine numbered rows
-        assert [r["key"] for r in st["rows"]] == app.slots[:9]
-        assert st["slots"] == app.slots and len(st["rows"]) == 9
+        assert [r["n"] for r in st["rows"]] == list(range(1, 11))          # every row, past the nine it numbers
+        assert [r["key"] for r in st["rows"]] == app.slots
+        assert st["slots"] == app.slots and len(st["rows"]) == 10
         assert st["visible_key"] == "laptop/claude/s3" and st["selected_key"] == app.slots[0]
         by_key = {r["key"]: r for r in st["rows"]}
         assert by_key["laptop/claude/s3"]["visible"] is True and by_key[app.slots[0]]["selected"] is True

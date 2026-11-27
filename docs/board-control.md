@@ -97,8 +97,9 @@ the reply is sent after the action has run.
 }
 ```
 
-- `rows`: the numbered rows only, in board order (`self.slots` order); pool-job children are not rows, their count
-  is `pool_jobs` on the parent. `n` is the number drawn on the board (1..SLOTS). `state` is
+- `rows`: every real session, in board order (`self.slots` order); pool-job children are not rows, their count
+  is `pool_jobs` on the parent. `n` is the row's position in that order: the board draws the number only for `n` ≤ 9,
+  while `slot` / `select` accept any `n` listed here. `state` is
   `fmt.session_state()`: `busy | waiting | idle | shell | unknown | ended`. `visible` = this session is in the main
   pane (`▶`), `selected` = the highlighted row. `title` = `fmt.display_title`, `harness` = `fmt.harness_label`.
 - `modal`: `null | "picker" | "start" | "confirm" | "spend" | "input"` — what is on top of the screen stack

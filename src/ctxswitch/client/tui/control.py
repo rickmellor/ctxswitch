@@ -130,10 +130,12 @@ def panels_of(app: "CtxApp") -> dict:
 
 
 def board_state(app: "CtxApp") -> dict:
-    """The board as state: its numbered rows in board order, which one is in the main pane, which is highlighted,
-    what modal is up and the choices it offers. A pool-job child isn't a row: it counts in its parent's `pool_jobs`,
-    the same nesting `render_table` draws (through `_nest`, so the two can't drift apart)."""
-    from ctxswitch.client.tui.app import SLOTS
+    """The board as state: every real session as a row, in board order, with which one is in the main pane, which is
+    highlighted, what modal is up and the choices it offers. A pool-job child isn't a row: it counts in its parent's
+    `pool_jobs`, the same nesting `render_table` draws (through `_nest`, so the two can't drift apart).
+
+    `n` is the row's position, past the nine the board draws a number for: a client that pages its own keys needs
+    every row, and `slot` / `select` take any position listed here."""
     slots = list(app.slots)
     visible = {s["key"]: s for s in app._visible()}
     order, nested = app._nest(list(visible.values()))
@@ -143,7 +145,7 @@ def board_state(app: "CtxApp") -> dict:
             kids[fmt.link(s, "parent_key")] = kids.get(fmt.link(s, "parent_key"), 0) + 1
     by_key = {s["key"]: s for s in app.sessions}
     rows = []
-    for n, key in enumerate(slots[:SLOTS], 1):
+    for n, key in enumerate(slots, 1):
         s = by_key.get(key) or {"key": key}
         rows.append({"n": n, "key": key, "title": fmt.display_title(s), "host": s.get("host_id") or "",
                      "harness": fmt.harness_label(s, getattr(app.cfg, "claude_profiles", None)),
