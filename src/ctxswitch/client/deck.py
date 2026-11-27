@@ -4,7 +4,8 @@ The board (`ctx tui`) listens on a unix socket (PROTOCOL.md: NDJSON, one object 
 and paints the 15 keys of a Stream Deck MK.2 with what the board is showing: five session slots; the middle row's
 `gpu` `pool` `spend` `exchange` `detach`, the two panels and the spend screen lit while they are up; and ▲▼ to move
 the highlight (hold one and it opens the row it landed on), `restart`, `new` and `kill` — the last of which makes the
-board ask, so the key becomes KILL ✓ / cancel. While a modal is up the whole bottom two rows are cancel.
+board ask, so the key becomes KILL ✓ / cancel. While a modal is up the middle row is cancel with the bottom one, the
+one exception being `spend` while the spend screen is showing, which closes it.
 
 Everything that decides *what a key looks like* or *what a press sends* lives in `Layout`, which needs neither
 Pillow, nor a device, nor a board — so that is the part the tests read. `render` and `DeckApp` only carry it out.
