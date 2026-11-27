@@ -11,6 +11,7 @@
   ctx search <words> [--kind K] [--host H]   decisions, instructions, claims and your prompts, every session
   ctx mcp                                an MCP server on stdio (read-only) for agents: sessions, ledgers, search
   ctx tui                                the board (narrow; built for a tmux side pane)
+  ctx deck [--brightness 60] [--sock P]  a Stream Deck as buttons for the board (needs the `deck` extra)
   ctx tmux [--width 18%|40]             create/attach the tmux manager: session left, ctx tui right
   ctx shell [--id ID]                   a bash whose commands show on the board (started by n → shell)
   ctx install / uninstall [--claude --pi --collector]   wire this host up (hooks, pi extension, collector unit)
@@ -284,6 +285,12 @@ def cmd_hosts(a) -> int:
     return 0
 
 
+def cmd_deck(a) -> int:
+    from ctxswitch.client.deck import main as deck_main, sock_path
+    return deck_main(["--brightness", str(a.brightness), "--sock", str(sock_path(a.sock)),
+                      *(["--no-device"] if a.no_device else [])])
+
+
 def cmd_tmux(a) -> int:
     from ctxswitch.client import tmux
     print(tmux.bootstrap(a.width, a.restart))
@@ -350,6 +357,10 @@ def main(argv=None) -> None:
     p.add_argument("--host", help="one host's sessions and pool jobs (default: every host)")
     p.add_argument("--json", action="store_true", help="the report(s) as JSON")
     sub.add_parser("mcp").set_defaults(fn=cmd_mcp)
+    p = sub.add_parser("deck", help="a Stream Deck as buttons for the board (run it beside the board)"); p.set_defaults(fn=cmd_deck)
+    p.add_argument("--brightness", type=int, default=60, help="key light brightness, 0-100 (default 60)")
+    p.add_argument("--sock", default=None, help="the board's control socket (default ~/.local/state/ctxswitch/board.sock)")
+    p.add_argument("--no-device", action="store_true", help="no deck attached: print the faces instead of drawing them")
     p = sub.add_parser("tmux"); p.set_defaults(fn=cmd_tmux)
     p.add_argument("--width", default=None, help="board width: columns or percent (default: the last one you set with < > or --width, else 60)")
     p.add_argument("--restart", action="store_true", help="restart the board (e.g. after an update); agents keep running")
