@@ -38,10 +38,11 @@ def under_test() -> bool:
 
 def top_modal(app: "CtxApp"):
     """The screen on top, when it's one the control protocol can answer: the Picker, the Start screen or the y/n.
-    The board pushes others (help, spend, the host picker) and those are nobody's to drive from outside."""
-    from ctxswitch.client.tui.app import Confirm, Picker, StartScreen
+    The board pushes others (help, the host picker) and those are nobody's to drive from outside — except the Spend
+    screen, which answers `cancel` (its own Esc) without becoming anybody's option list."""
+    from ctxswitch.client.tui.app import Confirm, Picker, SpendScreen, StartScreen
     top = app.screen_stack[-1] if len(app.screen_stack) > 1 else None
-    return top if isinstance(top, (Picker, StartScreen, Confirm)) else None
+    return top if isinstance(top, (Picker, StartScreen, Confirm, SpendScreen)) else None
 
 
 def input_focused(app: "CtxApp") -> bool:
@@ -55,10 +56,12 @@ def input_focused(app: "CtxApp") -> bool:
 
 
 def modal_of(app: "CtxApp") -> str | None:
-    """What's on top of the screen stack, as state names it: picker / start / confirm / input, or None."""
+    """What's on top of the screen stack, as state names it: picker / start / confirm / spend / input, or None."""
     top = top_modal(app)
     if top is not None:
-        from ctxswitch.client.tui.app import Confirm, Picker
+        from ctxswitch.client.tui.app import Confirm, Picker, SpendScreen
+        if isinstance(top, SpendScreen):
+            return "spend"
         if isinstance(top, Picker):
             return "picker"
         return "start" if not isinstance(top, Confirm) else "confirm"
@@ -79,6 +82,49 @@ def prompt_of(app: "CtxApp") -> str:
     from ctxswitch.client.tui.app import Confirm
     top = top_modal(app)
     return str(getattr(top, "prompt", "") or "") if isinstance(top, Confirm) else ""
+
+
+# cmd -> the board's own action method. Named after the key's action (the `action_` prefix dropped), so the table in
+# docs/board-control.md is the keyboard map read a different way: every Binding in CtxApp.BINDINGS has its line here.
+# The five in ACTIONS_SHORT keep the name the deck's row-2 keys use for them, and `end_session` is `end` (see EXTRA)
+# because a client already spoke that one.
+ACTIONS = {
+    "resume": "action_resume", "message": "action_message", "reply": "action_reply",
+    "message_buffer": "action_message_buffer", "message_work": "action_message_work",
+    "misplace_move": "action_misplace_move", "misplace_keep": "action_misplace_keep",
+    "misplace_drop": "action_misplace_drop", "detach": "action_detach", "kill_all": "action_kill_all",
+    "cycle_host": "action_cycle_host", "filter": "action_filter", "toggle_ended": "action_toggle_ended",
+    "mark_viewed": "action_mark_viewed", "toggle_ws": "action_toggle_ws", "refresh": "action_refresh",
+    "toggle_popups": "action_toggle_popups", "retire": "action_retire", "help": "action_help",
+    "metrics_host": "action_metrics_host", "pool_panel": "action_pool_panel", "pool_review": "action_pool_review",
+    "pool_reviewer": "action_pool_reviewer", "pool_rounds_up": "action_pool_rounds_up",
+    "pool_rounds_down": "action_pool_rounds_down", "wider": "action_wider", "narrower": "action_narrower",
+    "list_shorter": "action_list_shorter", "list_taller": "action_list_taller", "list_auto": "action_list_auto",
+    "clear_filter": "action_clear_filter", "metrics": "action_metrics", "exchange": "action_exchange",
+    "spend": "action_spend",                                   # $ toggles; served above, where it can close again
+    "new_session": "action_new_session", "end_session": "action_end_session", "start": "action_start",
+    # the two names this protocol answered before the whole keyboard was wired up, kept for its first client
+    "new": "action_new_session", "end": "action_end_session",
+}
+# two of them under the name the deck's middle row gives them, because that row says what they are for
+ALIASES = {"gpu": "action_metrics", "pool": "action_pool_panel"}
+# an action that does something to the session under the highlight, so with nothing highlighted it can only say no
+NEEDS_SELECTION = frozenset({"resume", "message", "reply", "message_buffer", "message_work", "misplace_move",
+                             "misplace_keep", "misplace_drop", "mark_viewed", "retire", "exchange"})
+# `new`, `start` and `end` are answered above, where they can carry the fresh state back with them, so they are not
+# listed here even though the keyboard has those three actions too.
+
+
+def has_target(app: "CtxApp") -> bool:
+    """Whether a command that acts on the highlighted row has one to act on. A workstream header (a `w` group's
+    line) answers the same commands as a session, so it counts too; the actions' own guard is `_selected_session`,
+    which sees only sessions — this is the same reach, widened where the row itself is the thing."""
+    return app._selected_session() is not None or str(app.selected or "").startswith("ws:")
+
+
+def panels_of(app: "CtxApp") -> dict:
+    """The two panels a key shows and hides: what the deck lights up to say which way they are set."""
+    return {"gpu": bool(getattr(app, "metrics_on", False)), "pool": bool(getattr(app, "pool_on", False))}
 
 
 def board_state(app: "CtxApp") -> dict:
@@ -102,7 +148,8 @@ def board_state(app: "CtxApp") -> dict:
                      "state": fmt.session_state(s), "visible": key == app.visible_key,
                      "selected": key == app.selected, "pool_jobs": kids.get(key, 0)})
     out = {"proto": PROTO, "rows": rows, "slots": slots, "visible_key": app.visible_key,
-           "selected_key": app.selected, "modal": modal_of(app), "options": options_of(app)}
+           "selected_key": app.selected, "modal": modal_of(app), "options": options_of(app),
+           "panels": panels_of(app)}
     if out["modal"] == "confirm":
         out["prompt"] = prompt_of(app)
     return out
@@ -235,6 +282,7 @@ class ControlServer:
         """Run one request on the app's loop and say what came of it. The reply is sent after the action ran."""
         app = self.app
         cmd = req.get("cmd")
+        from ctxswitch.client.tui.app import SpendScreen    # the one screen that is a modal but has no cancel()
         if cmd == "hello":
             return {"ok": True, "proto": PROTO, "state": board_state(app)}
         if cmd == "state":
@@ -277,9 +325,26 @@ class ControlServer:
             top.answer(bool(req.get("yes")))
             return {"ok": True, "state": board_state(app)}
         if cmd == "cancel":
+            if modal_of(app) == "input":               # Esc out of the box: what the Esc binding itself does
+                app.action_clear_filter()
+                return {"ok": True, "state": board_state(app)}
             top = top_modal(app)
-            if top is not None:
+            if isinstance(top, SpendScreen):           # its Esc — the screen has no cancel of its own
+                app.pop_screen()
+            elif top is not None:
                 top.cancel()
+            return {"ok": True, "state": board_state(app)}
+        if cmd == "spend":                             # $'s own toggle: the screen answers to itself, not to us
+            if isinstance(app.screen, SpendScreen):
+                app.pop_screen()
+            else:
+                app.action_spend()
+            return {"ok": True, "state": board_state(app)}
+        action = ALIASES.get(cmd) or ACTIONS.get(cmd)
+        if action is not None:
+            if cmd in NEEDS_SELECTION and not has_target(app):
+                return {"ok": False, "error": "nothing selected"}
+            getattr(app, action)()
             return {"ok": True, "state": board_state(app)}
         return {"ok": False, "error": "unknown cmd"}
 

@@ -80,13 +80,15 @@ class FakeClient:
 
 def _board(monkeypatch, tmp_path, rows, *, visible=None, in_tmux=True, sock=None, bind=None) -> tui.CtxApp:
     """A board with ``rows`` on it: in tmux, ``visible`` in the main pane, its control socket at ``sock`` (a test's
-    own tmp path — never the operator's live board), and its bind made to fail with ``bind`` when one is given."""
+    own tmp path — never the operator's live board), and its bind made to fail with ``bind`` when one is given.
+    P's panel starts off, so a board here never runs anyone's ``saint-pool`` on its own, and neither does g's."""
     cfg = Config()
     cfg.hub.token = "t"
     cfg.collector.host_id = "laptop"
     # conftest isolates the board's own state files; g's panel is not in that fixture, and the operator's real file
     # says the panel is up — so a board here would open it on mount and fetch from a client that has no metrics()
     monkeypatch.setattr(tui, "METRICS_FILE", tmp_path / "metrics-panel")
+    monkeypatch.setattr(tui, "_pool_panel_state", lambda: False)     # else P's panel runs the operator's saint-pool
     monkeypatch.setattr(tui.tmux, "in_tmux", lambda: in_tmux)
     monkeypatch.setattr(tui.tmux, "reap_viewer", lambda *a, **k: None)
     monkeypatch.setattr(tui.tmux, "restore_viewer", lambda *a, **k: None)
@@ -578,3 +580,157 @@ async def test_a_board_that_finds_another_one_answering_leaves_it_alone(monkeypa
     async with app.run_test(size=(70, 30)) as pilot:
         await pilot.pause(1)
         assert app.control._server is None and kept == [str(sock)]   # it asked, and found a live board
+
+
+# -- the panels, the spend screen, and the rest of the keyboard ----------------------------------------------------
+def _pool_tools(**kw):
+    """This host's pool commands, answered from the test: the panel reads them instead of running anything."""
+    from ctxswitch.client.tui import pool_panel as pp
+
+    def run(argv):
+        return pp.Cmd(kw.get("rc", 0), kw.get("out", ""))
+    return pp.PoolTools(run=run, which=lambda tool: kw.get("where", "/usr/local/bin/saint-pool"))
+
+
+async def test_gpu_turns_the_cpu_panel_on_and_says_so_in_the_state(monkeypatch, tmp_path):
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    monkeypatch.setattr(tui.CtxApp, "fetch_metrics", lambda self: None)   # nothing to ask the hub about
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert board_state(app)["panels"] == {"gpu": False, "pool": False}
+        assert app.control.dispatch({"cmd": "gpu"})["ok"] is True
+        assert app.metrics_on is True and board_state(app)["panels"]["gpu"] is True
+        assert app.control.dispatch({"cmd": "metrics"})["ok"] is True     # the binding's own name, the same action
+        assert app.metrics_on is False and board_state(app)["panels"]["gpu"] is False
+
+
+async def test_pool_turns_the_local_pool_panel_on_and_says_so(monkeypatch, tmp_path):
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    app.pool_tools = _pool_tools()
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert board_state(app)["panels"] == {"gpu": False, "pool": False}
+        assert app.control.dispatch({"cmd": "pool"})["ok"] is True
+        assert app.pool_on is True and board_state(app)["panels"]["pool"] is True
+        assert app.control.dispatch({"cmd": "pool_panel"})["ok"] is True
+        assert app.pool_on is False and board_state(app)["panels"]["pool"] is False
+
+
+async def test_spend_opens_the_screen_close_again_and_a_cancel_closes_it(monkeypatch, tmp_path):
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    asked: list = []
+    monkeypatch.setattr(tui, "spend_windows", lambda client, host: asked.append(host) or {})
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert board_state(app)["modal"] is None
+        assert app.control.dispatch({"cmd": "spend"})["ok"] is True
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, tui.SpendScreen) and board_state(app)["modal"] == "spend"
+        assert board_state(app)["options"] == [], "the spend screen offers nothing to pick"
+        assert app.control.dispatch({"cmd": "spend"})["ok"] is True       # $ again closes it
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] is None
+        app.control.dispatch({"cmd": "spend"})
+        await pilot.pause(0.2)
+        assert app.control.dispatch({"cmd": "cancel"})["ok"] is True      # and so does any way out of a modal
+        await _wait(pilot, "the spend screen to close", lambda: board_state(app)["modal"] is None)
+        assert not isinstance(app.screen, tui.SpendScreen)
+
+
+async def test_exchange_with_nothing_selected_says_so(monkeypatch, tmp_path):
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        app.selected = None
+        assert app.control.dispatch({"cmd": "exchange"}) == {"ok": False, "error": "nothing selected"}
+
+
+async def test_detach_outside_tmux_quits_the_board(monkeypatch, tmp_path):
+    quit: list = []
+    app = _board(monkeypatch, tmp_path, _rows(2), in_tmux=False)
+    monkeypatch.setattr(tui.CtxApp, "exit", lambda self: quit.append("exit"))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert app.control.dispatch({"cmd": "detach"})["ok"] is True
+        assert quit == ["exit"]
+
+
+async def test_detach_inside_tmux_leaves_the_board_running(monkeypatch, tmp_path):
+    quit: list = []
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    monkeypatch.setattr(tui.tmux, "detach", lambda: quit.append("detach"))
+    monkeypatch.setattr(tui.CtxApp, "exit", lambda self: quit.append("exit"))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert app.control.dispatch({"cmd": "detach"})["ok"] is True
+        assert quit == ["detach"], "inside tmux q detaches: the board and every agent stay up"
+
+
+def _binding_cmds() -> list[str]:
+    """Every key the board answers, as a command: its binding's action name, with the two the deck's middle row
+    calls gpu and pool. The slot and select_slot bindings take the row's number, so `slot` and `select` do that."""
+    out = []
+    for b in tui.CtxApp.BINDINGS:
+        action = (b.action or "").split("(")[0]
+        if action in ("slot", "select_slot"):
+            continue
+        out += [name for name, method in tui.control.ALIASES.items() if method == f"action_{action}"] or [action]
+    return sorted(set(out))
+
+
+@pytest.mark.parametrize("cmd", _binding_cmds())
+async def test_every_board_key_can_be_driven_from_the_socket(cmd, monkeypatch, tmp_path):
+    """The socket covers the whole keyboard, so that nothing is missing from it can only be found by asking of the
+    bindings themselves: one command per binding, each calling that binding's own action."""
+    method = tui.control.ALIASES.get(cmd) or tui.control.ACTIONS.get(cmd)
+    hit: list = []
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    app.pool_tools = _pool_tools()
+    for name in dir(tui.CtxApp):
+        if name.startswith("action_"):
+            monkeypatch.setattr(tui.CtxApp, name, lambda self, _n=name, *a, **k: hit.append(_n))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert method is not None, f"{cmd} names no board action"
+        assert cmd in tui.control.ACTIONS or cmd in tui.control.ALIASES, cmd
+        reply = app.control.dispatch({"cmd": cmd})
+        assert reply["ok"] is True and "state" in reply, reply
+        # what it ran: the action the binding says, or that action's own reason for saying nothing happened
+        assert hit == [method], (cmd, hit)
+
+
+async def test_a_command_needing_a_row_says_nothing_is_selected(monkeypatch, tmp_path):
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        for cmd in ("resume", "message", "reply", "message_buffer", "mark_viewed", "exchange", "misplace_move",
+                    "misplace_keep", "misplace_drop"):
+            app.selected = None
+            assert app.control.dispatch({"cmd": cmd}) == {"ok": False, "error": "nothing selected"}, cmd
+            app.selected = "ws:webapp"                          # a workstream header answers these itself
+            assert app.control.dispatch({"cmd": cmd})["ok"] is True, cmd
+        app.selected = app.slots[0]                             # these two answer from the detail or the work,
+        for cmd in ("retire", "message_work"):                  # so they get on with a row highlighted at all
+            assert app.control.dispatch({"cmd": cmd})["ok"] is True, cmd
+
+
+async def test_cancel_closes_the_box_the_keyboard_is_typing_in(monkeypatch, tmp_path):
+    """/ and m and a put the board's Input up; Esc out of it is what `cancel` does, so a client can get the board
+    back from a box it didn't open. The text filter goes with it — that is the binding."""
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        app.action_filter()
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] == "input"
+        app.query_one("#filter").value = "s1"                   # typed something: it is the filter live
+        assert app.control.dispatch({"cmd": "cancel"})["ok"] is True
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] is None and app.input_mode == "filter"
+        assert app.query_one("#filter").value == "" and not app.query_one("#filter").display
+        app.action_message()                                    # a message box: same way out, nothing sent
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] == "input"
+        assert app.control.dispatch({"cmd": "cancel"})["ok"] is True
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] is None and app.pending_reply is None
