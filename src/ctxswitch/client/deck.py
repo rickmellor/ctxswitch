@@ -1,9 +1,10 @@
 """``ctx deck`` — an Elgato Stream Deck as a button box for the board.
 
 The board (`ctx tui`) listens on a unix socket (PROTOCOL.md: NDJSON, one object per line). This talks that protocol
-and paints the 15 keys of a Stream Deck MK.2 with what the board is showing: five session slots, ▲▼ to move the
-highlight (hold one and it opens the row it landed on), `restart`, `new` and `kill` — the last of which makes the
-board ask, so the key becomes KILL ✓ / cancel.
+and paints the 15 keys of a Stream Deck MK.2 with what the board is showing: five session slots; the middle row's
+`gpu` `pool` `spend` `exchange` `detach`, the two panels and the spend screen lit while they are up; and ▲▼ to move
+the highlight (hold one and it opens the row it landed on), `restart`, `new` and `kill` — the last of which makes the
+board ask, so the key becomes KILL ✓ / cancel. While a modal is up the whole bottom two rows are cancel.
 
 Everything that decides *what a key looks like* or *what a press sends* lives in `Layout`, which needs neither
 Pillow, nor a device, nor a board — so that is the part the tests read. `render` and `DeckApp` only carry it out.
@@ -23,6 +24,9 @@ from pathlib import Path
 COLS = 5
 ROWS = 3
 KEY_COUNT = COLS * ROWS
+KEY_W = 72                         # an MK.2 key, in pixels: what a label is fitted to
+ROW2 = 5                           # the middle row's first key: keys 5…9 are the board's panels and its exits
+ROW2_CMDS = ("gpu", "pool", "spend", "exchange", "detach")     # what each of those keys is, and what it sends
 HOLD_MS = 600                      # ▲/▼ held this long opens the highlighted row on release
 RECONNECT_S = 2.0                  # how often to retry the board while it is unreachable
 BLINK_S = 0.5                      # waiting sessions flash: how often the phase flips
@@ -35,6 +39,7 @@ DOT = {"busy": "#ffd700", "waiting": WAIT_BG, "idle": "#34c759",
 DIM_GREY = "#3a3a3c"               # the text of a key the board says nothing about
 ARROW_BG = "#444444"
 ACTION_BG = "#333333"
+LIT_BG = "#1f4f7a"                 # an action key whose thing is on: the panel is up, the screen is showing
 END_BG = "#5a1a1a"
 CONFIRM_BG = "#d62728"             # the KILL ✓ key, while a confirm is up
 OPTION_BG = "#2b2b2b"
@@ -88,6 +93,8 @@ class Layout:
             return self._confirm()
         if modal == "input":
             return self._typing(state)
+        if modal == "spend":
+            return self._spend(state)
         return self._normal(state, blink)
 
     def _rows(self, state: dict) -> dict[int, dict]:
@@ -108,13 +115,39 @@ class Layout:
                                top_bar=bool(r.get("visible")), bottom_bar=bool(r.get("selected")),
                                dot=DOT.get(r.get("state"), DOT["unknown"]),
                                border=WAIT_BG if waiting else None)
-        for i in range(5, 10):
-            faces[i] = KeyFace()                                    # reserved
+        for i, face in enumerate(self._row2(state)):
+            faces[ROW2 + i] = face
         faces[10] = KeyFace(bg=ARROW_BG, lines=("▲",))
         faces[11] = KeyFace(bg=ARROW_BG, lines=("▼",))
         faces[12] = KeyFace(bg=ACTION_BG, lines=("restart",))
         faces[13] = KeyFace(bg=ACTION_BG, lines=("new",))
         faces[14] = KeyFace(bg=END_BG, lines=("kill",))
+        return faces
+
+    def _row2(self, state: dict) -> list[KeyFace]:
+        """The middle row: two panels that stay lit while they are up, the spend screen (lit while it is showing),
+        where to send a session elsewhere, and detach. The lit face is the same key with a bar under it, so the row
+        reads the same at a glance whichever way each thing is set."""
+        panels = state.get("panels") or {}
+        lit = [bool(panels.get("gpu")), bool(panels.get("pool")), state.get("modal") == "spend", False, False]
+        return [KeyFace(bg=LIT_BG if on else (END_BG if cmd == "detach" else ACTION_BG), lines=(cmd,),
+                        bottom_bar=bool(on))
+                for cmd, on in zip(ROW2_CMDS, lit)]
+
+    def _cancel_row2(self, faces: dict[int, KeyFace]) -> dict[int, KeyFace]:
+        """A modal is up: the middle row's own commands are nobody's to run, so every one of its keys is a cancel."""
+        for i in range(ROW2, ROW2 + COLS):
+            faces[i] = KeyFace(bg=ACTION_BG, lines=("cancel",))
+        return faces
+
+    def _spend(self, state: dict) -> dict[int, KeyFace]:
+        """The spend screen is up: it takes the whole pane and its own Esc closes it, so the only thing a key can do
+        apart from closing it is the $ that opened it — key 7, still lit, and it goes back the way it came."""
+        faces = {i: KeyFace() for i in range(ROW2)}
+        self._cancel_row2(faces)
+        faces[ROW2 + 2] = self._row2(state)[2]
+        for i in range(10, KEY_COUNT):
+            faces[i] = KeyFace(bg=ACTION_BG, lines=("cancel",))
         return faces
 
     def _picker(self, state: dict) -> dict[int, KeyFace]:
@@ -124,14 +157,14 @@ class Layout:
             opt = next((o for o in options if o.get("n") == i + 1), None)
             faces[i] = KeyFace(bg=OPTION_BG, lines=(str(i + 1), _title(opt.get("label")))) \
                 if opt else KeyFace()
-        for i in range(5, 10):
-            faces[i] = KeyFace()
+        self._cancel_row2(faces)
         for i in (10, 11, 12, 13, 14):
             faces[i] = KeyFace(bg=ACTION_BG, lines=("cancel",))
         return faces
 
     def _confirm(self) -> dict[int, KeyFace]:
-        faces = {i: KeyFace() for i in range(10)}
+        faces = {i: KeyFace() for i in range(ROW2)}
+        self._cancel_row2(faces)
         for i in (10, 11, 12, 13):
             faces[i] = KeyFace(bg=ACTION_BG, lines=("cancel",))
         faces[14] = KeyFace(bg=CONFIRM_BG, lines=("KILL", "✓"))
@@ -141,6 +174,8 @@ class Layout:
         """The board's text Input has focus (`/`, `m`, `a`, a directory prompt): no key here can help, so say so."""
         faces = self._normal(state, blink=False)
         for i in (10, 11, 12, 13, 14):
+            faces[i] = KeyFace(bg=ACTION_BG, lines=("type on\nthe board",))
+        for i in range(ROW2, ROW2 + COLS):
             faces[i] = KeyFace(bg=ACTION_BG, lines=("type on\nthe board",))
         return faces
 
@@ -153,15 +188,23 @@ class Layout:
         if modal in ("picker", "start"):
             if key < 5:
                 return [{"cmd": "pick", "n": key + 1}]
-            return [{"cmd": "cancel"}] if key >= 10 else []
+            return [{"cmd": "cancel"}] if key >= ROW2 else []
         if modal == "confirm":
             if key == 14:
                 return [{"cmd": "confirm", "yes": True}]
-            return [{"cmd": "cancel"}] if 10 <= key <= 13 else []
+            return [{"cmd": "cancel"}] if key >= ROW2 else []
         if modal == "input":
             return []
+        if modal == "spend":
+            # the spend screen has the whole pane and its own Esc: key 7 is the $ that opened it, and everything
+            # else on the deck is that Esc
+            if key == ROW2 + 2:
+                return [{"cmd": "spend"}]
+            return [] if key < ROW2 else [{"cmd": "cancel"}]
         if key < 5:
             return [{"cmd": "slot", "n": key + 1}]
+        if ROW2 <= key < ROW2 + COLS:
+            return [{"cmd": ROW2_CMDS[key - ROW2]}]
         if key == 10:
             return [{"cmd": "move", "delta": -1}]
         if key == 11:
@@ -218,9 +261,7 @@ def render(face: KeyFace, deck) -> bytes:
     ink = _hex(DIM_GREY) if face.dim else _hex(WHITE)
     y = 6
     for i, line in enumerate(face.lines):
-        size = _size(line, i)
-        while size > 10 and i == 0 and d.textlength(line, font=_font(size)) > w - 10:
-            size -= 1                                           # a long label ("restart") shrinks rather than wraps
+        size = label_size(line, i, w)
         d.multiline_text((5, y), "\n".join(_wrap(line, w, size)), fill=ink, font=_font(size, bold=size == 26),
                          spacing=2)
         y += size + 7
@@ -235,11 +276,20 @@ def describe(face: KeyFace) -> str:
             + (f" bars={marks}" if marks else "") + (" dim" if face.dim else ""))
 
 
-def _size(line: str, index: int) -> int:
-    """26 px for a slot number or an arrow, 15 px for a key's own label, 11 px for board text under it."""
+def label_size(line: str, index: int, width: int = KEY_W) -> int:
+    """How big one line of a key's text is drawn: 26 px for a slot number or an arrow, 15 px for the key's own label,
+    11 px for board text under it. A label too long for the key shrinks rather than wraps ("restart", "exchange"),
+    down to 10 px at the least, so a whole word always comes out whole — which is also what a test can ask without a
+    device: the size it picks is the biggest one whose measured text still fits the key."""
     if index == 0 and len(line.strip()) <= 2:
         return 26
-    return 15 if index == 0 else 11
+    if index:
+        return 11
+    first = line.split("\n")[0]                        # what `_wrap` draws as its own line; Pillow can't measure two
+    size = 15
+    while size > 10 and _font(size).getlength(first) > width - 10:
+        size -= 1
+    return size
 
 
 def _font(size: int, bold: bool = False):

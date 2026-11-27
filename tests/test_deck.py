@@ -30,11 +30,12 @@ def row(n: int, **kw) -> dict:
     return {**r, **kw}
 
 
-def board_state(rows=None, modal=None, options=None) -> dict:
-    """A `state` object as PROTOCOL.md describes it: three live rows unless told otherwise."""
+def board_state(rows=None, modal=None, options=None, panels=None) -> dict:
+    """A `state` object as PROTOCOL.md describes it: three live rows unless told otherwise, both panels off."""
     rows = rows if rows is not None else [row(1), row(2), row(3)]
     return {"proto": 1, "rows": rows, "slots": [r["key"] for r in rows], "visible_key": rows[0]["key"],
-            "selected_key": rows[-1]["key"], "modal": modal, "options": options or []}
+            "selected_key": rows[-1]["key"], "modal": modal, "options": options or [],
+            "panels": {"gpu": False, "pool": False, **(panels or {})}}
 
 
 async def until(what, cond, timeout=5.0):
@@ -145,8 +146,6 @@ def test_three_sessions_colour_three_keys_and_leave_two_empty():
     for i in (3, 4):
         assert faces[i].bg == deck.BLACK and faces[i].dim and faces[i].lines == (str(i + 1),)
         assert faces[i].dot is None, "an empty slot has nothing to put a dot for"
-    for i in range(5, 10):
-        assert faces[i] == KeyFace(), "reserved keys stay blank"
 
 
 def test_visible_gets_the_top_bar_and_selected_the_bottom_one():
@@ -188,9 +187,21 @@ def test_picker_keys_are_the_options_and_the_rest_cancel():
     assert faces[1].lines == ("2", "pi")
     for i in (2, 3, 4):
         assert faces[i] == KeyFace(), "an option key with no option stays black"
-    for i in (10, 11, 12, 13, 14):
+    for i in range(deck.ROW2, deck.KEY_COUNT):
         assert faces[i].lines == ("cancel",), f"key {i} should offer cancel"
+        assert faces[i].bg == deck.ACTION_BG, f"key {i}'s cancel is an ordinary action face"
     assert faces[10].bg == faces[11].bg == faces[12].bg == faces[13].bg
+
+
+def test_the_spend_screen_leaves_only_its_own_key_lit():
+    """The spend screen takes the whole pane and answers its own Esc, so every key is a way out — except key 7,
+    which is still the $ that opened it, lit, and closes it again."""
+    faces = Layout().plan(board_state(modal="spend"))
+    assert faces[7].lines == ("spend",) and faces[7].bg == deck.LIT_BG and faces[7].bottom_bar
+    for i in (0, 1, 2, 3, 4):
+        assert faces[i] == KeyFace(), "the rows are behind the spend screen, so they do nothing"
+    for i in (5, 6, 8, 9, 10, 11, 12, 13, 14):
+        assert faces[i].lines == ("cancel",) and faces[i].bg == deck.ACTION_BG, f"key {i} should offer cancel"
 
 
 def test_start_mode_is_the_same_screen_as_the_picker():
@@ -224,6 +235,43 @@ def test_the_buttons_normal_mode_gives():
     assert faces[12].bg == faces[13].bg == deck.ACTION_BG and faces[14].bg == deck.END_BG
 
 
+def test_the_middle_row_names_the_five_board_commands():
+    faces = Layout().plan(board_state())
+    for i, cmd in enumerate(deck.ROW2_CMDS):
+        face = faces[deck.ROW2 + i]
+        assert face.lines == (cmd,), f"key {deck.ROW2 + i} should be the {cmd} key"
+        assert face.bg == (deck.END_BG if cmd == "detach" else deck.ACTION_BG)
+        assert not face.bottom_bar and face.dot is None, "a toggle that is off isn't lit"
+
+
+@pytest.mark.parametrize("key,panels,modal", [(5, {"gpu": True}, None), (6, {"pool": True}, None),
+                                              (7, None, "spend")])
+def test_a_toggle_key_is_lit_while_its_thing_is_up(key, panels, modal):
+    faces = Layout().plan(board_state(modal=modal, panels=panels))
+    assert faces[key].bg == deck.LIT_BG and faces[key].bottom_bar, f"key {key} should read as on"
+    assert faces[key].lines == Layout().plan(board_state())[key].lines, "lit or not, the key says the same thing"
+    others = [i for i in range(deck.ROW2, deck.ROW2 + 4) if i != key]
+    for i in others:
+        assert not faces[i].bottom_bar and faces[i].bg != deck.LIT_BG, f"key {i} is off, so it stays dark"
+
+
+def test_a_state_with_no_panels_field_is_still_a_normal_board():
+    """An older board's state has no `panels`: the row is there, nothing lit, rather than anything missing."""
+    st = board_state()
+    del st["panels"]
+    faces = Layout().plan(st)
+    assert [faces[i].lines for i in range(deck.ROW2, deck.ROW2 + 5)] == [(c,) for c in deck.ROW2_CMDS]
+    assert all(faces[i].bg != deck.LIT_BG for i in range(deck.ROW2, deck.ROW2 + 5))
+
+
+def test_typing_mode_leaves_row_2_alone():
+    """The Input has focus: no key can help, and one of them would take the board out of the box it is typing in."""
+    faces = Layout().plan(board_state(modal="input"))
+    for i in range(deck.ROW2, deck.KEY_COUNT):
+        assert faces[i].lines == ("type on\nthe board",) and faces[i].bg == deck.ACTION_BG
+    assert Layout().on_press(board_state(modal="input"), 5) == []
+
+
 # ------------------------------------------------------------------------------------------ what a press sends
 
 
@@ -239,9 +287,9 @@ def test_presses_in_normal_mode():
     assert L.on_press(st, 14) == [{"cmd": "end"}]
 
 
-@pytest.mark.parametrize("key", list(range(5, 10)))
-def test_a_blank_key_sends_nothing(key):
-    assert Layout().on_press(board_state(), key) == []
+@pytest.mark.parametrize("key,cmd", list(zip(range(deck.ROW2, deck.ROW2 + deck.COLS), deck.ROW2_CMDS)))
+def test_the_middle_row_sends_its_own_command(key, cmd):
+    assert Layout().on_press(board_state(), key) == [{"cmd": cmd}]
 
 
 def test_a_press_with_no_board_sends_nothing():
@@ -252,15 +300,25 @@ def test_the_modal_keys():
     L = Layout()
     picker = board_state(modal="picker", options=[{"n": 3, "label": "pi"}])
     assert L.on_press(picker, 2) == [{"cmd": "pick", "n": 3}]
-    for key in (10, 11, 12, 13, 14):
+    for key in range(deck.ROW2, deck.KEY_COUNT):
         assert L.on_press(picker, key) == [{"cmd": "cancel"}], f"key {key} should cancel a picker"
-    assert L.on_press(picker, 7) == []
     confirm = board_state(modal="confirm")
     assert L.on_press(confirm, 14) == [{"cmd": "confirm", "yes": True}]
-    for key in (10, 11, 12, 13):
+    for key in range(deck.ROW2, 14):
         assert L.on_press(confirm, key) == [{"cmd": "cancel"}], f"key {key} should answer the confirm no"
     assert L.on_press(confirm, 0) == [], "the slot keys do nothing while a confirm is up"
     assert L.on_press(board_state(modal="input"), 0) == []
+
+
+def test_the_spend_key_toggles_and_the_others_cancel():
+    """On the spend screen the middle row is nine ways out and one of them is the key that is already lit: key 7
+    sends `spend` again, which is what closes it."""
+    L = Layout()
+    spend = board_state(modal="spend", panels={"gpu": True, "pool": True})
+    assert L.on_press(spend, 7) == [{"cmd": "spend"}]
+    for key in (5, 6, 8, 9, 10, 11, 12, 13, 14):
+        assert L.on_press(spend, key) == [{"cmd": "cancel"}], f"key {key} should close the spend screen"
+    assert L.on_press(spend, 0) == [], "a slot key does nothing behind the spend screen"
 
 
 def test_a_key_outside_the_deck_sends_nothing():
@@ -311,6 +369,25 @@ def test_every_kind_of_face_draws_a_jpeg_the_deck_can_take():
         assert img[:2] == b"\xff\xd8", f"{face.lines} didn't come out as JPEG"
         im = Image.open(io.BytesIO(img))
         assert im.size == (72, 72) and im.format == "JPEG"
+
+
+def test_the_longest_label_on_the_board_is_not_cut_off():
+    """"exchange" is the middle row's longest word. It must come out whole on a 72 px key: the size the drawing
+    picks has to be one the font fits inside the key's margins, and the pixels must say the same."""
+    face = Layout().plan(board_state())[deck.ROW2 + 3]
+    assert face.lines == ("exchange",)
+    size = deck.label_size(face.lines[0], 0)
+    assert size <= 15, "a key's own label never starts bigger than 15 px"
+    from ctxswitch.client.deck import _font
+    assert _font(size).getlength("exchange") <= deck.KEY_W - 10, f"{size} px doesn't fit a key, so it is truncated"
+    assert _font(size + 1).getlength("exchange") > deck.KEY_W - 10, "it should stop at the biggest size that fits"
+    d = FakeDeck()
+    from PIL import Image
+    im = Image.open(io.BytesIO(render(face, d))).convert("RGB")     # the deck's own flip puts the text low
+    rows = [[x for x in range(im.size[0]) if sum(im.getpixel((x, y))) > 450] for y in range(im.size[1])]
+    ink = max(rows, key=lambda r: (r[-1] - r[0]) if r else 0, default=[])
+    assert ink, "nothing was drawn on the key at all"
+    assert min(ink) >= 4 and max(ink) < im.size[0] - 4, f"the word ran to the key's edge: cols {min(ink)}…{max(ink)}"
 
 
 def test_the_image_comes_back_flipped_the_way_the_deck_wants():
