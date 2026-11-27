@@ -400,13 +400,26 @@ drawing them, to try the wiring by hand). ▲▼ move the highlight the moment y
 letting go and it opens the row the highlight ends up on, so one key both walks the list and enters it. Ctrl-C resets
 the keys and closes the deck.
 
-| Key | Does | While the board is asking (picker / start) | While a confirm is up |
+| Key | Does | While the board is asking (picker) | While a confirm is up |
 |---|---|---|---|
 | 1–5 (top row) | open the session the key is showing (as `Alt+1`…`Alt+5`): the row's number, its title, a white bar along the top if it's in the main pane and along the bottom if it's the highlighted row, and a dot for busy / **waiting** / idle / shell / ended. Past five sessions the outer keys become `◀` / `▶` and page the rows | option 1–5 | nothing |
 | `gpu` `pool` `spend` `exchange` `detach` (middle row) | `g` / `P` / `$` / `x` / `q`. The two panels and the spend screen stay lit while they are up — blue with a white bar along the bottom — and `detach` wears `kill`'s red | cancel | cancel |
 | ▲ / ▼ | move the highlight up / down, and open the highlighted row if held 0.6 s before release | cancel | cancel |
 | `restart` / `new` | `s` / `n` | cancel | cancel |
 | `kill` | `k`, which asks the board to confirm | cancel | **KILL ✓** (the key beside it is cancel) |
+
+**The Start screen** (`s`) is the one modal the deck drives rather than cancels: its rows have a cursor of their own,
+so the bottom row becomes the screen's five keys and the middle row's commands go black — none of them is the board's
+to run while the screen has the pane.
+
+| Key | Sends | The key shows |
+|---|---|---|
+| 1–5 (top row) | `pick` — the profile that digit starts, as the picker's keys do | the option's number and label |
+| `gpu` `pool` `spend` `exchange` `detach` (middle row) | nothing at all | black |
+| ▲ / ▼ | `move -1` / `move +1`: the screen's cursor, one recent up / down (holding one sends nothing on release) | ▲ / ▼ |
+| `select` | `mark`: Space — mark or unmark the recent the cursor is on, so `enter` can bring several back at once | `select`, its title under it, on the lit blue while that row is marked |
+| `cancel` | `cancel`: the screen's Esc | cancel |
+| `enter` | `submit`: Enter — resume what's marked, or the cursor's row when none are | `enter`, and `resume N` under it (`N` marked, or 1; `nothing`, the key dim, when nothing has ended) |
 
 With the board unreachable every key goes black except the centre one, which says `no board` and retries every 2 s.
 While the spend screen is up every key is cancel except `spend` itself, which is lit and closes it again; while the

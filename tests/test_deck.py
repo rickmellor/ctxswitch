@@ -43,17 +43,38 @@ def row(n: int, **kw) -> dict:
     return {**r, **kw}
 
 
-def board_state(rows=None, modal=None, options=None, panels=None, visible_key=None, selected_key=None) -> dict:
+def board_state(rows=None, modal=None, options=None, panels=None, visible_key=None, selected_key=None,
+                start=...) -> dict:
     """A `state` object as PROTOCOL.md describes it: three live rows unless told otherwise, both panels off.
-    `visible_key` is the row in the main pane — the one the top bar is on, unless a test says otherwise."""
+    `visible_key` is the row in the main pane — the one the top bar is on, unless a test says otherwise. `start` is
+    the Start screen's own state; left alone it is null, and `start=None` is an older board that has no such field."""
     rows = rows if rows is not None else [row(1), row(2), row(3)]
     if visible_key is None:
         visible_key = next((r["key"] for r in rows if r.get("visible")), rows[0]["key"])
     if selected_key is None:
         selected_key = rows[-1]["key"]
-    return {"proto": 1, "rows": rows, "slots": [r["key"] for r in rows], "visible_key": visible_key,
-            "selected_key": selected_key, "modal": modal, "options": options or [],
-            "panels": {"gpu": False, "pool": False, **(panels or {})}}
+    st = {"proto": 1, "rows": rows, "slots": [r["key"] for r in rows], "visible_key": visible_key,
+          "selected_key": selected_key, "modal": modal, "options": options or [],
+          "panels": {"gpu": False, "pool": False, **(panels or {})}}
+    if start is not ...:
+        st["start"] = start
+    return st
+
+
+def recent(title: str, marked: bool = False) -> dict:
+    """One of the Start screen's rows to resume, as its `start` state lists them in screen order."""
+    return {"key": f"laptop/claude/{title.replace(' ', '')}", "title": title, "marked": marked}
+
+
+def start_state(cursor: int = 0, marked: int = 0, recents=None) -> dict:
+    """The Start screen's state: where its cursor is, how many rows it has marked, and its rows themselves. With the
+    rows left to default, `marked=1` marks the cursor's own — the state a board would really answer — and
+    `marked=2` marks it and the next. Recents a test hands over are the state exactly as it says."""
+    if recents is None:
+        recents = [recent("ctx switch"), recent("board control"), recent("the deck")]
+        for i in range(min(marked, len(recents) - cursor)):
+            recents[cursor + i] = {**recents[cursor + i], "marked": True}
+    return {"cursor": cursor, "marked": marked, "recents": list(recents)}
 
 
 async def until(what, cond, timeout=5.0):
@@ -257,9 +278,95 @@ def test_the_spend_screen_leaves_only_its_own_key_lit():
         assert faces[i].lines == ("cancel",) and faces[i].bg == deck.ACTION_BG, f"key {i} should offer cancel"
 
 
-def test_start_mode_is_the_same_screen_as_the_picker():
-    assert Layout().plan(board_state(modal="start", options=[{"n": 1, "label": "x"}])) == \
-        Layout().plan(board_state(modal="picker", options=[{"n": 1, "label": "x"}]))
+def start_mode_state(cursor: int = 0, marked: int = 0, recents=None, start=...) -> dict:
+    """A board whose Start screen is up, with three profile options and the `start` state its screen would report.
+    ``start=None`` is an older board, whose state has no such field."""
+    st = board_state(modal="start", options=[{"n": 1, "label": "claude · max"}, {"n": 2, "label": "pi"},
+                                             {"n": 3, "label": "shell"}], start=start_state(cursor, marked, recents))
+    if start is not ...:
+        st["start"] = start
+    return st
+
+
+def test_the_start_screen_keeps_the_picker_s_option_keys():
+    """Its top row is the picker's, unchanged: one key per profile the screen's digits start."""
+    faces = Layout().plan(start_mode_state())
+    picker = Layout().plan(board_state(modal="picker", options=[{"n": 1, "label": "claude · max"},
+                                                               {"n": 2, "label": "pi"}, {"n": 3, "label": "shell"}]))
+    for i in range(5):
+        assert faces[i] == picker[i], f"key {i} is not the option face the picker would put there"
+
+
+def test_the_start_screen_blacks_the_board_s_own_middle_row():
+    """The board's own commands are nobody's to run under this screen, so the middle row is blank — not the
+    picker's nine ways out. What the screen does answer to is the bottom row, tested on its own."""
+    faces = Layout().plan(start_mode_state())
+    for i in range(deck.ROW2, 10):
+        assert faces[i] == KeyFace(), f"key {i} would run one of the board's commands under the start screen"
+
+
+def test_the_start_screen_keys_walk_mark_and_resume():
+    """Keys 10–14: ▲▼ the screen's cursor, `select` its Space, `cancel` its Esc and `enter` its Enter — the four
+    things the screen answers to, and nothing of the board's."""
+    faces = Layout().plan(start_mode_state())
+    assert faces[10].lines == ("▲",) and faces[10].bg == deck.ARROW_BG
+    assert faces[11].lines == ("▼",) and faces[11].bg == deck.ARROW_BG
+    assert faces[12].lines == ("select",) and faces[12].bg == deck.ACTION_BG and faces[12].sub == "ctx switch"
+    assert faces[13].lines == ("cancel",) and faces[13].bg == deck.ACTION_BG
+    assert faces[14].lines == ("enter",) and faces[14].bg == deck.ACTION_BG and faces[14].sub == "resume 1"
+    assert not faces[14].dim, "there are rows to bring back, so the key isn't dim"
+
+
+def test_the_start_screen_s_select_key_names_the_row_under_its_cursor():
+    """`select` says which row its Space would mark, in the small line under the label, and goes to the lit colour
+    while that row is marked."""
+    L = Layout()
+    face = L.plan(start_mode_state(cursor=1))[12]
+    assert face.lines == ("select",) and face.sub == "board control" and face.bg == deck.ACTION_BG
+    marked = L.plan(start_mode_state(cursor=1, marked=1))[12]
+    assert marked.bg == deck.LIT_BG and marked.lines == ("select",) and marked.sub == "board control"
+    # the cursor moved off the marked row: the key says which row Space would mark now, and it is not lit
+    away = L.plan(start_mode_state(cursor=2, marked=1, recents=[recent("ctx switch"), recent("board control", True),
+                                                                recent("the deck")]))[12]
+    assert away.bg == deck.ACTION_BG and away.sub == "the deck"
+
+
+def test_the_start_screen_s_enter_key_says_how_many_it_would_resume():
+    """`enter` resumes what is marked, or the cursor row when nothing is: the key says how many, and says `nothing`
+    and goes dim when the screen has no rows at all."""
+    L = Layout()
+    assert L.plan(start_mode_state(marked=2))[14].sub == "resume 2"
+    assert L.plan(start_mode_state(cursor=2))[14].sub == "resume 1", "nothing marked: the cursor row, and one"
+    empty = L.plan(start_mode_state(recents=[]))[14]
+    assert empty.lines == ("enter",) and empty.sub == "nothing" and empty.dim
+
+
+def test_an_older_board_s_start_screen_says_only_what_the_two_keys_are(monkeypatch):
+    """A board whose state has no `start`: the two keys that could say more say only what they are, and go on doing
+    the same when pressed — the screen underneath answers them either way."""
+    older = start_mode_state(start=None)
+    del older["start"]                                   # a board that never heard of the field at all
+    for st in (start_mode_state(start=None), older):
+        assert Layout().plan(st) == Layout().plan(older), "a null `start` and no `start` are the same board"
+    faces = Layout().plan(older)
+    assert faces[12].lines == ("select",) and faces[12].sub is None and faces[12].bg == deck.ACTION_BG
+    assert faces[14].lines == ("enter",) and faces[14].sub is None and not faces[14].dim
+    for i in (10, 11, 13):
+        assert faces[i].lines == Layout().plan(start_mode_state())[i].lines, f"key {i} says the same either way"
+    for i in range(deck.ROW2, deck.KEY_COUNT):
+        assert faces[i].bg != deck.BLACK or i in range(deck.ROW2, 10), f"key {i} went black for want of a field"
+
+
+def test_a_key_face_can_carry_one_small_line_under_its_label():
+    """`sub` is one 11 px line under the key's own lines, which keep their sizes — `small` makes every line 11 px,
+    which is not what a label with a note under it wants."""
+    face = KeyFace(lines=("enter",), sub="resume 2")
+    assert deck.label_size(face.lines[0], 0) == 15, "the label keeps the size a key's own word gets"
+    assert deck.label_size(face.sub, 1) == 11
+    img = render(face, FakeDeck())
+    assert img[:2] == b"\xff\xd8" and deck.describe(face) == "#000000 'enter' sub='resume 2'"
+    both = render(KeyFace(lines=("select",), sub="a session title far too long for one key"), FakeDeck())
+    assert both[:2] == b"\xff\xd8", "a sub too long for the key still draws"
 
 
 def test_confirm_puts_kill_on_the_last_key():
@@ -492,6 +599,42 @@ def test_the_modal_keys():
     assert L.on_press(board_state(modal="input"), 0) == []
 
 
+def test_the_start_screen_keys_send_the_screen_s_own_commands():
+    """What each of those five keys asks for: the screen's profile digits, its cursor, its mark, its Esc and its
+    Enter. The middle row sends nothing at all — under this screen the board's commands are not the deck's to run."""
+    L = Layout()
+    st = start_mode_state()
+    for key in range(5):                                 # every option key, as the picker has them: the board says
+        assert L.on_press(st, key) == [{"cmd": "pick", "n": key + 1}], f"key {key} starts profile {key + 1}"
+    for key in range(deck.ROW2, 10):
+        assert L.on_press(st, key) == [], f"key {key} must not run {deck.ROW2_CMDS[key - deck.ROW2]} here"
+    assert L.on_press(st, 10) == [{"cmd": "move", "delta": -1}]
+    assert L.on_press(st, 11) == [{"cmd": "move", "delta": 1}]
+    assert L.on_press(st, 12) == [{"cmd": "mark"}]
+    assert L.on_press(st, 13) == [{"cmd": "cancel"}]
+    assert L.on_press(st, 14) == [{"cmd": "submit"}]
+
+
+def test_the_start_screen_keys_send_the_same_with_no_start_state():
+    """An older board's state says nothing about the cursor or the marks; the keys still ask for the same five
+    things, because it is the screen that answers them, not the field."""
+    L = Layout()
+    for key, want in [(0, [{"cmd": "pick", "n": 1}]), (10, [{"cmd": "move", "delta": -1}]),
+                      (11, [{"cmd": "move", "delta": 1}]), (12, [{"cmd": "mark"}]),
+                      (13, [{"cmd": "cancel"}]), (14, [{"cmd": "submit"}])]:
+        assert L.on_press(start_mode_state(start=None), key) == want, f"key {key}"
+    for key in range(deck.ROW2, 10):
+        assert L.on_press(start_mode_state(start=None), key) == [], f"key {key}"
+
+
+def test_a_held_arrow_on_the_start_screen_does_not_open_a_row():
+    """▲▼ held past the threshold opens the highlighted row on a normal board; under the Start screen the highlight
+    never moved, so a release there sends nothing beyond the move the press already sent."""
+    L = Layout()
+    for key in (10, 11):
+        assert L.on_release(start_mode_state(), key, 900) == []
+
+
 def test_the_spend_key_toggles_and_the_others_cancel():
     """On the spend screen the middle row is nine ways out and one of them is the key that is already lit: key 7
     sends `spend` again, which is what closes it."""
@@ -544,6 +687,8 @@ def test_every_kind_of_face_draws_a_jpeg_the_deck_can_take():
     faces += [Layout().plan(None)[7], Layout().plan(board_state(modal="confirm"))[14],
               Layout().plan(board_state(modal="picker", options=[{"n": 1, "label": "x"}]))[0],
               Layout().plan(board_state(rows=[row(1, state="waiting", visible=True, selected=True)]))[0],
+              Layout().plan(start_mode_state(cursor=1, marked=1))[12],      # a label with its small line under it
+              Layout().plan(start_mode_state(recents=[]))[14],
               KeyFace()]
     from PIL import Image
     for face in faces:

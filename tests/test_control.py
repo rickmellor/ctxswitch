@@ -26,6 +26,7 @@ NOW = datetime(2026, 11, 20, 12, 0, 0, tzinfo=timezone.utc)
 needs_sockets = pytest.mark.skipif(not unix_sockets_ok(), reason="this kernel forbids binding a unix socket")
 OPTS = [("claude · bedrock", "claude", "bedrock"), ("claude · max", "claude", "max")]
 S = [f"laptop/claude/s{i}" for i in range(1, 10)]
+R = [f"laptop/claude/r{i}" for i in range(1, 4)]        # ended sessions: the Start screen's rows to resume
 
 
 def _ago(mins: int) -> str:
@@ -133,6 +134,20 @@ def _modal(app):
 def _sock(tmp_path) -> Path:
     """A control socket for this test alone: the default is the operator's own live board."""
     return tmp_path / "board.sock"
+
+
+def _start_screen(app, recents: list[dict]) -> tui.StartScreen:
+    """A Start screen pushed over a running board exactly as `s` pushes it — the same options, the same dismissal
+    callback — so a command that reaches it reaches the wiring the key uses."""
+    screen = tui.StartScreen(OPTS, recents, {s["key"]: "resume" for s in recents}, NOW)
+    app.push_screen(screen, app._started)
+    return screen
+
+
+def _ended(key: str, ago: int, title: str) -> dict:
+    """One ended session: `fmt.session_state` calls it ended only when its own status is none of the live ones."""
+    return _sess(key, status="unknown", ended=True, title=title,
+                 **{f: _ago(ago) for f in ("status_since", "last_activity", "started_at")})
 
 
 async def _wait(pilot, what: str, pred, tries: int = 150) -> None:
@@ -436,6 +451,8 @@ async def test_a_pick_when_no_picker_is_open_says_so(monkeypatch, tmp_path):
         await pilot.pause(1)
         assert app.control.dispatch({"cmd": "pick", "n": 1}) == {"ok": False, "error": "no picker open"}
         assert app.control.dispatch({"cmd": "cancel"})["ok"]             # ok even with nothing to dismiss
+        # submit with neither an Input nor a Start screen up: nothing's Enter to press (a Start screen on top would
+        # have answered `nothing to resume` instead — its own Enter)
         assert app.control.dispatch({"cmd": "submit"}) == {"ok": False, "error": "no input open"}
         assert board_state(app)["input_text"] is None and board_state(app)["input_prompt"] is None
 
@@ -493,6 +510,145 @@ async def test_submit_waits_for_the_box_rather_than_answering_a_screen_above_it(
         assert app.control.dispatch({"cmd": "submit"})["ok"] is True     # its own submit path: send what is typed
         await pilot.pause(0.3)
         assert sent == [(S[0], "hello")] and board_state(app)["modal"] is None   # and the box is closed, as Enter
+
+
+# -- the Start screen: its cursor, its marks, and enter -----------------------------------------------------------
+async def test_the_state_says_where_the_start_screen_s_cursor_is(monkeypatch, tmp_path):
+    """`start` in the state: the screen's cursor, how many it has marked, and its rows in screen order, each with
+    whether it is marked. Null with no Start screen up, so a client knows there is nothing to drive."""
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert board_state(app)["start"] is None and board_state(app)["modal"] is None
+        _start_screen(app, [_ended(R[0], 60, "first one"), _ended(R[1], 30, "second one")])
+        await pilot.pause(0.3)
+        st = board_state(app)
+        assert st["modal"] == "start" and st["start"]["cursor"] == 0 and st["start"]["marked"] == 0
+        assert [r["key"] for r in st["start"]["recents"]] == [R[0], R[1]]
+        assert [r["title"] for r in st["start"]["recents"]] == ["first one", "second one"]
+        assert [r["marked"] for r in st["start"]["recents"]] == [False, False]
+        app.pop_screen(); await pilot.pause(0.3)
+        assert board_state(app)["start"] is None, "closed: no start state, whatever the rows say"
+
+
+async def test_move_walks_the_start_screen_s_cursor_and_clamps_at_the_last_row(monkeypatch, tmp_path):
+    """▲▼ while the Start screen is on top: the screen's cursor moves, not the board's highlight. A client that
+    can't see the screen needs the state to say where it got to, clamped at the ends as the keys clamp."""
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        screen = _start_screen(app, [_ended(k, ago, f"recent {i}") for i, (k, ago)
+                                     in enumerate(zip(R, (60, 120, 240)), 1)])
+        await pilot.pause(0.3)
+        highlight = app.selected
+        for _ in range(2):
+            assert app.control.dispatch({"cmd": "move", "delta": 1})["ok"] is True
+        assert screen.cursor == 2 and board_state(app)["start"]["cursor"] == 2
+        assert app.control.dispatch({"cmd": "move", "delta": 1})["ok"] is True
+        assert screen.cursor == 2, "clamped at the last row, exactly as the key is"
+        assert app.selected == highlight, "the board's highlight is not what ▲▼ moved here"
+        assert app.control.dispatch({"cmd": "move", "delta": -1})["ok"] is True
+        assert screen.cursor == 1
+
+
+async def test_mark_marks_the_row_the_start_screen_s_cursor_is_on(monkeypatch, tmp_path):
+    """`mark` is the screen's Space: it marks the cursor row, and the state says both that one row is marked and
+    which one it is. Marking it again unmarks it, as the key does."""
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        screen = _start_screen(app, [_ended(k, ago, f"recent {i}") for i, (k, ago)
+                                     in enumerate(zip(R, (60, 120, 240)), 1)])
+        await pilot.pause(0.3)
+        app.control.dispatch({"cmd": "move", "delta": 1})
+        r = app.control.dispatch({"cmd": "mark"})
+        assert r["ok"] is True and screen.marked == {R[1]}
+        st = r["state"]["start"]
+        assert st["marked"] == 1 and st["cursor"] == 1
+        assert [x["marked"] for x in st["recents"]] == [False, True, False]
+        assert app.control.dispatch({"cmd": "mark"})["ok"] is True
+        assert screen.marked == set() and board_state(app)["start"]["marked"] == 0
+
+
+async def test_submit_resumes_what_the_start_screen_has_marked(monkeypatch, tmp_path):
+    """`submit` is Enter on that screen: the marked rows, in the screen's own order, handed to the same `_started`
+    the keyboard's Enter reaches — so what the key would resume is what the socket resumes."""
+    started: list = []
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    monkeypatch.setattr(tui.CtxApp, "_started", lambda self, r: started.append(r))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        screen = _start_screen(app, [_ended(k, ago, f"recent {i}") for i, (k, ago)
+                                     in enumerate(zip(R, (60, 120, 240)), 1)])
+        await pilot.pause(0.3)
+        app.control.dispatch({"cmd": "move", "delta": 1})
+        assert app.control.dispatch({"cmd": "mark"})["ok"] is True
+        r = app.control.dispatch({"cmd": "submit"})
+        assert r["ok"] is True, "the screen is gone, so the command that ends it says ok"
+        await pilot.pause(0.3)
+        assert started == [("resume", [R[1]])] and not isinstance(app.screen, tui.StartScreen)
+        assert board_state(app)["start"] is None
+
+
+async def test_submit_with_nothing_marked_resumes_the_cursor_row_alone(monkeypatch, tmp_path):
+    started: list = []
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    monkeypatch.setattr(tui.CtxApp, "_started", lambda self, r: started.append(r))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        _start_screen(app, [_ended(k, ago, f"recent {i}") for i, (k, ago)
+                            in enumerate(zip(R, (60, 120, 240)), 1)])
+        await pilot.pause(0.3)
+        assert app.control.dispatch({"cmd": "submit"})["ok"] is True
+        await pilot.pause(0.3)
+        assert started == [("resume", [R[0]])], "with no marks it takes the row under the cursor"
+
+
+async def test_a_start_screen_with_nothing_to_resume_says_so(monkeypatch, tmp_path):
+    """Nothing ended, nothing to bring back: submit and mark answer `nothing to resume` and leave the screen up —
+    they did nothing, and say so, rather than dismissing the screen on the operator's head."""
+    started: list = []
+    app = _board(monkeypatch, tmp_path, _rows(2))
+    monkeypatch.setattr(tui.CtxApp, "_started", lambda self, r: started.append(r))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        screen = _start_screen(app, [])
+        await pilot.pause(0.3)
+        assert board_state(app)["start"] == {"cursor": 0, "marked": 0, "recents": []}
+        for cmd in ("submit", "mark"):
+            assert app.control.dispatch({"cmd": cmd}) == {"ok": False, "error": "nothing to resume"}, cmd
+        assert started == [] and isinstance(app.screen, tui.StartScreen)
+        assert app.control.dispatch({"cmd": "move", "delta": 1}) == {"ok": False, "error": "no such slot"}, \
+            "and there was no row for the cursor to move onto"
+
+
+async def test_mark_without_a_start_screen_says_there_is_none(monkeypatch, tmp_path):
+    """`mark` belongs to one screen only: with the board's table, or any other modal, on top it says so rather than
+    marking the highlighted row or the picker's option."""
+    app = _board(monkeypatch, tmp_path, _rows(3))
+    monkeypatch.setattr(tui, "new_session_options", lambda cfg, which=None: OPTS)
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        assert app.control.dispatch({"cmd": "mark"}) == {"ok": False, "error": "no start screen open"}
+        app.control.dispatch({"cmd": "new"})                      # a picker: not a Start screen
+        await pilot.pause(0.2)
+        assert board_state(app)["modal"] == "picker"
+        assert app.control.dispatch({"cmd": "mark"}) == {"ok": False, "error": "no start screen open"}
+
+
+async def test_move_still_walks_the_board_s_rows_when_the_screen_is_closed(monkeypatch, tmp_path):
+    """The other half of the same command: with no Start screen on top, ▲▼ move the highlight, exactly as they did
+    before this screen had a cursor of its own — including on a board whose rows are all there is."""
+    app = _board(monkeypatch, tmp_path, _rows(3))
+    async with app.run_test(size=(70, 30)) as pilot:
+        await pilot.pause(1)
+        _start_screen(app, [_ended(R[0], 60, "one")])
+        await pilot.pause(0.3)
+        app.pop_screen(); await pilot.pause(0.3)
+        assert board_state(app)["modal"] is None
+        assert app.control.dispatch({"cmd": "move", "delta": 1})["ok"] is True
+        assert app.selected == app.slots[1]
+        assert app.control.dispatch({"cmd": "mark"}) == {"ok": False, "error": "no start screen open"}
 
 
 async def test_the_keyboard_through_the_methods_behaves_as_it_always_did(monkeypatch, tmp_path):

@@ -5,7 +5,9 @@ and paints the 15 keys of a Stream Deck MK.2 with what the board is showing: fiv
 `gpu` `pool` `spend` `exchange` `detach`, the two panels and the spend screen lit while they are up; and ▲▼ to move
 the highlight (hold one and it opens the row it landed on), `restart`, `new` and `kill` — the last of which makes the
 board ask, so the key becomes KILL ✓ / cancel. While a modal is up the middle row is cancel with the bottom one, the
-one exception being `spend` while the spend screen is showing, which closes it.
+two exceptions being `spend` while the spend screen is showing, which closes it, and the Start screen, whose own
+cursor, marks and Enter are worth five keys of their own — ▲▼ over its recent rows, `select` to mark one, `cancel`,
+and `enter` to resume them — with the board's commands blank in between.
 
 Everything that decides *what a key looks like* or *what a press sends* lives in `Layout`, which needs neither
 Pillow, nor a device, nor a board — so that is the part the tests read. `render` and `DeckApp` only carry it out.
@@ -378,12 +380,14 @@ class Layout:
         return faces
 
     def _start(self, state: dict) -> dict[int, KeyFace]:
-        """The Start screen (`s`): its profile keys along the top, and under them the screen's own four keys — ▲▼
-        over the sessions to resume, `select` to mark the one the cursor is on, `cancel`, and `enter` to resume them.
+        """The Start screen (`s`): its profile keys along the top, the board's own commands blank in the middle —
+        none of them is the board's to run under this screen — and the screen's own five along the bottom: ▲▼ over
+        the sessions to resume, `select` to mark the one the cursor is on, `cancel`, and `enter` to resume them.
 
         The bottom row's two say what the screen would do: `select` carries the cursor row's title and wears the lit
-        colour while that row is marked, and `enter` says how many it would bring back. A board whose state has no
-        `start` field — an older one — leaves both saying only what they are."""
+        colour while that row is marked, and `enter` says how many it would bring back — or `nothing`, dim, when
+        nothing has ended. A board whose state has no `start` field — an older one — leaves both saying only what
+        they are, and presses still send the same commands."""
         faces: dict[int, KeyFace] = {}
         options = state.get("options") or []
         for i in range(5):
@@ -396,14 +400,14 @@ class Layout:
         recents = (start or {}).get("recents") or []
         cursor = (start or {}).get("cursor")
         row = recents[cursor] if isinstance(cursor, int) and 0 <= cursor < len(recents) else {}
-        # marked: its own count, or the cursor row's own mark on a board that only says which ones are marked
-        marked = bool((start or {}).get("marked")) or bool(row.get("marked"))
+        # lit by the cursor row's own mark — the row this key would mark — not by how many others are marked
+        marked = bool(row.get("marked"))
         n_marked = (start or {}).get("marked") or sum(1 for r in recents if r.get("marked"))
         under = None if start is None else (f"resume {n_marked or 1}" if (n_marked or recents) else "nothing")
         faces[10] = KeyFace(bg=ARROW_BG, lines=("▲",))
         faces[11] = KeyFace(bg=ARROW_BG, lines=("▼",))
         faces[12] = KeyFace(bg=LIT_BG if marked else ACTION_BG, lines=("select",),
-                            sub=_title(row.get("title")) if start else None)
+                            sub=(_title(row.get("title")) or None) if start else None)
         faces[13] = KeyFace(bg=ACTION_BG, lines=("cancel",))
         faces[14] = KeyFace(bg=ACTION_BG, lines=("enter",), sub=under,
                             dim=bool(start) and not recents)   # nothing to bring back: the key says so, in grey

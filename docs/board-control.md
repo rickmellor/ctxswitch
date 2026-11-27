@@ -16,7 +16,7 @@ Every request is `{"cmd": "<name>", ...}`; an optional `"id"` (any JSON value) i
 | `subscribe` | | reply with `state`; afterwards the board pushes `{"event":"state","state":{...}}` every time the table is re-rendered or a modal opens/closes (coalesced to at most one push per 100 ms) |
 | `slot` | `n` 1..9 | `open_key(slots[n-1])` — exactly Alt+N / Enter: select and swap into the main pane |
 | `select` | `n` 1..9 | `select_key(slots[n-1])` — highlight only, detail panel follows, no pane swap |
-| `move` | `delta` -1 or +1 | move the highlight one numbered row up/down, clamped at the ends, **regardless of which widget has focus**; detail panel follows |
+| `move` | `delta` -1 or +1 | move the highlight one numbered row up/down, clamped at the ends, **regardless of which widget has focus**; detail panel follows. While a StartScreen is on top it is that screen's cursor that moves, over its recent rows, and `no such slot` when the screen has none to move onto |
 | `new` | | same as `n` (`action_new_session`) |
 | `start` | | same as `s` (`action_start`) |
 | `end` | | same as `k` (`action_end_session`): opens the y/n Confirm |
@@ -28,7 +28,8 @@ Every request is `{"cmd": "<name>", ...}`; an optional `"id"` (any JSON value) i
 | `spend` | | `$`: the spend screen. A toggle — while it is the top screen this closes it, anywhere else it opens one |
 | `deck_settings` | | `D`: the Stream Deck's settings screen. A toggle, the same way `spend` is |
 | `deck_set` | any of `top_row` / `brightness` / `animations` | one or more of the deck's settings, validated by the same rules the settings file has (see `docs/deck-settings.md`): `top_row` `"pages"` or `"scroll"`, `brightness` an int 10..100, `animations` a bool. Saves what is valid and replies `{"ok": true, "settings": {…}, "state": {…}}` with the whole set as it now stands; one bad value saves nothing and replies `{"ok": false, "error": "bad setting"}`. Works with or without the screen up, and re-renders it when it is |
-| `submit` | | Enter inside the board's text Input, on the text it holds now: the directory prompt after `n`, or what `/`, `m`, `a`, `W` or `i` brought up. Same handler the keyboard's Enter runs, so it starts / sends / filters exactly as typing and pressing Enter does. Needs the Input on top (`modal` `"input"`); otherwise `{"ok": false, "error": "no input open"}`. `input_text` and `input_prompt` in `state` say what it would accept |
+| `submit` | | While a StartScreen is on top, its Enter: resume the rows it has marked — or the row its cursor is on when none are — and dismiss the screen. One with no recents answers `{"ok": false, "error": "nothing to resume"}` and stays up. Otherwise Enter inside the board's text Input, on the text it holds now: the directory prompt after `n`, or what `/`, `m`, `a`, `W` or `i` brought up. Same handler the keyboard's Enter runs, so it starts / sends / filters exactly as typing and pressing Enter does. Needs the Input on top (`modal` `"input"`) or a StartScreen; otherwise `{"ok": false, "error": "no input open"}`. `input_text` and `input_prompt` in `state` say what it would accept |
+| `mark` | | While a StartScreen is on top, its Space: mark or unmark the recent row its cursor is on, which `submit` then resumes along with the rest. No recents → `"nothing to resume"`; no StartScreen on top → `"no start screen open"`. This is the one command with no key of the board's behind it: the screen's cursor is only reachable from here |
 | `exchange` | | `x`: send the selected session elsewhere (opens a Picker, which `pick` / `cancel` then drive). Needs a selected session |
 | `detach` | | `q`: inside tmux detach (everything keeps running); outside it, quit the board |
 
@@ -79,7 +80,7 @@ workstream header (`w`) for a row as well: that is what those keys do on one.
 
 `{"ok": true, "id": <echoed>, ...}` or `{"ok": false, "id": <echoed>, "error": "<short reason>"}`.
 Errors (exact strings): `"no such slot"`, `"no picker open"`, `"no confirm open"`, `"no input open"`,
-`"nothing selected"`, `"unknown cmd"`, `"bad request"`.
+`"no start screen open"`, `"nothing to resume"`, `"nothing selected"`, `"unknown cmd"`, `"bad request"`.
 Requests are executed on the Textual event loop (`app.call_from_thread` or an asyncio server on the app loop) and
 the reply is sent after the action has run.
 
@@ -97,6 +98,7 @@ the reply is sent after the action has run.
   "selected_key": "laptop/claude/def",
   "modal": null,
   "options": [],
+  "start": null,
   "panels": {"gpu": false, "pool": false},
   "settings": {"top_row": "pages", "brightness": 60, "animations": true},
   "input_text": null,
@@ -114,6 +116,11 @@ the reply is sent after the action has run.
   of them, the Spend and Stream Deck settings screens included.
 - `options`: when `modal` is `picker` or `start`, `[{"n": 1, "label": "claude (max)"}, ...]` for the numbered
   choices a `pick` accepts; otherwise `[]`. For `confirm`, `prompt` carries the question text.
+- `start`: when `modal` is `start`, the Start screen's own half of itself — `{"cursor": 0, "marked": 1, "recents":
+  [{"key": "laptop/claude/abc", "title": "Streamdeck button box", "marked": true}, ...]}`: where its cursor is
+  (a 0-based index into `recents`), how many rows it has marked, and its recent rows in screen order (at most 20),
+  each with its `fmt.display_title` and whether it is marked. That is all `move` / `mark` / `submit` act on, so a
+  client can drive and show the screen without one. Null with any other modal.
 - `panels`: the two panels a key shows and hides — `gpu` is `g`'s CPU/GPU panel (`action_metrics`), `pool` is `P`'s
   local-pool panel (`action_pool_panel`). Both bool, and they follow the key: a client that lights a key while its
   panel is up can ask the board whether it is.
