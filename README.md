@@ -429,6 +429,13 @@ The key bar at the bottom wraps onto as many lines as the pane needs, so every k
   another terminal (`⊘`) or live on another host (`⇢`) has to be quit where it runs, and the board says so.
 - **Q** ends everything in the ctx tmux session. The transcripts stay, so every session comes back as `↻`.
 
+**The board has a control socket.** Besides its keys, `ctx tui` answers on a unix socket
+(`~/.local/state/ctxswitch/board.sock`, env `CTXSWITCH_BOARD_SOCK`, mode 0600) so another program — a Stream Deck
+daemon, say — can switch to session N, move the highlight, open new/start/end, answer their modals, and mirror the
+numbered row list as it changes. Only the board knows the row numbers and which session is in the main pane, so the
+endpoint lives there. The protocol, and how to point a client at it, is in [docs/board-control.md](docs/board-control.md).
+A board that can't bind one logs it and runs normally without it.
+
 ### Shell sessions
 - **`n` → shell** (the last choice on its list) opens a plain bash in the left pane, in a directory you pick (default:
   the selected session's). It's a session like the agents: numbered on the list, harness `sh`, Enter or `Alt+N`

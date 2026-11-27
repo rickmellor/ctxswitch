@@ -49,6 +49,7 @@ from ctxswitch.client.launch import open_tab
 from ctxswitch.client import move as mv
 from ctxswitch.client.tui.metrics_panel import (METRICS_HUB_MSG, METRICS_NONE_MSG, HostPicker, MetricsPanel,
                                                 gpu_count, hosts_text)
+from ctxswitch.client.tui import control
 from ctxswitch.client.tui import pool_panel
 from ctxswitch.client.tui.pool_panel import PoolPanel
 from ctxswitch.common.config import Config
@@ -546,7 +547,14 @@ class Confirm(ModalScreen):
 
     def on_key(self, ev) -> None:
         ev.stop(); ev.prevent_default()
-        self.dismiss(ev.key in ("y", "Y"))
+        self.answer(ev.key in ("y", "Y"))
+
+    def answer(self, yes: bool) -> None:
+        """The y/n's answer, from the keyboard or from the control socket."""
+        self.dismiss(bool(yes))
+
+    def cancel(self) -> None:
+        self.dismiss(False)
 
 
 class Picker(ModalScreen):
@@ -570,11 +578,21 @@ class Picker(ModalScreen):
 
     def on_key(self, ev) -> None:
         ev.stop(); ev.prevent_default()
-        if ev.key.isdigit() and 1 <= int(ev.key) <= len(self.options):
-            _, harness, profile = self.options[int(ev.key) - 1]
-            self.dismiss((harness, profile))
+        if ev.key.isdigit():
+            self.choose(int(ev.key))
         elif ev.key == "escape":
-            self.dismiss(None)
+            self.cancel()
+
+    def choose(self, n: int) -> bool:
+        """Option n, as its digit key does. False when there is no such option, so the control socket can say so."""
+        if not 1 <= n <= len(self.options):
+            return False
+        _, harness, profile = self.options[n - 1]
+        self.dismiss((harness, profile))
+        return True
+
+    def cancel(self) -> None:
+        self.dismiss(None)
 
 
 def new_session_options(cfg: Config, which=None) -> list[tuple[str, str, str | None]]:
@@ -759,15 +777,27 @@ class StartScreen(Screen):
             return
         elif ev.key == "h" and len(self.hosts) > 1:
             self.host_i = (self.host_i + 1) % len(self.hosts)            # this host, then each one ssh reaches
-        elif ev.key.isdigit() and 1 <= int(ev.key) <= len(self._opts()):
-            _, harness, profile = self._opts()[int(ev.key) - 1]
-            # another host: no profile and no directory of ours to carry over (its own filesystem, its own accounts)
-            self.dismiss(("new", harness, profile, None, self.host) if self.host
-                         else ("new", harness, profile, self._cwd()))
+        elif ev.key.isdigit():
+            self.choose(int(ev.key))
             return
         else:
             return
         self.redraw()
+
+    def choose(self, n: int) -> bool:
+        """Profile option n, as its digit key does — the numbered ones only, never a recent row. False when there is
+        no such option, so the control socket can say so."""
+        opts = self._opts()
+        if not 1 <= n <= len(opts):
+            return False
+        _, harness, profile = opts[n - 1]
+        # another host: no profile and no directory of ours to carry over (its own filesystem, its own accounts)
+        self.dismiss(("new", harness, profile, None, self.host) if self.host
+                     else ("new", harness, profile, self._cwd()))
+        return True
+
+    def cancel(self) -> None:
+        self.dismiss(None)
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -862,6 +892,7 @@ class CtxApp(App):
         self.pool_tools = pool_panel.PoolTools()     # this host's pool commands, through one runner a test can swap
         self.pool_snap: dict = {}                    # what they last answered, so an edit can read the current values
         self.list_rows: int | None = _list_rows()    # [ ]: how tall the session list may get, or None for half the body
+        self.control = control.ControlServer(self)   # the board's control socket (docs/board-control.md)
 
     def compose(self) -> ComposeResult:
         yield Static("", id="summary")
@@ -892,6 +923,18 @@ class CtxApp(App):
         self.refresh_data()
         self.set_interval(10, self.refresh_data)
         self.listen_ws()
+        # a modal that comes up or goes is something a client watching the board has to hear about, and this catches
+        # every push and dismiss — however the screen was closed, by a key, a picker's answer or the socket
+        self.screen_change_signal.subscribe(self, self.screen_changed, immediate=False)
+        self.run_worker(self.control.start(), exclusive=False)   # the control socket; a board that can't bind it says
+                                                                  # so on its log and runs without one
+
+    def on_unmount(self) -> None:
+        """Take the control socket's file away with us, so nobody connects to a board that isn't here."""
+        try:
+            self._control_task = asyncio.create_task(self.control.stop())
+        except Exception:                               # noqa: BLE001 - nothing to stop, or no loop left to stop it on
+            pass
 
     # -- data -----------------------------------------------------------------------------------------------------
     @work(exclusive=True, thread=True)
@@ -1112,6 +1155,22 @@ class CtxApp(App):
         if self.select_key(key):
             self.action_resume()
 
+    def move_selection(self, delta: int) -> bool:
+        """Move the highlight one numbered row up or down, clamped at both ends, and say whether there was one to
+        move onto. From a key or from the control socket, where it works whichever widget has focus."""
+        if not self.slots:
+            return False
+        try:
+            idx = self.slots.index(self.selected)
+        except ValueError:                              # nothing highlighted, or a workstream header: from the top
+            idx = 0 if delta >= 0 else len(self.slots) - 1
+        return self.select_key(self.slots[min(max(0, idx + delta), len(self.slots) - 1)])
+
+    def screen_changed(self, screen) -> None:
+        """A screen came up or went: the modal a client watching the board needs to hear about. One subscription
+        catches every push and dismiss, however the screen was closed."""
+        self.control.push_state()
+
     def action_toggle_popups(self) -> None:
         self.popups = not self.popups
         self.notify(f"pop-ups {'on' if self.popups else 'off'}", timeout=3)
@@ -1310,6 +1369,7 @@ class CtxApp(App):
                 pass
         elif visible:
             self.selected = visible[0]["key"]
+        self.control.push_state()                       # whoever is watching mirrors the row list live
 
     def on_resize(self) -> None:
         self.render_table()
@@ -1327,6 +1387,10 @@ class CtxApp(App):
 
     @work(exclusive=True, group="detail", thread=True)
     def load_detail(self) -> None:
+        try:
+            self.call_from_thread(self.control.push_state)  # the highlight moved: say so without waiting for a re-render
+        except Exception:                               # noqa: BLE001 - the board closed while the thread was out
+            return
         key = self.selected
         if not key:
             return
@@ -1338,7 +1402,10 @@ class CtxApp(App):
         except Exception:                               # noqa: BLE001
             return
         if s:
-            self.call_from_thread(self.render_detail, s, kids)
+            try:
+                self.call_from_thread(self.render_detail, s, kids)
+            except Exception:                               # noqa: BLE001 - the board closed while the thread was out
+                pass
 
     def render_group(self, ws: str) -> None:
         now = datetime.now(timezone.utc)
