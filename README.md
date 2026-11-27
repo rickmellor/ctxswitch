@@ -374,6 +374,25 @@ A confirm takes one key: `y` does it at once, any other key (Esc included) cance
 
 The key bar at the bottom wraps onto as many lines as the pane needs, so every key shows.
 
+### A Stream Deck on the desk (`ctx deck`)
+
+`ctx deck` turns an Elgato Stream Deck MK.2 (15 keys) into physical buttons for the board: it reads the board over
+the same control socket the keyboard shortcuts use (`~/.local/state/ctxswitch/board.sock`, `CTXSWITCH_BOARD_SOCK`),
+so a press does exactly what the key on the board does, and the keys follow the board both ways — including a session
+that goes `waiting`, which flashes red. It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board,
+and takes `--brightness 0-100` (60), `--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
+drawing them, to try the wiring by hand). Ctrl-C resets the keys and closes the deck.
+
+| Key | Does | While the board is asking (picker / start) | While a confirm is up |
+|---|---|---|---|
+| 1–5 (top row) | open session slot 1–5 (as `Alt+1`…`Alt+5`): the number, its title, a white bar along the top if it's in the main pane and along the bottom if it's the highlighted row, and a dot for busy / **waiting** / idle / shell / ended | option 1–5 | nothing |
+| 6–10 | blank, reserved | blank | blank |
+| ▲ / ▼ | move the highlight up / down | cancel | cancel |
+| `start` / `new` | `s` / `n` | cancel | cancel |
+| `end` | `k`, which asks the board to confirm | cancel | **END ✓** (the key beside it is cancel) |
+
+With the board unreachable every key goes black except the centre one, which says `no board` and retries every 2 s.
+
 ## 5. Opening and closing sessions
 - **Sessions started by hand inside the ctx tmux session** are found automatically (by matching the agent's pid
   to its pane) and marked `◆`.
