@@ -963,13 +963,14 @@ class DeckApp:
     # --------------------------------------------------------------------------------------------- the device
 
     def _device_call(self, what, *args) -> bool:
-        """One call to the device, from a path that cannot let the error through: the animation tick, a key press,
-        the heartbeat's redraw, a setting being applied. False means the device is gone, which it has already said
-        once — and says no more about until a device comes back, because the same dead handle answers the next key
-        the same way and the one after that."""
+        """One call to a device we have just taken up, where an error can only mean the thing isn't there: a reset
+        or a brightness on a board that went again in the moment since it appeared. False means it is gone, and has
+        been said once — the painting paths have their own way of finding out, key by key."""
         try:
             what(*args)
             return True
+        except asyncio.CancelledError:
+            raise
         except Exception as e:                                  # noqa: BLE001 - the only error that matters is this one
             if _is_gone(e):
                 self._mark_gone()
@@ -1066,7 +1067,8 @@ class DeckApp:
                 else self.settings["brightness"])
         self._set_brightness(want, say=False)                   # the device is new: its lights are ours to set, quietly
         painted = self._paint(self.clock())
-        self.log(f"Stream Deck back: {self._serial} ({painted} keys)")
+        if self.deck is deck:                                   # it may have gone again mid-paint, and said that already
+            self.log(f"Stream Deck back: {self._serial} ({painted} keys)")
 
     def _close_device(self) -> None:
         """The app is stopping: let go of the device it is holding, without a word about it."""

@@ -16,8 +16,10 @@ ORIGINAL = '{\n    "model": "opus",\n    "hooks": {"SessionStart": [' + json.dum
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     for v in ("CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "AGY_CONFIG_DIR", "XDG_CONFIG_HOME",
-              "CTXSWITCH_SPOOL", "CTXSWITCH_CONFIG"):
+              "CTXSWITCH_SPOOL", "CTXSWITCH_CONFIG", "CTXSWITCH_UDEV_RULES"):
         monkeypatch.delenv(v, raising=False)
+    # the deck's checks read a system file; here, as everywhere else in this file, the system is this tmp home
+    monkeypatch.setenv("CTXSWITCH_UDEV_RULES", str(tmp_path / "etc/udev/rules.d/70-streamdeck.rules"))
     (tmp_path / ".claude").mkdir()
     monkeypatch.setattr(ins, "windows_claude_root", lambda: None)               # not this laptop's real Windows home
     return tmp_path
@@ -223,6 +225,145 @@ def test_install_without_flags_leaves_mcp_alone(home, monkeypatch):
     seen.clear()
     ins.cmd_install(type("A", (), args | {"mcp": True})())
     assert seen == ["install_mcp", "install_skill", "install_pi_mcp", "install_agy_mcp", "install_agy_skill"]   # --mcp alone: only that
+
+
+def _deck_installed(log=None):
+    """The unit written, without any (re)starting: what `ctx install --deck --no-start` leaves behind, and all the
+    doctor's checks need."""
+    ins.install_deck(False, False, log or (lambda m: None))
+
+
+def _deck(home) -> Path:
+    """The deck unit where the throwaway HOME keeps its units, whether or not anything has written it."""
+    return home / ".config/systemd/user/ctx-deck.service"
+
+
+def test_deck_unit_points_at_this_venv_and_waits_for_the_board(home, monkeypatch):
+    """The service exists so that nobody has to start `ctx deck` by hand and nothing has to notice an unplug: it
+    restarts on its own, and the deck waits for a device rather than exiting without one."""
+    calls = []
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: calls.append(a) or None)
+    lines = []
+    ins.install_deck(False, True, lines.append)
+    unit = _deck(home).read_text()
+    assert f"ExecStart={ins.ctx_exe()} deck\n" in unit, unit
+    assert "Restart=always" in unit and "RestartSec=5" in unit
+    assert "append:%h/.local/state/ctxswitch/deck.log" in unit, "the unit doesn't say where its output goes"
+    assert "After=ctx-collector.service" in unit and "WantedBy=default.target" in unit
+    assert "Description=ctxswitch Stream Deck" in unit
+    assert "written by `ctx install --deck`" in unit
+    # no systemd here, which is what the sandbox and a plain terminal both look like: says what to run instead
+    assert calls == [("daemon-reload",)] and "run: systemctl" in lines[-1], lines
+
+
+def test_deck_unit_is_written_once_and_removed_whole(home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: calls.append(a) or None)
+    said: list[str] = []
+    ins.install_deck(True, True, said.append)
+    assert "would write" in said[-1] and not _deck(home).exists(), said
+    ins.install_deck(False, True, said.append)
+    assert _deck(home).is_file() and any("wrote" in l for l in said), said
+    written, body = _deck(home).stat().st_mtime_ns, _deck(home).read_text()
+    ins.install_deck(False, True, said.append)                 # the same unit again: written once, not rewritten
+    assert (_deck(home).stat().st_mtime_ns, _deck(home).read_text()) == (written, body), said
+    assert sum(1 for l in said if "wrote" in l) == 1, said
+    ins.uninstall_deck(True, said.append)
+    assert _deck(home).is_file() and "would stop" in said[-1], said
+    ins.uninstall_deck(False, said.append)
+    assert not _deck(home).exists() and "stopped and removed" in said[-1], said
+    assert ("disable", "--now", ins.DECK_UNIT) in calls and ("daemon-reload",) in calls, calls
+    said.clear()
+    ins.uninstall_deck(False, said.append)                      # already gone: says so, changes nothing
+    assert "no unit installed" in said[-1], said
+
+
+def test_deck_extra_missing_writes_no_unit(home, monkeypatch):
+    """A unit for a deck that can't import its library is a service that exits 2 on every restart, so the unit waits
+    and the command that would fix it is what gets printed."""
+    monkeypatch.setattr(ins, "deck_extra_missing", lambda: "StreamDeck")
+    lines: list[str] = []
+    ins.install_deck(False, True, lines.append)
+    assert not _deck(home).exists(), "the unit was written without the extra installed"
+    assert "uv pip install -e '.[deck]'" in " ".join(lines), lines
+    assert "StreamDeck" in lines[0], lines
+
+
+def test_install_and_uninstall_deck_are_opt_in(home, monkeypatch):
+    """`--deck` names one wiring and nothing else: no hooks touched, no collector unit, and the same said back."""
+    calls = []
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: calls.append(a) or None)
+    args = dict(claude=False, pi=False, collector=False, mcp=False, deck=True, dry_run=False, force=False)
+    ins.cmd_install(type("A", (), dict(no_start=False, hub=None, token=None, **args))())
+    assert _deck(home).is_file() and not (home / ".claude" / "settings.json").exists()
+    assert not (home / ".config/systemd/user/ctx-collector.service").exists()
+    ins.cmd_uninstall(type("A", (), dict(**args))())
+    assert not _deck(home).exists()
+    ins.cmd_install(type("A", (), dict(no_start=False, hub=None, token=None, **dict(args, deck=False)))())
+    assert not _deck(home).exists(), "a plain `ctx install` installed a deck service nobody asked for"
+    seen = []
+    for name in ("write_config", "install_collector", "install_deck", "install_claude", "install_pi",
+                 "install_agy_hooks", "uninstall_deck", "uninstall_claude", "uninstall_pi", "uninstall_agy_hooks"):
+        monkeypatch.setattr(ins, name, lambda *a, _n=name, **k: seen.append(_n))
+    ins.cmd_install(type("A", (), dict(no_start=False, hub=None, token=None, **args))())
+    assert seen == ["install_deck"], f"`--deck` reached past the deck service: {seen}"
+    seen.clear()
+    ins.cmd_uninstall(type("A", (), dict(**args))())
+    assert seen == ["uninstall_deck"], f"`ctx uninstall --deck` took the hooks back too: {seen}"
+
+
+def test_doctor_checks_the_deck_only_once_its_unit_is_installed(home, monkeypatch):
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: None)
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    monkeypatch.setattr(ins, "deck_extra_missing", lambda: None)
+    from ctxswitch.common.config import Config
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    assert not [c for c in ins.doctor(cfg) if c.name.startswith("deck")], \
+        "doctor checks a deck on a host that was never asked to run one"
+    _deck_installed()
+    (c,) = [c for c in ins.doctor(cfg) if c.name == "deck"]
+    assert c.status == "!", c                                             # no systemd --user here: a warning, not a ✗
+    rules = ins.udev_rules_path()
+    assert rules == home / "etc/udev/rules.d/70-streamdeck.rules"           # the tmp home, not this machine's /etc
+    bad = [c for c in ins.doctor(cfg) if c.name == "deck udev"]
+    assert len(bad) == 1 and bad[0].status == "✗", bad
+    assert 'SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", MODE="0666"' in bad[0].fix, bad[0].fix
+    assert 'KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", MODE="0666"' in bad[0].fix, bad[0].fix
+    assert "udevadm control --reload-rules && sudo udevadm trigger" in bad[0].fix, bad[0].fix
+    rules.parent.mkdir(parents=True, exist_ok=True)
+    rules.write_text(ins.UDEV_RULE_BODY + "# and anyone else's\n")
+    assert [c.status for c in ins.doctor(cfg) if c.name == "deck udev"] == ["✓"]
+    rules.write_text('KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", MODE="0666"\n')   # one of the two lines
+    (c,) = [c for c in ins.doctor(cfg) if c.name == "deck udev"]
+    assert c.status == "✗" and "SUBSYSTEM" in c.detail, c
+
+
+def test_doctor_says_what_a_replug_costs_under_wsl(home, monkeypatch):
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: None)
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    monkeypatch.setattr("ctxswitch.common.wsl.is_wsl", lambda: True)
+    from ctxswitch.common.config import Config
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    assert not [c for c in ins.doctor(cfg) if c.name.startswith("deck")]
+    _deck_installed()
+    (c,) = [c for c in ins.doctor(cfg) if c.name == "deck (wsl)"]
+    assert c.status == "!" and "usbipd attach --wsl --busid <id>" in c.detail, c
+    assert "--auto-attach" in c.detail and "picks it up" in c.detail, c
+
+
+def test_doctor_says_when_the_deck_service_is_inactive(home, monkeypatch):
+    class Out:
+        def __init__(self, out): self.stdout, self.stderr = out, ""
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: Out("active" if a[0] == "is-active" else ""))
+    monkeypatch.setattr(ins.shutil, "which", lambda c: None)
+    monkeypatch.setattr(ins, "deck_extra_missing", lambda: None)
+    from ctxswitch.common.config import Config
+    cfg = Config(); cfg.hub.url = "http://127.0.0.1:9"
+    _deck_installed()
+    assert [c.status for c in ins.doctor(cfg) if c.name == "deck"] == ["✓"]
+    monkeypatch.setattr(ins, "_systemctl", lambda *a: Out("failed"))
+    (c,) = [c for c in ins.doctor(cfg) if c.name == "deck"]
+    assert c.status == "✗" and "ctx-deck.service failed" in c.detail and "deck.log" in c.fix, c
 
 
 def test_uninstall_without_flags_takes_the_agy_hooks_back_too(home, monkeypatch):

@@ -397,7 +397,9 @@ It needs the extra (`uv pip install -e '.[deck]'`), runs beside the board, and t
 file's, 60 until the board's D screen says otherwise),
 `--sock PATH` and `--no-device` (no deck attached: prints the faces instead of
 drawing them, to try the wiring by hand). ▲▼ move the highlight the moment you press them. Ctrl-C resets the keys and
-closes the deck.
+closes the deck. Underneath it all the device is watched the same way the board is: unplugged is a state to wait in,
+and a deck that comes back is repainted from the state it is holding — see *Setting up the deck* below for the udev
+rule, the usbipd attach and the service that starts it all.
 
 | Key | Does | While the board is asking (picker) | While a confirm is up |
 |---|---|---|---|
@@ -423,6 +425,30 @@ to run while the screen has the pane.
 With the board unreachable every key goes black except the centre one, which says `no board` and retries every 2 s.
 While the spend screen is up every key is cancel except `spend` itself, which is lit and closes it again; while the
 board's text box has focus (`/`, `m`, `a`) the bottom two rows say `type on the board` and send nothing.
+
+#### Setting up the deck
+
+1. **The extra**: `uv pip install -e '.[deck]'` (the `StreamDeck` library and Pillow). `ctx deck` and
+   `ctx install --deck` both say so, with that exact command, when it isn't there.
+2. **The udev rule**, so this user may read the board without root — two lines in `/etc/udev/rules.d/70-streamdeck.rules`:
+
+   ```
+   SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", MODE="0666"
+   KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", MODE="0666"
+   ```
+
+   then `sudo udevadm control --reload-rules && sudo udevadm trigger`. `ctx doctor` checks both lines are there.
+3. **On WSL**, where the board lives on the Windows side of the USB stack: `usbipd bind --busid 9-1` once, then
+   `usbipd attach --wsl --busid 9-1` from Windows **after every replug**. No `--auto-attach` is needed — it locks up
+   for some owners, and it isn't wanted: `ctx deck` waits for a device instead of exiting without one, looks for one
+   every 2 s, and takes it up painted and lit the moment it appears.
+4. **The service**: `ctx install --deck`, which writes `~/.config/systemd/user/ctx-deck.service` (`Restart=always`,
+   `RestartSec=5`, started at login) and enables it. `ctx uninstall --deck` takes it back. Its output — the
+   heartbeats, and the `Stream Deck gone` / `Stream Deck back: <serial>` lines — is appended to
+   `~/.local/state/ctxswitch/deck.log`.
+
+`ctx doctor` then has three deck lines once that unit exists: whether it is running, whether the udev rule is right,
+and — on WSL — a reminder of step 3 after a replug. None of them appear on a host with no deck service.
 
 ## 5. Opening and closing sessions
 - **Sessions started by hand inside the ctx tmux session** are found automatically (by matching the agent's pid

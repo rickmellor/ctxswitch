@@ -2067,6 +2067,31 @@ async def test_a_replugged_deck_is_painted_from_the_state_and_not_from_the_cache
         await app.stop()
 
 
+async def test_the_poll_runs_by_itself_while_the_deck_waits():
+    """The timer, not just the call: a deck started with nothing attached keeps looking on its own, so a board
+    plugged in ten minutes later is painted without anyone restarting anything."""
+    said: list[str] = []
+    later = Back()
+    looked = {"n": 0}
+
+    def look():
+        looked["n"] += 1
+        if looked["n"] < 2:                                   # the first look is the one start() makes
+            raise RuntimeError("no Stream Deck found")
+        later.open()
+        return later
+
+    app = DeckApp(None, FakeBoardSync(), fps=0.0, log=said.append, clock=lambda: 500.0,
+                  open_deck=look, poll_s=0.05)
+    app.start()
+    try:
+        await until("the deck to find a device on its own timer", lambda: app.deck is later, timeout=3)
+        assert sum(1 for line in said if "Stream Deck back" in line) == 1, said
+        assert len(later.images) == deck.KEY_COUNT
+    finally:
+        await app.stop()
+
+
 async def test_a_device_that_says_it_is_not_there_is_dropped_by_the_poll():
     """`connected()` — the library's own word, where it has one — is checked on the poll, so a deck that went without
     anyone pressing it goes into waiting rather than sitting there looking painted."""

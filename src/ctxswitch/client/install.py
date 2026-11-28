@@ -10,6 +10,10 @@
   uninstall  settings.json restored byte-for-byte when nothing else changed it since, else our hooks removed
              surgically; agy's named hook removed with the same care; the extension link and (with --collector)
              the unit removed.
+  --deck     (opt-in) `ctx deck` as a systemd --user unit, restarted when it dies and at login. The deck itself
+             waits for the device, so a machine that boots with the board unplugged comes up anyway and paints it
+             when `usbipd attach` runs. doctor checks the unit, the udev rule that lets us read it, and says what a
+             replug costs under WSL.
   --mcp      (opt-in, not part of the default) `ctx mcp` registered with Claude Code for this user, through
              `claude mcp add/remove -s user` (~/.claude.json is Claude's own and rewritten constantly, so no edits to it),
              the skill that says when to use it linked at ~/.claude/skills/ctxswitch, the same server in pi's and
@@ -743,6 +747,96 @@ def uninstall_collector(dry: bool, log) -> None:
     log(f"collector: stopped and removed {p} (queue and config kept)")
 
 
+# -- the Stream Deck ---------------------------------------------------------------------------------------------
+#
+# `ctx deck` is the one part of this that runs against hardware someone unplugs, so it is the one part that needs to
+# come back by itself: `Restart=always` covers a crash, and the deck's own device supervisor covers the unplugs —
+# it waits for a device rather than exiting without one, and picks it up when `usbipd attach` finally runs.
+DECK_UNIT = "ctx-deck.service"
+DECK_UNIT_TEMPLATE = """\
+# written by `ctx install --deck`; `ctx uninstall --deck` removes it
+[Unit]
+Description=ctxswitch Stream Deck
+After=ctx-collector.service
+
+[Service]
+Type=simple
+ExecStart={exe} deck
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:%h/.local/state/ctxswitch/deck.log
+StandardError=append:%h/.local/state/ctxswitch/deck.log
+
+[Install]
+WantedBy=default.target
+"""
+DECK_INSTALL_CMD = "uv pip install -e '.[deck]'"               # said out loud rather than guessed at, when it's missing
+UDEV_RULE = Path("/etc/udev/rules.d/70-streamdeck.rules")
+UDEV_RULE_BODY = (
+    'SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", MODE="0666"\n'
+    'KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", MODE="0666"\n')
+
+
+def deck_unit_path() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user" / DECK_UNIT
+
+
+def udev_rules_path() -> Path:
+    """Where the rules live. Overridable for the same reason every other path here is: a test gets its own HOME."""
+    return Path(os.environ.get("CTXSWITCH_UDEV_RULES") or UDEV_RULE)
+
+
+def deck_extra_missing() -> str | None:
+    """The name of the first import `ctx deck` needs that this environment doesn't have, or None.
+
+    Found rather than imported: `find_spec` says whether the package is installed without running it, which for
+    streamdeck means opening libusb and looking at the USB bus. The check is here because the unit is worth writing
+    only to a machine that can run it — a service that exits 2 on every restart is worse than no service."""
+    import importlib.util
+    for name in ("StreamDeck", "PIL"):
+        try:
+            if importlib.util.find_spec(name) is None:
+                return name
+        except (ImportError, ValueError):                       # a parent package that can't be parsed is missing too
+            return name
+    return None
+
+
+def install_deck(dry: bool, start: bool, log) -> None:
+    missing = deck_extra_missing()
+    if missing:
+        log(f"deck: the Stream Deck library isn't installed ({missing} missing); run: {DECK_INSTALL_CMD}"); return
+    if not dry:
+        _mkdir(state_dir())                                     # deck.log is appended to in here
+    p, body = deck_unit_path(), DECK_UNIT_TEMPLATE.format(exe=ctx_exe())
+    changed = not p.exists() or p.read_text() != body
+    if dry:
+        log(f"deck: would {'write' if changed else 'keep'} {p}" + (" and start it" if start else "")); return
+    if changed:
+        _write(p, body.encode()); log(f"deck: wrote {p}")
+    if not start:
+        return
+    for c in (("daemon-reload",), ("enable", DECK_UNIT), ("restart", DECK_UNIT)):
+        r = _systemctl(*c)
+        if r is None or r.returncode != 0:
+            log(f"deck: `systemctl --user {' '.join(c)}` failed ({(r.stderr.strip() if r else 'no systemd --user')}); "
+                f"run: systemctl --user daemon-reload && systemctl --user enable --now {DECK_UNIT}")
+            return
+    log("deck: enabled and restarted")
+
+
+def uninstall_deck(dry: bool, log) -> None:
+    p = deck_unit_path()
+    if not p.exists():
+        log("deck: no unit installed"); return
+    if dry:
+        log(f"deck: would stop, disable and remove {p}"); return
+    _systemctl("disable", "--now", DECK_UNIT)
+    p.unlink(); _systemctl("daemon-reload")
+    log(f"deck: stopped and removed {p} (its log and settings kept)")
+
+
 # -- doctor -----------------------------------------------------------------------------------------------------
 @dataclass
 class Check:
@@ -824,6 +918,7 @@ def doctor(cfg: Config | None = None) -> list[Check]:
         out.append(Check("✓", "collector", f"{UNIT} active"))
     else:
         out.append(Check("✗", "collector", f"{UNIT} {r.stdout.strip() or 'not installed'}", "ctx install --collector"))
+    out.extend(_check_deck_unit())                            # nothing at all when the deck unit isn't installed
     sp = hook.spool_dir()
     old = [p for p in sp.glob("*.json") if time.time() - p.stat().st_mtime > 60] if sp.is_dir() else []
     bad = list((sp / "bad").glob("*.json")) if (sp / "bad").is_dir() else []
@@ -929,6 +1024,42 @@ def _check_claude_win(root: Path) -> Check:
     return Check("✓", "claude (windows)", f"{n} transcripts in {root} (read-only, polled)")
 
 
+def _check_deck_unit() -> list[Check]:
+    """The deck's service, and the two things that can stop it reaching the hardware: a udev rule that lets this
+    user read the board at all, and — on WSL, where the board is on Windows' USB stack until someone hands it over
+    — the attach that a replug costs. Only asked when the unit is installed: a host with no deck to run has nothing
+    here to be wrong, and `ctx doctor` must not fail on account of hardware it was never given."""
+    p = deck_unit_path()
+    if not p.exists():
+        return []
+    r = _systemctl("is-active", DECK_UNIT)
+    out = [Check("!", "deck", "no systemd --user here", "run ctx deck some other way") if r is None else
+           Check("✓", "deck", f"{DECK_UNIT} active") if r.stdout.strip() == "active" else
+           Check("✗", "deck", f"{DECK_UNIT} {r.stdout.strip() or 'not installed'}",
+                 f"check {state_dir() / 'deck.log'}; ctx install --deck")]
+    rules = udev_rules_path()
+    want = [l for l in UDEV_RULE_BODY.splitlines() if "idVendor" in l]
+    fix = (f"write these two lines to {rules}:\n" + "\n".join(f"  {l}" for l in want)
+           + "\n  then: sudo udevadm control --reload-rules && sudo udevadm trigger")
+    if not rules.exists():
+        out.append(Check("✗", "deck udev", f"{rules} missing: this user can't read the board", fix))
+    else:
+        try:
+            body = rules.read_text()
+        except OSError as e:
+            out.append(Check("!", "deck udev", f"{rules} can't be read ({e.strerror or e})"))
+        else:
+            miss = [l for l in want if l not in body]
+            out.append(Check("✓", "deck udev", str(rules)) if not miss else
+                       Check("✗", "deck udev", f"{rules} is missing {'; '.join(miss)}", fix))
+    from ctxswitch.common.wsl import is_wsl
+    if is_wsl():
+        out.append(Check("!", "deck (wsl)", "after a replug the board is still on the Windows side until "
+                                           "`usbipd attach --wsl --busid <id>` is run from Windows "
+                                           "(no --auto-attach: it locks up; the service waits and picks it up itself)"))
+    return out
+
+
 def _check_pi() -> Check:
     link = pi_ext_dir() / EXT_NAME
     if not link.exists():
@@ -940,8 +1071,11 @@ def _check_pi() -> Check:
 
 # -- CLI --------------------------------------------------------------------------------------------------------
 def _parts(a) -> tuple[bool, bool, bool]:
+    """Which of the three wirings to do: the ones named, or all three when nothing was named at all. `--deck` and
+    `--mcp` name nothing of their own but must still count as having said something — otherwise `ctx uninstall
+    --deck` would read as "no flags" and take the hooks back too."""
     picked = (a.claude, a.pi, a.collector)
-    return picked if any(picked) or a.mcp else (True, True, True)
+    return picked if any(picked) or a.mcp or getattr(a, "deck", False) else (True, True, True)
 
 
 def cmd_install(a) -> int:
@@ -950,6 +1084,8 @@ def cmd_install(a) -> int:
     if coll:
         write_config(a.hub, a.token, a.dry_run, log)
         install_collector(a.dry_run, not a.no_start, log)
+    if getattr(a, "deck", False):                           # only when asked: most hosts have no deck on them
+        install_deck(a.dry_run, not a.no_start, log)
     if claude:
         for key, p in profile_settings():
             install_claude(st, a.dry_run, log, p, key)
@@ -983,6 +1119,8 @@ def cmd_uninstall(a) -> int:
         uninstall_agy_hooks(st, a.dry_run, log)
     if a.collector:                                         # only when asked: it also serves transcripts
         uninstall_collector(a.dry_run, log)
+    if getattr(a, "deck", False):                           # only when asked, same as the unit it serves
+        uninstall_deck(a.dry_run, log)
     if a.mcp:
         uninstall_mcp(st, a.dry_run, log)
         uninstall_skill(st, a.dry_run, log)
@@ -1006,6 +1144,9 @@ def add_parsers(sub) -> None:
         p.set_defaults(fn=fn)
         p.add_argument("--claude", action="store_true"); p.add_argument("--pi", action="store_true")
         p.add_argument("--collector", action="store_true", help="(uninstall: only removed when given)")
+        p.add_argument("--deck", action="store_true",
+                       help="the Stream Deck service: `ctx deck` restarted by systemd when it dies, and after a "
+                            "replug (uninstall: only removed when given)")
         p.add_argument("--mcp", action="store_true",
                        help="`ctx mcp` registered with Claude Code, pi and Antigravity (only when given)")
         p.add_argument("--dry-run", action="store_true")
