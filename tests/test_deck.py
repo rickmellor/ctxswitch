@@ -22,6 +22,12 @@ from ctxswitch.client import deck
 from ctxswitch.client.deck import BoardClient, DeckApp, FakeDeck, KeyFace, Layout, render
 from ctxswitch.common.deck_settings import save_settings
 
+try:                                                       # the deck extra is optional here, as it is on any host
+    from StreamDeck.Transport import TransportError
+except ImportError:                                        # `deck` recognises a dead handle by its name, so this
+    class TransportError(Exception):                       # behaves the same as the library's own
+        pass
+
 pytestmark = pytest.mark.timeout(10)
 needs_unix = pytest.mark.skipif(not unix_sockets_ok(), reason="this kernel won't let a test bind a unix socket")
 
@@ -1469,12 +1475,29 @@ async def test_the_heartbeat_says_the_deck_is_alive():
     assert "0 keys animating" in line, f"an idle board is not animating: {line}"
 
 
-def test_no_deck_attached_says_so(monkeypatch, capfd):
+def test_no_deck_attached_waits_instead_of_exiting(monkeypatch, capfd):
+    """An unattached deck is the ordinary state of a machine before anyone plugs in — `usbipd attach` comes later, by
+    hand. So it is waited in, said once, and the process stays up with its board connection running."""
+    started: list = []
+
     def nope(*_a, **_kw):
         raise RuntimeError("no Stream Deck found")
+
+    real_start = deck._start
+
+    async def _start_once(app, loop) -> None:
+        await real_start(app, loop)                         # the app is what finds there is nothing to paint on
+        started.append(app)
+        loop.call_later(0.05, loop.stop)                    # main() runs until Ctrl-C; this test stops there
+
     monkeypatch.setattr(deck, "open_deck", nope)
-    assert deck.main([]) == 1
-    assert "no Stream Deck" in capfd.readouterr().out
+    monkeypatch.setattr(deck, "_start", _start_once)
+    assert deck.main(["--sock", str(Path(tempfile.mkdtemp()) / "board.sock")]) == 0, \
+        "no deck attached must not be an exit"
+    err = capfd.readouterr().err
+    assert err.count("no Stream Deck found: waiting for one (attach it with usbipd)") == 1, err
+    assert started and started[0].deck is None, "the app should be holding nothing, waiting for the supervisor"
+    assert started[0].open_deck is nope, "and the supervisor should be the one that looks"
 
 
 def test_no_extra_installed_says_how_to_get_it(tmp_path, capfd, monkeypatch):
@@ -1852,3 +1875,252 @@ def test_scroll_from_the_far_left_shows_rows_three_to_five():
     rows = _rows(9) if "_rows" in globals() else None
     assert deck.scroll_window(9, deck.scroll_step(0, 1))[0] == ["prev", 3, 4, 5, "next"]
     assert deck.scroll_window(9, deck.scroll_step(2, -1))[0] == [1, 2, 3, 4, "next"]
+
+
+# -------------------------------------------------------------------------------------- the device, coming and going
+#
+# The board is not the only thing that can leave. Under WSL the deck arrives through usbipd, and an unplug and a hand
+# run `usbipd attach --wsl` swap it for a device the running process has no handle to. The app's device supervisor
+# looks after that: it is the app's own work — a device that comes back has to be painted from the state the app is
+# holding — so these tests drive it the same way the rest of the file drives the app, with `open_deck` and the poll
+# interval handed in and no hardware anywhere near them.
+
+
+class Goner(FakeDeck):
+    """A device that dies on the wire after N writes: which is what an unplugged one looks like from here — a handle
+    that answers the next call with a transport error, and the one after that the same way, forever."""
+
+    def __init__(self, fail_after: int, serial="FAKEGONE"):
+        super().__init__()
+        self.serial, self.fail_after = serial, fail_after
+        self.writes = 0
+
+    def get_serial_number(self) -> str:
+        return self.serial
+
+    def set_key_image(self, key: int, image: bytes) -> None:
+        self.writes += 1
+        if self.writes > self.fail_after:
+            raise TransportError("failed to write to device")
+        super().set_key_image(key, image)
+
+
+class Back(FakeDeck):
+    """The device that turns up where the old one was: its own serial, and a memory of everything it was told."""
+
+    def __init__(self, serial="FAKEBACK"):
+        super().__init__()
+        self.serial = serial
+
+    def get_serial_number(self) -> str:
+        return self.serial
+
+
+async def _watched(d, b, said, clock=None, **kw) -> DeckApp:
+    """A deck whose device the app looks after: `open_deck` handed over, and the poll short enough that a test can
+    turn it by hand with `_device_poll()` rather than waiting on it."""
+    app = DeckApp(d, b, fps=0.0, log=said.append, clock=clock or (lambda: 500.0),
+                  open_deck=kw.pop("open_deck", lambda: d), poll_s=0.05, **kw)
+    app.start()
+    return app
+
+
+async def test_a_device_that_starts_answering_badly_is_dropped_once():
+    """The failure the whole supervisor exists for: 15 keys painted, then the handle goes bad, and every key after
+    that fails the same way. One line says the deck is gone — not one per press, and not one per key of the repaint
+    that press sets off — and the app is left holding nothing."""
+    said: list[str] = []
+    d = Goner(fail_after=deck.KEY_COUNT + 1)                # the 15 keys, one more for the first press, then dead
+    app = await _watched(d, FakeBoardSync(), said)
+    try:
+        assert d.paints == deck.KEY_COUNT and app.deck is d
+        app.press(1)                                        # a press repaints one key: the 16th write, which lives
+        assert app.deck is d, "one key short of the failure shouldn't drop the device"
+        assert app._device_words() == f"open {d.serial}", app._device_words()
+        app.press(2)                                        # the 17th: the handle is dead, and says so
+        assert app.deck is None, "the dead handle is still being held"
+        assert sum(1 for line in said if "Stream Deck gone" in line) == 1, said
+        assert not [line for line in said if "failed to write" in line], f"the error itself was printed: {said}"
+        assert not [line for line in said if "No HID device" in line], said
+        for key in range(deck.KEY_COUNT):                   # every key of a whole board repaint fails the same way
+            app.press(key)
+        assert sum(1 for line in said if "Stream Deck gone" in line) == 1, f"a gone line per key: {said}"
+        assert d.closed, "the handle that died was not let go of"
+    finally:
+        await app.stop()
+
+
+async def test_presses_while_the_device_is_gone_send_nothing():
+    """Keys the operator is pressing in the dark. There is no device to press, so the board must not hear a word —
+    and the deck stays quiet about it, because it has already said the deck is gone."""
+    said: list[str] = []
+    d = Goner(fail_after=deck.KEY_COUNT + 1)
+    b = FakeBoardSync()
+    app = await _watched(d, b, said)
+    try:
+        app.press(1)
+        app.press(2)                                        # the 16th and 17th writes: the first drops the device
+        b.seen.clear()
+        for key in (0, 3, 7, 11, 14):
+            app.press(key)
+        assert b.seen == [], f"a press with no device reached the board: {b.seen}"
+        assert d.writes == deck.KEY_COUNT + 2, f"the dead handle was still written to {d.writes} times"
+        assert sum(1 for line in said if "Stream Deck gone" in line) == 1, said
+    finally:
+        await app.stop()
+
+
+async def test_a_device_the_app_never_had_costs_nothing_per_press():
+    """`--no-device` with nothing attached, which is what a machine before the first plug-in looks like: a press is
+    not an error and not news, and nothing is drawn because there is nothing to draw on."""
+    said: list[str] = []
+    b = FakeBoardSync()
+    app = DeckApp(None, b, fps=0.0, log=said.append, open_deck=lambda: None, poll_s=0.05)
+    app.start()
+    try:
+        assert app._device_words() == "waiting"
+        for key in (0, 5, 14):
+            app.press(key)
+        assert b.seen == [], f"a press with no device reached the board: {b.seen}"
+        assert said == [], f"a press with no device said something: {said}"
+    finally:
+        await app.stop()
+
+
+async def test_the_supervisor_keeps_looking_for_a_device_and_takes_the_one_it_finds():
+    """The poll is the whole recovery: nothing attached at start says so once, and the deck comes up by itself when
+    `usbipd attach` finally runs — lit, wired to the app, and painted with all fifteen keys."""
+    said: list[str] = []
+    later = Back()
+    tries: list[int] = []
+
+    def sometimes():
+        tries.append(len(tries))
+        if len(tries) < 3:
+            raise RuntimeError("no Stream Deck found")
+        later.open()
+        return later
+
+    app = DeckApp(None, FakeBoardSync(), fps=0.0, log=said.append, clock=lambda: 500.0,
+                  open_deck=sometimes, poll_s=0.05)
+    app.start()
+    try:
+        assert sum(1 for line in said if "waiting for one" in line) == 1, said
+        for _ in range(3):                                  # the same call the timer makes, turned by the test
+            app._device_poll()
+        assert len(tries) == 3, f"the device was looked for {len(tries)} times: the poll gave up"
+        assert app.deck is later
+        assert sum(1 for line in said if "waiting for one" in line) == 1, f"the wait said twice: {said}"
+        assert later.brightness == deck.load_settings(app.settings_path)["brightness"], "the new device was never lit"
+        assert later.cb is not None, "the new device was never told who to ask about a press"
+        assert later.reset_called, "the new device was not cleared before it was painted"
+        assert len(later.images) == deck.KEY_COUNT and later.paints == deck.KEY_COUNT
+        assert app._device_words() == f"open {later.serial}", app._device_words()
+        back = [line for line in said if "Stream Deck back" in line]
+        assert len(back) == 1 and later.serial in back[0] and "15 keys" in back[0], said
+    finally:
+        await app.stop()
+
+
+async def test_a_device_that_was_already_open_is_lit_from_the_settings_file():
+    """The same take-up when the device was open before the app started: the file's brightness (or an explicit
+    `--brightness`, which wins for the run) reaches the device that turns up later, not only the one at start."""
+    said: list[str] = []
+    later = Back()
+    app = DeckApp(None, FakeBoardSync(), fps=0.0, log=said.append, clock=lambda: 500.0,
+                  open_deck=lambda: later.open() or later, poll_s=0.05, brightness_override=33)
+    app.start()
+    try:
+        app._device_poll()
+        assert later.brightness == 33, "the file or the command line never reached the device that came back"
+    finally:
+        await app.stop()
+
+
+async def test_a_replugged_deck_is_painted_from_the_state_and_not_from_the_cache():
+    """The cache only knows which faces *this process* sent. A deck that came back from a replug is showing what the
+    last one painted, so the take-up clears the cache and sends the whole board again — every key of it, from the
+    state the app is holding, whatever the cache had decided was already there."""
+    said: list[str] = []
+    gone, back = Goner(fail_after=deck.KEY_COUNT + 1), Back()
+    rows = [row(n, state="idle") for n in range(1, 4)]
+    b = FakeBoardSync(board_state(rows=rows))
+    app = await _watched(gone, b, said, open_deck=lambda: back)
+    try:
+        app.press(1)
+        app.press(2)                                        # the write that finds the handle is dead
+        assert app.deck is None
+        b.cb(board_state(rows=[rows[0], {**rows[1], "title": "renamed"}, rows[2]]))
+        assert app.deck is None and b.cb is not None, "a state with no device must still update the app's state"
+        app._device_poll()
+        assert app.deck is back
+        assert len(back.images) == deck.KEY_COUNT, \
+            f"the new device got {len(back.images)} keys: the old device's face cache was still standing"
+        assert back.paints == deck.KEY_COUNT
+        assert back.images == {k: render(app.faces[k], back) for k in range(deck.KEY_COUNT)}, \
+            "the keys that the cache thought were already painted didn't match the state they were painted from"
+        assert back.images[1] != back.images[0]
+        app.press(2)                                        # and it is a device again: a press paints, and asks
+        assert len(back.images) == deck.KEY_COUNT and {"cmd": "slot", "n": 3} in b.seen, b.seen
+        assert sum(1 for line in said if "Stream Deck gone" in line) == 1, said
+    finally:
+        await app.stop()
+
+
+async def test_a_device_that_says_it_is_not_there_is_dropped_by_the_poll():
+    """`connected()` — the library's own word, where it has one — is checked on the poll, so a deck that went without
+    anyone pressing it goes into waiting rather than sitting there looking painted."""
+    class Quiet(Back):
+        def connected(self) -> bool:
+            return False
+
+    said: list[str] = []
+    d = Quiet()
+    app = await _watched(d, FakeBoardSync(), said)
+    try:
+        assert app.deck is d
+        app._device_poll()
+        assert app.deck is None and app._device_words() == "waiting"
+        assert sum(1 for line in said if "Stream Deck gone" in line) == 1, said
+    finally:
+        await app.stop()
+
+
+async def test_a_device_that_still_answers_costs_the_poll_nothing():
+    """The poll runs every 2 s for the life of the process, so it must not touch the wire: one healthy device, many
+    polls, and no write, read or reset between them."""
+    said: list[str] = []
+    d = Back()
+    app = await _watched(d, FakeBoardSync(), said)
+    try:
+        paints, opened = d.paints, d.opened
+        for _ in range(20):
+            app._device_poll()
+        assert (d.paints, d.opened) == (paints, opened), "the poll put something on the wire"
+        assert app.deck is d and said == [], said
+    finally:
+        await app.stop()
+
+
+async def test_the_heartbeat_says_whether_there_is_a_device():
+    """`ctx deck` runs for hours unattended, and the one line it prints has to say which of the two things it is
+    waiting on — the board, or a deck that nobody has attached yet."""
+    said: list[str] = []
+    d = Back()
+    app = DeckApp(d, FakeBoardSync(), fps=0.0, log=lambda m: None, heartbeat_s=0.05, echo=said.append)
+    app.start()
+    try:
+        await until("a heartbeat line", lambda: any("keys" in line for line in said), timeout=2)
+        assert f"device: open {d.serial}" in " ".join(said), said
+        said.clear()
+        app._mark_gone()                                     # the same thing the poll does when a device won't answer
+        await until("a heartbeat line", lambda: any("keys" in line for line in said), timeout=2)
+        assert "device: waiting" in " ".join(said), said
+    finally:
+        await app.stop()
+
+
+def test_no_extra_installed_says_how_to_get_it(tmp_path, capfd, monkeypatch):
+    monkeypatch.setitem(sys.modules, "StreamDeck", None)       # `import StreamDeck` now raises ImportError
+    assert deck.main(["--sock", str(tmp_path / "nope.sock")]) == 2
+    assert "install with: uv pip install -e '.[deck]'" in capfd.readouterr().out

@@ -28,6 +28,12 @@ for that run.
 The faces move: a waiting session breathes, a busy one sweeps a bar down its left edge, a key whose switch the board
 hasn't confirmed yet pulses white, and the switch itself fades out of white when the pane comes round. All four are a
 function of the state, the page and one clock, so the tests read them too.
+
+The device can leave. Under WSL the deck reaches us through usbipd, and an unplug and re-attach leaves this process
+holding a handle to something that no longer exists, so the app watches the device the way it watches the board: no
+deck attached is a state to wait in rather than one to exit on, a device that starts answering badly is dropped with
+one line said once rather than one per key press, and one that turns up again is cleared, lit and painted from the
+state we already hold. `open_deck` and the poll are handed in, so all of that runs in a test with no hardware in it.
 """
 from __future__ import annotations
 
@@ -52,6 +58,7 @@ KEY_H = 72                         # …and how tall it is, which is what an ani
 ROW2 = 5                           # the middle row's first key: keys 5…9 are the board's panels and its exits
 ROW2_CMDS = ("gpu", "pool", "spend", "exchange", "detach")     # what each of those keys is, and what it sends
 RECONNECT_S = 2.0                  # how often to retry the board while it is unreachable
+DEVICE_POLL_S = 2.0                # …and the same for the device: a deck attached while we watch is picked up here
 HEARTBEAT_S = 20.0                 # `ctx deck` runs for hours: one line of proof it's still awake, every 20 s
 FPS = 20                           # the animation clock: measured on the device, a full board repaint fits in one
 SETTINGS_TICKS = FPS               # …and the settings file is looked at once a second, which is every 20th of them
@@ -850,12 +857,51 @@ class FakeDeck:
         return self.deck_type_str
 
 
+_GONE_ERRORS = ("TransportError", "ProbeError", "HIDError")   # matched by name: the deck's own classes need the extra
+
+
+def _is_gone(e: BaseException) -> bool:
+    """Whether an error says the device isn't there any more, rather than that we asked it for something silly.
+
+    ``TransportError`` is what the library raises for a handle whose device has gone, and ``OSError`` covers the
+    usbipd case where the file descriptor is simply bad. Either way the answer is the same whatever the class says:
+    a dead handle under a live board would otherwise print one line per key press, forever."""
+    if isinstance(e, OSError):
+        return True
+    if any(cls.__name__ in _GONE_ERRORS for cls in type(e).__mro__):
+        return True
+    return isinstance(e, RuntimeError) and "transport" in str(e).lower()
+
+
+def device_serial(deck) -> str:
+    """What to call this device in the log: its serial, the sort of deck it is if it has no serial to give, and
+    ``unknown`` if it can't be asked. A log line is not worth a traceback off a half-dead handle."""
+    try:
+        got = deck.get_serial_number() if hasattr(deck, "get_serial_number") else None
+    except Exception:                                           # noqa: BLE001 - a serial is the least important thing here
+        got = None
+    if got:
+        return str(got)
+    try:
+        words = " ".join(str(deck.deck_type()).strip().split())
+    except Exception:                                           # noqa: BLE001
+        words = ""
+    return words or "unknown"
+
+
 class DeckApp:
-    """The device, the board, and the redraw that keeps one showing the other."""
+    """The device, the board, and the redraw that keeps one showing the other.
+
+    The device is the part that can leave. A Stream Deck reaches WSL through usbipd, and an unplug and re-attach —
+    which its owner does by hand, since `--auto-attach` locks up for him — leaves this process holding a handle to
+    something that no longer exists. So `deck` may be replaced under the app, and only the supervisor does it: pass
+    `open_deck` and it owns the device from here on, opening the one it finds, noticing when that one goes, and
+    painting a new one in full when it comes back. With no `open_deck` the deck handed in is the only one there will
+    ever be, which is what `--no-device` and the tests want."""
 
     def __init__(self, deck, board, layout: Layout | None = None, log=print, fps: float = FPS,
                  heartbeat_s: float = 0.0, echo=print, clock=time.monotonic, settings_path=None,
-                 brightness_override: int | None = None):
+                 brightness_override: int | None = None, open_deck=None, poll_s: float = DEVICE_POLL_S):
         self.deck = deck
         self.board = board
         self.layout = layout or Layout()
@@ -887,21 +933,172 @@ class DeckApp:
         self._last_visible: str | None = None   # the visible_key of the state before this one: a switch is off it
         self._had_state = False                 # …and whether there was one at all: the first state is not a switch
         self._paint_times: list[float] = []     # when each repaint went out, so the heartbeat can count the last 20 s
+        self.open_deck = open_deck              # …and the device supervisor's way in, when there is one to have
+        self.poll_s = poll_s
+        self._waiting_logged = False            # "no deck, waiting" is said once, not once per poll
+        self._gone_logged = False               # …and so is "it went away", not once per key press
+        self._serial: str | None = None         # what the heartbeat calls the device it is holding
 
     def start(self, loop=None) -> None:
         """Wire the device up and paint what the board says now."""
         self.loop = loop or asyncio.get_running_loop()
-        try:
-            self.deck.set_key_callback(self._key)
-        except Exception as e:                                  # noqa: BLE001 - keys that don't report are the worst case
-            self.log(f"key callback: {e}")
+        if self.deck is not None:
+            self._serial = device_serial(self.deck)
+            try:
+                self.deck.set_key_callback(self._key)
+            except Exception as e:                              # noqa: BLE001 - keys that don't report are the worst case
+                self.log(f"key callback: {e}")
         self.board.subscribe(self._state, loop=self.loop)
         if self.fps:                                            # one tick drives every animation
             self._timers.append(self.loop.create_task(self._animate()))
         if self.heartbeat_s:                                    # at least one line every 30 s, however quiet it is
             self._timers.append(self.loop.create_task(self._heartbeat()))
+        if self.open_deck is not None:                          # the device can leave and come back: watch for that
+            self._timers.append(self.loop.create_task(self._watch_device()))
+        if self.deck is None and self.open_deck is not None:
+            self._try_open()                                    # nothing attached yet is said here, once, and waited in
         self.refresh(self.board.state)
         self._apply_settings(self.settings, first=True)         # the file's word on how this deck behaves
+
+    # --------------------------------------------------------------------------------------------- the device
+
+    def _device_call(self, what, *args) -> bool:
+        """One call to the device, from a path that cannot let the error through: the animation tick, a key press,
+        the heartbeat's redraw, a setting being applied. False means the device is gone, which it has already said
+        once — and says no more about until a device comes back, because the same dead handle answers the next key
+        the same way and the one after that."""
+        try:
+            what(*args)
+            return True
+        except Exception as e:                                  # noqa: BLE001 - the only error that matters is this one
+            if _is_gone(e):
+                self._mark_gone()
+            else:
+                self.log(f"device: {e}")
+            return False
+
+    def _mark_gone(self) -> None:
+        """The device said no, or its handle came back bad: drop it and wait for one to come back. Once — a board
+        still talking to a dead handle would otherwise print this on every key press forever."""
+        if self.deck is None:
+            return
+        deck, self.deck, self._serial = self.deck, None, None
+        if not self._gone_logged:
+            self._gone_logged = True
+            self.log("Stream Deck gone: waiting for it to come back")
+        try:                                                    # it is gone: whatever closing it says is nobody's business
+            deck.close()
+        except Exception:                                       # noqa: BLE001
+            pass
+
+    def _device_alive(self) -> bool:
+        """Whether the device we hold is still the one that is there: the library's own word where it has one, its
+        open handle where it doesn't, and an error from either — a transport error or a bad fd — meaning it isn't."""
+        deck = self.deck
+        for name in ("connected", "is_open"):                   # `connected()` on streamdeck 1.x, `is_open()` on 0.9.x
+            check = getattr(deck, name, None)
+            if check is None:
+                continue
+            try:
+                return bool(check())
+            except Exception as e:                              # noqa: BLE001 - a device that can't say is not there to say
+                return not _is_gone(e)
+        return True
+
+    async def _watch_device(self) -> None:
+        """The timer over ``_device_poll``: ``DEVICE_POLL_S`` apart, which is how long an unplugged deck stays dark
+        before the deck goes looking for it again."""
+        while True:
+            await asyncio.sleep(self.poll_s)
+            try:
+                self._device_poll()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:                              # noqa: BLE001 - the poll outlives any one device
+                self.log(f"device watch: {e}")
+
+    def _device_poll(self) -> None:
+        """One look: with no device, try to find one; with one, make sure it is still there. A device that answers
+        is free — no write, no read, nothing on the wire — so the poll costs a method call."""
+        if self.deck is None:
+            self._try_open()
+        elif not self._device_alive():
+            self._mark_gone()
+
+    def _try_open(self) -> None:
+        """One look for a device: found one, take it up; didn't, say so once and wait for the next poll. Nothing
+        here can kill the deck — an unattached board is the ordinary state of a machine before anyone plugs in."""
+        try:
+            deck = self.open_deck()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                                  # noqa: BLE001 - "no Stream Deck found" arrives this way
+            if not self._waiting_logged:
+                self._waiting_logged = True
+                self.log(f"no Stream Deck found: waiting for one (attach it with usbipd)"
+                         + ("" if "Stream Deck" in str(e) else f" — {e}"))
+            return
+        if deck is None:                                        # a lookup that only says whether anything is there
+            return
+        self._take_device(deck)
+
+    def _take_device(self, deck) -> None:
+        """A device the supervisor found, brought up as one that was open at startup is: its keys cleared, the press
+        callback pointed at this app, the lights set, and all fifteen keys painted from the state we are holding.
+
+        The clear is not decoration. Every face is cached and only a face that *changed* goes back on the wire, and
+        the cache says nothing about the plastic: a board that came back from a replug shows whatever the last
+        process painted on it, so a cache left standing would repaint the keys that changed and leave the rest still
+        saying what the old one did."""
+        self.deck = deck
+        self._serial = device_serial(deck)
+        self.faces = {}
+        self._lit = None
+        self._waiting_logged = self._gone_logged = False
+        self._paint_times.clear()
+        try:
+            self.deck.set_key_callback(self._key)
+        except Exception as e:                                  # noqa: BLE001 - keys that don't report are the worst case
+            self.log(f"key callback: {e}")
+        if not self._device_call(self.deck.reset):
+            return                                              # gone again before it was even lit: say that, not this
+        want = (self.brightness_override if self.brightness_override is not None
+                else self.settings["brightness"])
+        self._set_brightness(want, say=False)                   # the device is new: its lights are ours to set, quietly
+        painted = self._paint(self.clock())
+        self.log(f"Stream Deck back: {self._serial} ({painted} keys)")
+
+    def _close_device(self) -> None:
+        """The app is stopping: let go of the device it is holding, without a word about it."""
+        deck, self.deck, self._serial = self.deck, None, None
+        if deck is None:
+            return
+        try:
+            deck.close()
+        except Exception:                                       # noqa: BLE001 - we are on our way out
+            pass
+
+    def _device_words(self) -> str:
+        """What the heartbeat says about the device, and what a deck with nothing attached draws."""
+        return f"open {self._serial}" if self.deck is not None else "waiting"
+
+    def _draw(self, key: int, face: KeyFace) -> bool:
+        """One key's face on the device: False when it couldn't go — there is no device to draw on, or this one has
+        gone and has now been said about once. The face is not cached either way, so the board that comes back is
+        painted from the state rather than from what its keys happen to be showing."""
+        if self.deck is None:
+            return False
+        try:
+            self.deck.set_key_image(key, render(face, self.deck))
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                                  # noqa: BLE001 - one key that fails must not stop the rest
+            if _is_gone(e):
+                self._mark_gone()
+            else:
+                self.log(f"key {key}: {e}")
+            return False
 
     async def _heartbeat(self) -> None:
         """One line every ``heartbeat_s`` saying the deck is alive — and a redraw in passing, in case a push was
@@ -910,12 +1107,18 @@ class DeckApp:
         while True:
             await asyncio.sleep(self.heartbeat_s)
             painted = self.refresh(self.state)
-            board = "the board" if getattr(self.board, "connected", True) else "no board yet"
             now = time.monotonic()
             self._paint_times = [t for t in self._paint_times if now - t <= HEARTBEAT_S]
-            self.echo(f"[deck] {now - since:.0f}s up: {board}, {len(self.faces)} keys, {painted} repainted "
-                      f"({self._last_paint:.0f} ms), {len(self._paint_times)} in the last {HEARTBEAT_S:.0f} s, "
-                      f"{self._anim_count()} keys animating")
+            self.echo(self._heartbeat_line(now - since, painted))
+
+    def _heartbeat_line(self, up: float, painted: int = 0) -> str:
+        """The proof-of-life line: how long it has been up, which of the two things it is talking to (and which of
+        them it is waiting on), and what the animations have been doing — so a deck that has gone quiet can be told
+        apart from one that has stopped, and one with no deck attached from one with no board."""
+        board = "the board" if getattr(self.board, "connected", True) else "no board yet"
+        return (f"[deck] {up:.0f}s up: {board}, device: {self._device_words()}, {len(self.faces)} keys, "
+                f"{painted} repainted ({self._last_paint:.0f} ms), {len(self._paint_times)} in the last "
+                f"{HEARTBEAT_S:.0f} s, {self._anim_count()} keys animating")
 
     async def stop(self) -> None:
         timers, self._timers = self._timers, []
@@ -928,14 +1131,13 @@ class DeckApp:
                 pass
             except Exception as e:                              # noqa: BLE001 - closing down: say it, carry on
                 self.log(f"timer: {e}")
-        try:
-            self.deck.reset()
-        except Exception as e:                                  # noqa: BLE001 - nothing left to do about the deck
-            self.log(f"reset: {e}")
-        try:
-            self.deck.close()
-        except Exception as e:                                  # noqa: BLE001 - ditto
-            self.log(f"close: {e}")
+        if self.deck is not None:                               # the device is here to be put away
+            try:
+                self.deck.reset()
+            except Exception as e:                              # noqa: BLE001 - nothing left to do about the deck
+                self.log(f"reset: {e}")
+        self._close_device()                                    # …and let go of it, whichever device that is: one
+        #                                                     that went first has nothing left to say about closing
 
     def refresh(self, state: dict | None) -> int:
         """Take a state the board sent: follow the highlight if it moved, start the fade a confirmed switch calls
@@ -1002,6 +1204,8 @@ class DeckApp:
             self.wipes = {key: t0 for key, t0 in self.wipes.items() if (t - t0) / WIPE_S < 1.0}
         # a switch the board never answered — refused, or lost: the key goes back the way it came, quietly
         self.pending = {key: t0 for key, t0 in self.pending.items() if t - t0 < PENDING_S}
+        if self.deck is None:
+            return 0                                            # nothing to paint on, but the state still moved
         plan = self.layout.plan(self.state, t if self.anim_on else 0.0, self._key_wipes(), self.page,
                                 self.pending if self.anim_on else None, self.mode, self.offset)
         drawn = 0
@@ -1009,10 +1213,9 @@ class DeckApp:
             face = plan[key]
             if self.faces.get(key) == face:
                 continue
-            try:
-                self.deck.set_key_image(key, render(face, self.deck))
-            except Exception as e:                              # noqa: BLE001 - one key that fails must not stop the rest
-                self.log(f"key {key}: {e}")
+            if not self._draw(key, face):
+                # gone, or no device to draw on: the face stays uncached, so the board that comes back is painted
+                # from the state rather than from the cache of the one that left
                 continue
             drawn += 1
             self.faces[key] = face
@@ -1072,8 +1275,9 @@ class DeckApp:
 
     def _key(self, deck, key: int, pressed: bool) -> None:
         """The device's own callback, on its own thread: ask the layout, send what it says. Only a press does
-        anything: a key coming back up sends nothing at all."""
-        if not pressed:
+        anything: a key coming back up sends nothing at all. And nothing does anything while the device is gone —
+        there is no device to press, and a late event off a handle being torn down must not reach the board."""
+        if not pressed or self.deck is None:
             return
         now = self.clock()
         state = self.board.state
@@ -1168,7 +1372,10 @@ class DeckApp:
             self.log(f"deck settings: the top row {'scrolls' if self.mode == 'scroll' else 'pages'}")
         want = self.brightness_override if self.brightness_override is not None else got["brightness"]
         if self._lit != want:                                 # once at start, then whenever the number moves
-            self._set_brightness(want, say=not first)
+            if self.deck is not None:                         # with nothing attached the number is only remembered:
+                self._set_brightness(want, say=not first)     # the device that shows up sets it when it shows up
+            else:
+                self._lit = want
         if self.anim_on != was_anim:
             self.log(f"deck settings: animations {'on' if self.anim_on else 'off'}")
         if not first:
@@ -1258,17 +1465,29 @@ def main(argv=None) -> int:
             print("the Stream Deck library isn't installed: install with: uv pip install -e '.[deck]'")
             return 2
     path = sock_path(a.sock)
-    try:
-        deck = FakeDeck(log=print) if a.no_device else open_deck()
-    except RuntimeError as e:
-        print(f"{e}"); return 1
+    opener = None
+    deck = None
     if a.no_device:
+        deck = FakeDeck(log=print)
         deck.no_render = True                                   # the faces in words, since there's nothing to draw them on
+    else:
+        try:
+            import StreamDeck                                   # noqa: F401 - the whole point of the extra
+            import PIL                                          # noqa: F401
+        except ImportError:
+            print("the Stream Deck library isn't installed: install with: uv pip install -e '.[deck]'")
+            return 2
+        try:                                                    # attached already, so the first paint has something to
+            deck = open_deck()                                  # paint on. Not attached is not a reason to stop, or to
+        except Exception:                                       # noqa: BLE001 - the app says that, once, from the loop
+            pass
+        opener = open_deck                                      # …and to keep looking for one
     # the lights are the settings file's unless they were said on the command line, which wins for this run; the
     # deck's own first look at the file is what puts them on the keys, so it says nothing about it
     board = BoardClient(path, log=lambda m: print(m, file=sys.stderr))
     app = DeckApp(deck, board, log=lambda m: print(m, file=sys.stderr), heartbeat_s=HEARTBEAT_S,
-                  echo=lambda m: print(m, file=sys.stderr, flush=True), brightness_override=a.brightness)
+                  echo=lambda m: print(m, file=sys.stderr, flush=True), brightness_override=a.brightness,
+                  open_deck=opener)
     loop = asyncio.new_event_loop()
     closing: list[asyncio.Task] = []
 
